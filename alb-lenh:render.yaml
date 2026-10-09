@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: alb-lenh
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 180
+    healthCheckPath: /health
+    envVars:
+      - key: APP_PASSWORD
+        value: "anhkhoidz"
+      - key: SECRET_KEY
+        value: "alb-lenh-2026-secret"
+      - key: DATA_DIR
+        value: /tmp/alb_web
+      - key: QR_SERVICE_KEY
+        value: "qr-lenh-shared-key-2026"
+      - key: PYTHON_VERSION
+        value: 3.11.9
