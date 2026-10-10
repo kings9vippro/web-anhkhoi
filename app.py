@@ -1,7 +1,6 @@
 # ============================================================
-# WEB-LENH v25.0 — Dashboard + Spam Anti-Ban Elite
-# Bot by Anh Khôi
-# Giao diện gọn - Nút tròn - Logo SVG - Icon Zalo
+# WEB-LENH v26.0 — Dashboard + Spam Zalo (Bot by Anh Khôi)
+# Tag UID thật — Màu emoji — Anti-ban Elite
 # ============================================================
 import os
 import json
@@ -10,12 +9,9 @@ import sqlite3
 import threading
 import random
 import base64
-import string
-import hashlib
 import re
 
 from functools import wraps
-from datetime import datetime
 
 from flask import (
     Flask, render_template_string, request, jsonify,
@@ -35,12 +31,12 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 DB_PATH = os.path.join(DATA_DIR, "alb.db")
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "alb-lenh-2026-secret")
-app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB
+app.secret_key = os.environ.get("SECRET_KEY", "alb-lenh-2026")
+app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024
 
 
 # ============================================================
-# DATABASE
+# DB
 # ============================================================
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -48,35 +44,24 @@ def init_db():
     c.execute("""
         CREATE TABLE IF NOT EXISTS accounts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            label TEXT,
-            imei TEXT,
-            cookies TEXT,
-            ok_count INTEGER DEFAULT 0,
-            fail_count INTEGER DEFAULT 0,
-            risk REAL DEFAULT 0.0,
-            enabled INTEGER DEFAULT 1,
-            added_at REAL,
-            last_used REAL DEFAULT 0,
+            label TEXT, imei TEXT, cookies TEXT,
+            ok_count INTEGER DEFAULT 0, fail_count INTEGER DEFAULT 0,
+            risk REAL DEFAULT 0.0, enabled INTEGER DEFAULT 1,
+            added_at REAL, last_used REAL DEFAULT 0,
             total_sent INTEGER DEFAULT 0
         )
     """)
     c.execute("""
         CREATE TABLE IF NOT EXISTS tasks (
-            id TEXT PRIMARY KEY,
-            type TEXT,
-            meta TEXT,
-            status TEXT,
-            started_at REAL,
-            stats TEXT
+            id TEXT PRIMARY KEY, type TEXT, meta TEXT,
+            status TEXT, started_at REAL, stats TEXT
         )
     """)
     c.execute("""
         CREATE TABLE IF NOT EXISTS files (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            filename TEXT,
-            filepath TEXT,
-            lines INTEGER DEFAULT 0,
-            size INTEGER DEFAULT 0,
+            filename TEXT, filepath TEXT,
+            lines INTEGER DEFAULT 0, size INTEGER DEFAULT 0,
             uploaded_at REAL
         )
     """)
@@ -101,95 +86,107 @@ def new_tid(p):
 
 
 # ============================================================
-# ZALO COLORS — mã màu Zalo hỗ trợ (msgColor API)
+# EMOJI MÀU — thay thế cho "màu chữ" của Zalo cá nhân
 # ============================================================
-ZALO_COLOR_CODES = [
-    "red", "orange", "yellow", "green", "teal",
-    "blue", "purple", "pink"
+EMOJI_COLORS = [
+    ("🔴", "red"),
+    ("🟠", "orange"),
+    ("🟡", "yellow"),
+    ("🟢", "green"),
+    ("🔵", "blue"),
+    ("🟣", "purple"),
+    ("⚫", "black"),
+    ("⚪", "white"),
+    ("🟤", "brown"),
+    ("❤️", "heart"),
+    ("💚", "green_heart"),
+    ("💙", "blue_heart"),
+    ("💜", "purple_heart"),
+    ("💛", "yellow_heart"),
+    ("🧡", "orange_heart"),
+    ("🖤", "black_heart"),
 ]
 
 
 # ============================================================
-# ZALO ICONS — emoji text Zalo
+# ICON ZALO — emoji text
 # ============================================================
 ZALO_ICONS = [
-    ":)", ":/", ":D", ";)", ";-*", ":-*", ":P", ":p",
-    ":3", "8-)", "b-)", ">-)", "=))", ":))",
-    ":-h", ":-H", ":-?", ":-O", ":o", ":v", ":>",
-    ";;)", ":|", ":x", ":-L", "$-)", "8*)",
-    ":-bye", ">-|",
-    "/-beer", "/-coffee", "/-rose", "/-bd", "/-cake",
-    "/-heart", "/-break", "/-shit", "/-li", "/-flag",
-    "/-strong", "/-thanks", "/-punch", "/-share",
-    "/-no", "/-bad", "/-loveu",
-    "_()_",
+    "🙂", "😉", "😀", "😃", "😄", "😁",
+    "😆", "😅", "😂", "🤣", "😊", "😇",
+    "🙃", "😌", "😍", "🥰", "😘", "😗",
+    "😙", "😚", "😋", "😛", "😝", "😜",
+    "🤪", "🤨", "🧐", "🤓", "😎", "🤩",
+    "🥳", "😏", "😒", "😞", "😔", "😟",
+    "😕", "🙁", "😣", "😖", "😫", "😩",
+    "🥺", "😢", "😭", "😤", "😠", "😡",
+    "🤬", "🤯", "😳", "🥵", "🥶", "😱",
+    "😨", "😰", "😥", "😓", "🤗", "🤔",
+    "🤭", "🤫", "🤥", "😶", "😐", "😑",
+    "😬", "🙄", "😯", "😦", "😧", "😮",
+    "😲", "🥱", "😴", "🤤", "😪", "😵",
+    "🤐", "🥴", "🤢", "🤮", "🤧", "😷",
+    "🤒", "🤕", "🤑", "🤠", "😈", "👿",
+    "👹", "👺", "🤡", "💩", "👻", "💀",
+    "☠️", "👽", "👾", "🤖", "🎃", "😺",
+    "😸", "😹", "😻", "😼", "😽", "🙀",
+    "😿", "😾", "❤️", "🧡", "💛", "💚",
+    "💙", "💜", "🖤", "🤍", "🤎", "💔",
+    "❣️", "💕", "💞", "💓", "💗", "💖",
+    "💘", "💝", "💟", "👍", "👎", "👏",
+    "🙌", "🤝", "🙏", "✌️", "🤞", "🤟",
+    "🤘", "👌", "🤌", "🤏", "👈", "👉",
+    "👆", "👇", "☝️", "✋", "🤚", "🖐️",
+    "🖖", "👋", "🤙", "💪", "🦾", "🖕",
+    "✍️", "🦵", "🦶", "👂", "🦻", "👃",
+    "🔥", "💯", "✨", "⭐", "🌟", "💫",
+    "⚡", "☀️", "🌙", "☁️", "🌈", "☂️",
+    "🎉", "🎊", "🎈", "🎁", "🎂", "🍰",
+    "🍻", "🍺", "🍷", "🍸", "🍹", "🥂",
+    "☕", "🍵", "🥤", "🧋", "🍔", "🍕",
+    "🍟", "🌭", "🥪", "🌮", "🌯", "🍿",
 ]
 
 
-def wrap_icon(text):
-    """Chèn icon Zalo vào cuối text — chỉ 1 icon, không spam."""
-    if random.random() < 0.5:
+def add_icon(text):
+    """Chèn icon Zalo vào cuối text."""
+    if random.random() < 0.6:
         return text + " " + random.choice(ZALO_ICONS)
     return text
 
 
+def add_color_emoji(text):
+    """Thêm emoji màu ở đầu và cuối (thay thế 'đổi màu')."""
+    if random.random() < 0.5:
+        emoji, _ = random.choice(EMOJI_COLORS)
+        return emoji + " " + text + " " + emoji
+    return text
+
+
 def vary_text(text):
-    """
-    Biến đổi text nhẹ (KHÔNG chèn ký tự lạ liên tục).
-    Chỉ: thêm dấu câu cuối, hoa/thường, cắt ngắn.
-    """
+    """Biến thể tự nhiên (không chèn ký tự lạ)."""
     r = random.random()
-
-    # Thêm dấu câu cuối (30%)
-    if r < 0.3:
-        text = text + random.choice(["", ".", "!", "?", "...", "~"])
-
-    # Hoa/thường (15%)
+    if r < 0.25:
+        text = text + random.choice(["", ".", "!", "?", "...", "~", " nha", " nhé"])
     if random.random() < 0.15:
-        mode = random.random()
-        if mode < 0.5:
-            text = text[0].upper() + text[1:] if text else text
-        else:
-            text = text.lower()
-
-    # Đôi khi thêm từ filler (10%)
-    if random.random() < 0.1:
-        fillers = ["nha", "nhé", "đó", "vậy", "nè", "hén"]
-        text = text + " " + random.choice(fillers)
-
+        text = text[0].upper() + text[1:] if text else text
     return text
 
 
 # ============================================================
-# ANTI-BAN ELITE v25 — Chuyên sâu
+# ANTI-BAN ELITE v26
 # ============================================================
 class AntiBanElite:
-    """
-    Anti-ban cấp chuyên gia:
-    1. Rotate account (không dùng 1 acc liên tiếp)
-    2. Adaptive delay theo risk score
-    3. Typing simulation (giả lập gõ)
-    4. Random break (nghỉ ngắn)
-    5. Humanize message (icon + biến thể)
-    6. Message fingerprint (mỗi tin khác nhau)
-    7. Multi-tier circuit (không dừng hẳn, chỉ chậm lại)
-    8. Color rotation (màu chữ thay đổi mỗi tin)
-    9. Risk-based skip (bỏ qua acc risk cao)
-    """
-
     MIN_DELAY = 0.5
     MAX_DELAY = 30.0
 
     @staticmethod
-    def compute_risk(ok, fail):
+    def risk(ok, fail):
         total = ok + fail
-        if total == 0:
-            return 0.0
-        return min(1.0, fail / total)
+        return min(1.0, fail / total) if total > 0 else 0.0
 
     @staticmethod
-    def compute_delay(user_delay, risk):
-        """Delay điều chỉnh theo risk — không bao giờ dừng hẳn."""
+    def delay(user_delay, risk):
         if risk > 0.8:
             base = max(user_delay, 8)
         elif risk > 0.6:
@@ -198,20 +195,16 @@ class AntiBanElite:
             base = max(user_delay, 3)
         else:
             base = max(user_delay, 0.5)
-
-        actual = base * random.uniform(0.7, 1.4)
-        return min(AntiBanElite.MAX_DELAY, actual)
+        return min(AntiBanElite.MAX_DELAY, base * random.uniform(0.7, 1.4))
 
     @staticmethod
     def typing_time(text):
-        """Thời gian gõ theo độ dài."""
         if not text:
             return 0.3
         return min(5.0, len(text) * random.uniform(0.03, 0.08))
 
     @staticmethod
-    def maybe_break():
-        """Random nghỉ ngắn như người thật."""
+    def break_time():
         r = random.random()
         if r < 0.03:
             time.sleep(random.uniform(5, 15))
@@ -220,7 +213,7 @@ class AntiBanElite:
 
 
 # ============================================================
-# ZALO TOOLS
+# ZALO API
 # ============================================================
 class Zalo:
     def __init__(self, imei, cookies):
@@ -253,7 +246,7 @@ class Zalo:
         self.uid = ud.get("send2me_id")
         self.secret_key = ud.get("zpw_enk")
         if not self.secret_key:
-            raise Exception("Không lấy được key")
+            raise Exception("Không lấy key")
 
     def _enc(self, params):
         key = base64.b64decode(self.secret_key)
@@ -318,21 +311,86 @@ class Zalo:
         except Exception:
             return []
 
-    # ---- SEND ----
-    def send(self, msg, thread_id, color=None, is_group=True):
+    def group_members(self, group_id):
+        """Lấy danh sách thành viên nhóm để tag."""
+        try:
+            enc = self._enc({"gridVerMap": json.dumps({str(group_id): 1})})
+            r = self.s.post(
+                "https://tt-group-wpa.chat.zalo.me/api/group/getmg-v2",
+                params={"zpw_ver": 645, "zpw_type": 30},
+                data={"params": enc}, timeout=20,
+            )
+            dec = self._dec(r.json()["data"])
+            data = json.loads(dec).get("data", {})
+            mem_ver_list = data.get("gridInfoMap", {}).get(str(group_id), {}).get("memVerList", [])
+
+            out = []
+            for m in mem_ver_list:
+                uid = m.split("_")[0]
+                try:
+                    info = self.get_user_info(uid)
+                    out.append({"id": uid, "name": info.get("name", "?")})
+                except Exception:
+                    out.append({"id": uid, "name": "User " + uid[:8]})
+            return out
+        except Exception as e:
+            print("[MEMBERS] " + str(e))
+            return []
+
+    def get_user_info(self, uid):
+        """Lấy tên user từ UID."""
+        try:
+            r = self.s.get(
+                "https://tt-profile-wpa.chat.zalo.me/api/social/profile",
+                params={"zpw_ver": 645, "zpw_type": 30, "fid": uid},
+                timeout=10,
+            )
+            dec = self._dec(r.json()["data"])
+            data = json.loads(dec).get("data", {})
+            return {"name": data.get("displayName") or data.get("zaloName") or "?"}
+        except Exception:
+            return {"name": "?"}
+
+    # ---- SEND với TAG ----
+    def send(self, msg, thread_id, mention_uids=None, is_group=True):
+        """
+        Gửi tin nhắn, hỗ trợ tag UID thật.
+        mention_uids: list of {"uid": ..., "name": ...}
+        """
         url = ("https://tt-group-wpa.chat.zalo.me/api/group/sendmsg"
                if is_group
                else "https://tt-chat2-wpa.chat.zalo.me/api/message/sms")
-        pl = {"message": msg,
-              "clientId": str(int(time.time() * 1000)),
-              "imei": self.imei}
-        if color:
-            pl["msgColor"] = color
+
+        pl = {
+            "message": msg,
+            "clientId": str(int(time.time() * 1000)),
+            "imei": self.imei,
+        }
+
+        # Mention — Zalo tag format
+        if mention_uids and is_group:
+            mentions = []
+            current_pos = 0
+            for m in mention_uids:
+                name = m.get("name", "")
+                uid = m.get("uid", "")
+                tag_str = "@" + name
+                idx = msg.find(tag_str)
+                if idx >= 0:
+                    mentions.append({
+                        "pos": idx,
+                        "uid": uid,
+                        "len": len(tag_str),
+                    })
+            if mentions:
+                pl["mentions"] = mentions
+
         if is_group:
             pl["visibility"] = 0
             pl["grid"] = str(thread_id)
         else:
             pl["toid"] = str(thread_id)
+
         enc = self._enc(pl)
         return self.s.post(url, params={"zpw_ver": 645, "zpw_type": 30},
                            data={"params": enc}, timeout=20)
@@ -353,25 +411,22 @@ class Zalo:
 
 
 # ============================================================
-# FILE PARSER — Fast (streaming)
+# FILE PARSER
 # ============================================================
-def parse_file_fast(filepath):
-    """Parse file nhanh — đọc 1 lần, bỏ số thứ tự."""
-    messages = []
+def parse_file(filepath):
+    msgs = []
     try:
         with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
             for line in f:
                 line = line.strip()
-                if not line:
-                    continue
-                if line.startswith("#"):
+                if not line or line.startswith("#"):
                     continue
                 line = re.sub(r"^\d+[\.\)\-\:]\s*", "", line)
                 if line:
-                    messages.append(line)
-    except Exception as e:
-        print("[FILE] parse error: " + str(e))
-    return messages
+                    msgs.append(line)
+    except Exception:
+        pass
+    return msgs
 
 
 # ============================================================
@@ -386,7 +441,7 @@ def update_stats(aid, ok):
     ok_c = row["ok_count"] + (1 if ok else 0)
     fail_c = row["fail_count"] + (0 if ok else 1)
     sent = row["total_sent"] + (1 if ok else 0)
-    risk = AntiBanElite.compute_risk(ok_c, fail_c)
+    risk = AntiBanElite.risk(ok_c, fail_c)
     enabled = row["enabled"]
     if fail_c >= 50 and ok_c / max(fail_c, 1) < 0.05:
         enabled = 0
@@ -405,22 +460,16 @@ def pick_account():
     rows = conn.execute("""
         SELECT * FROM accounts
         WHERE enabled = 1 AND risk < 0.8
-        ORDER BY risk ASC, last_used ASC
-        LIMIT 1
+        ORDER BY risk ASC, last_used ASC LIMIT 1
     """).fetchall()
     conn.close()
     return rows[0] if rows else None
 
 
-def spam_worker(tid, targets, messages, delay, use_color, use_icon,
-                tag_name, stop_event):
+def spam_worker(tid, targets, messages, delay, use_icon, use_color_emoji,
+                tag_uids, stop_event):
     """
-    Spam worker v25:
-    - Rotate acc
-    - Rotate target
-    - Đổi màu chữ mỗi tin
-    - Chèn icon cuối tin
-    - Tag tên nếu có
+    tag_uids: list of {"uid": ..., "name": ...} — nếu có, tag vào tin
     """
     msg_idx = 0
     target_idx = 0
@@ -431,9 +480,9 @@ def spam_worker(tid, targets, messages, delay, use_color, use_icon,
     print("  Targets: " + str(len(targets)))
     print("  Messages: " + str(len(messages)))
     print("  Delay: " + str(delay) + "s")
-    print("  Color: " + str(use_color))
     print("  Icon: " + str(use_icon))
-    print("  Tag: " + str(tag_name))
+    print("  Color emoji: " + str(use_color_emoji))
+    print("  Tag UIDs: " + str(len(tag_uids)))
 
     while not stop_event.is_set():
         acc = pick_account()
@@ -454,27 +503,23 @@ def spam_worker(tid, targets, messages, delay, use_color, use_icon,
 
         target = targets[target_idx % len(targets)]
         target_idx += 1
-        raw_msg = messages[msg_idx % len(messages)]
+        raw = messages[msg_idx % len(messages)]
         msg_idx += 1
 
-        # ==== BIẾN ĐỔI TIN NHẮN ====
-        final = raw_msg
+        final = raw
+        # Tag prefix
+        tag_prefix = ""
+        if tag_uids:
+            for t in tag_uids:
+                tag_prefix += "@" + t["name"] + " "
+            final = tag_prefix + final
 
-        # Tag tên ở đầu (nếu có)
-        if tag_name:
-            final = "@" + tag_name + " " + final
-
-        # Biến thể text
+        # Biến thể
         final = vary_text(final)
-
-        # Chèn icon cuối
+        if use_color_emoji:
+            final = add_color_emoji(final)
         if use_icon:
-            final = wrap_icon(final)
-
-        # Màu ngẫu nhiên
-        color = None
-        if use_color:
-            color = random.choice(ZALO_COLOR_CODES)
+            final = add_icon(final)
 
         is_group = target.get("type") == "group"
         target_id = target.get("id")
@@ -483,38 +528,33 @@ def spam_worker(tid, targets, messages, delay, use_color, use_icon,
             cookies = json.loads(acc["cookies"])
             z = Zalo(acc["imei"], cookies)
 
-            # Behavior
             time.sleep(random.uniform(0.3, 1.0))
             z.set_typing(target_id, is_group=is_group)
             time.sleep(AntiBanElite.typing_time(final))
 
-            r = z.send(final, target_id, color=color, is_group=is_group)
+            r = z.send(final, target_id,
+                       mention_uids=tag_uids,
+                       is_group=is_group)
             ok = bool(r and r.status_code == 200)
 
             update_stats(acc["id"], ok)
             count += 1
-
             status = "OK" if ok else "LOI"
-            color_str = "[" + str(color) + "]" if color else ""
             print("[SPAM #" + str(count) + "] " + acc["label"] +
-                  " -> " + str(target_id) + color_str +
-                  " [" + status + "] " + final[:40])
+                  " -> " + str(target_id) + " [" + status + "] " + final[:40])
 
         except Exception as e:
             update_stats(acc["id"], False)
             print("[SPAM] Error " + acc["label"] + ": " + str(e))
 
-        # Delay
         risk = acc["risk"] if acc["risk"] else 0.0
-        actual_delay = AntiBanElite.compute_delay(delay, risk)
-
-        end = time.time() + actual_delay
+        actual = AntiBanElite.delay(delay, risk)
+        end = time.time() + actual
         while time.time() < end:
             if stop_event.is_set():
                 break
             time.sleep(0.1)
-
-        AntiBanElite.maybe_break()
+        AntiBanElite.break_time()
 
     conn = db()
     conn.execute(
@@ -551,8 +591,7 @@ def index():
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
-        pw = request.form.get("password", "")
-        if pw == APP_PASSWORD:
+        if request.form.get("password") == APP_PASSWORD:
             session["logged_in"] = True
             return redirect(url_for("index"))
         return render_template_string(HTML_LOGIN, error="Sai mật khẩu")
@@ -566,7 +605,7 @@ def logout():
 
 
 # ============================================================
-# API — ACCOUNTS
+# API ACCOUNTS
 # ============================================================
 @app.route("/api/accounts", methods=["GET"])
 @login_required
@@ -574,8 +613,7 @@ def api_accounts():
     conn = db()
     rows = conn.execute("""
         SELECT id, label, imei, ok_count, fail_count, risk,
-               total_sent, enabled
-        FROM accounts ORDER BY id DESC
+               total_sent, enabled FROM accounts ORDER BY id DESC
     """).fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])
@@ -587,21 +625,18 @@ def api_accounts_add():
     data = request.json
     label = data.get("label", "").strip() or ("acc" + str(int(time.time())))
     imei = data.get("imei", "").strip()
-    ck_raw = data.get("cookies", "").strip()
-
-    if not imei or not ck_raw:
+    ck = data.get("cookies", "").strip()
+    if not imei or not ck:
         return jsonify({"error": "Thiếu IMEI hoặc cookie"}), 400
-
     try:
-        cookies = json.loads(ck_raw)
+        json.loads(ck)
     except Exception:
         return jsonify({"error": "Cookie không phải JSON"}), 400
-
     conn = db()
-    conn.execute("""
-        INSERT INTO accounts (label, imei, cookies, added_at)
-        VALUES (?, ?, ?, ?)
-    """, (label, imei, json.dumps(cookies), time.time()))
+    conn.execute(
+        "INSERT INTO accounts (label, imei, cookies, added_at) VALUES (?, ?, ?, ?)",
+        (label, imei, ck, time.time())
+    )
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "label": label})
@@ -621,9 +656,7 @@ def api_accounts_delete(aid):
 @login_required
 def api_accounts_reset(aid):
     conn = db()
-    conn.execute(
-        "UPDATE accounts SET risk = 0, enabled = 1 WHERE id = ?", (aid,)
-    )
+    conn.execute("UPDATE accounts SET risk = 0, enabled = 1 WHERE id = ?", (aid,))
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
@@ -638,15 +671,14 @@ def api_accounts_check(aid):
     if not row:
         return jsonify({"error": "Không tìm thấy"}), 404
     try:
-        cookies = json.loads(row["cookies"])
-        z = Zalo(row["imei"], cookies)
+        z = Zalo(row["imei"], json.loads(row["cookies"]))
         return jsonify({"ok": True, "uid": z.uid})
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
 
 # ============================================================
-# API — LOAD BOXES
+# API BOXES
 # ============================================================
 @app.route("/api/accounts/<int:aid>/load_boxes", methods=["POST"])
 @login_required
@@ -656,24 +688,34 @@ def api_load_boxes(aid):
     conn.close()
     if not row:
         return jsonify({"error": "Không tìm thấy"}), 404
-
     try:
-        cookies = json.loads(row["cookies"])
-        z = Zalo(row["imei"], cookies)
-        groups = z.groups()
-        friends = z.friends()
+        z = Zalo(row["imei"], json.loads(row["cookies"]))
         return jsonify({
             "ok": True,
-            "groups": groups,
-            "friends": friends,
-            "total": len(groups) + len(friends),
+            "groups": z.groups(),
+            "friends": z.friends(),
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
 
+@app.route("/api/accounts/<int:aid>/group_members/<gid>", methods=["POST"])
+@login_required
+def api_group_members(aid, gid):
+    conn = db()
+    row = conn.execute("SELECT * FROM accounts WHERE id = ?", (aid,)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"error": "Không tìm thấy"}), 404
+    try:
+        z = Zalo(row["imei"], json.loads(row["cookies"]))
+        return jsonify({"ok": True, "members": z.group_members(gid)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
 # ============================================================
-# API — FILES
+# API FILES
 # ============================================================
 @app.route("/api/files", methods=["GET"])
 @login_required
@@ -695,30 +737,20 @@ def api_files_upload():
     f = request.files["file"]
     if not f.filename:
         return jsonify({"error": "Tên file trống"}), 400
-
-    filename = f.filename
-    safe_name = str(int(time.time())) + "_" + filename
-    filepath = os.path.join(UPLOAD_DIR, safe_name)
-    f.save(filepath)
-
-    # Parse nhanh
-    messages = parse_file_fast(filepath)
-    size = os.path.getsize(filepath)
-
+    safe = str(int(time.time())) + "_" + f.filename
+    path = os.path.join(UPLOAD_DIR, safe)
+    f.save(path)
+    msgs = parse_file(path)
+    size = os.path.getsize(path)
     conn = db()
-    conn.execute("""
-        INSERT INTO files (filename, filepath, lines, size, uploaded_at)
-        VALUES (?, ?, ?, ?, ?)
-    """, (filename, filepath, len(messages), size, time.time()))
+    conn.execute(
+        "INSERT INTO files (filename, filepath, lines, size, uploaded_at) VALUES (?, ?, ?, ?, ?)",
+        (f.filename, path, len(msgs), size, time.time())
+    )
     conn.commit()
     conn.close()
-
-    return jsonify({
-        "ok": True,
-        "filename": filename,
-        "lines": len(messages),
-        "preview": messages[:5],
-    })
+    return jsonify({"ok": True, "filename": f.filename,
+                    "lines": len(msgs), "preview": msgs[:5]})
 
 
 @app.route("/api/files/<int:fid>", methods=["DELETE"])
@@ -748,33 +780,13 @@ def api_files_preview(fid):
     conn.close()
     if not row:
         return jsonify({"error": "Không tìm thấy"}), 404
-    messages = parse_file_fast(row["filepath"])
-    return jsonify({
-        "filename": row["filename"],
-        "total": len(messages),
-        "preview": messages[:20],
-    })
-
-
-@app.route("/api/files/<int:fid>/content", methods=["GET"])
-@login_required
-def api_files_content(fid):
-    """Trả về toàn bộ nội dung file — cho spam worker."""
-    conn = db()
-    row = conn.execute("SELECT * FROM files WHERE id = ?", (fid,)).fetchone()
-    conn.close()
-    if not row:
-        return jsonify({"error": "Không tìm thấy"}), 404
-    messages = parse_file_fast(row["filepath"])
-    return jsonify({
-        "filename": row["filename"],
-        "total": len(messages),
-        "messages": messages,
-    })
+    msgs = parse_file(row["filepath"])
+    return jsonify({"filename": row["filename"],
+                    "total": len(msgs), "preview": msgs[:20]})
 
 
 # ============================================================
-# API — TASKS
+# API TASKS
 # ============================================================
 @app.route("/api/tasks", methods=["GET"])
 @login_required
@@ -795,60 +807,51 @@ def api_tasks_start():
     file_id = data.get("file_id")
     messages = data.get("messages", [])
     delay = float(data.get("delay", 3))
-    use_color = bool(data.get("use_color", True))
     use_icon = bool(data.get("use_icon", True))
-    tag_name = data.get("tag_name", "").strip()
+    use_color_emoji = bool(data.get("use_color_emoji", True))
+    tag_uids = data.get("tag_uids", [])
 
-    # Nếu có file_id → load messages từ file
     if file_id:
         conn = db()
         row = conn.execute("SELECT * FROM files WHERE id = ?", (file_id,)).fetchone()
         conn.close()
         if row:
-            messages = parse_file_fast(row["filepath"])
+            messages = parse_file(row["filepath"])
 
     if not targets:
         return jsonify({"error": "Chưa chọn target"}), 400
     if not messages:
-        return jsonify({"error": "Chưa có tin nhắn"}), 400
+        return jsonify({"error": "Chưa có tin"}), 400
     if delay < 0.5:
         delay = 0.5
 
     conn = db()
-    count = conn.execute(
+    cnt = conn.execute(
         "SELECT COUNT(*) as c FROM accounts WHERE enabled = 1"
     ).fetchone()["c"]
     conn.close()
-
-    if count == 0:
+    if cnt == 0:
         return jsonify({"error": "Kho tài khoản trống"}), 400
 
     tid = new_tid("spam")
     stop_event = threading.Event()
     thread = threading.Thread(
         target=spam_worker,
-        args=(tid, targets, messages, delay, use_color, use_icon,
-              tag_name, stop_event),
+        args=(tid, targets, messages, delay, use_icon, use_color_emoji,
+              tag_uids, stop_event),
         daemon=True,
     )
-
     conn = db()
     conn.execute("""
         INSERT INTO tasks (id, type, meta, status, started_at, stats)
         VALUES (?, ?, ?, ?, ?, ?)
     """, (tid, "spam",
-          json.dumps({
-              "targets": len(targets),
-              "messages": len(messages),
-              "delay": delay,
-          }),
+          json.dumps({"targets": len(targets), "messages": len(messages)}),
           "running", time.time(), "{}"))
     conn.commit()
     conn.close()
-
     ACTIVE_TASKS[tid] = {"stop": stop_event, "thread": thread}
     thread.start()
-
     return jsonify({"ok": True, "task_id": tid})
 
 
@@ -858,7 +861,7 @@ def api_tasks_stop(tid):
     if tid in ACTIVE_TASKS:
         ACTIVE_TASKS[tid]["stop"].set()
         return jsonify({"ok": True})
-    return jsonify({"error": "Task không tồn tại"}), 404
+    return jsonify({"error": "Không tồn tại"}), 404
 
 
 @app.route("/api/tasks/stop_all", methods=["POST"])
@@ -871,16 +874,11 @@ def api_tasks_stop_all():
 
 @app.route("/health")
 def health():
-    return jsonify({
-        "status": "ok",
-        "service": "web-lenh",
-        "version": "25.0",
-        "tasks": len(ACTIVE_TASKS),
-    })
+    return jsonify({"status": "ok", "service": "web-lenh", "version": "26.0"})
 
 
 # ============================================================
-# HTML — LOGIN
+# HTML
 # ============================================================
 HTML_LOGIN = """<!DOCTYPE html>
 <html lang="vi">
@@ -895,9 +893,9 @@ body {
     font-family:'Inter',sans-serif;
     min-height:100vh; min-height:100dvh;
     display:flex; align-items:center; justify-content:center;
-    background:linear-gradient(-45deg,#667eea,#764ba2,#f093fb,#f5576c);
+    background:linear-gradient(-45deg,#667eea,#764ba2,#f093fb,#f5576c,#667eea);
     background-size:400% 400%;
-    animation:gradientShift 15s ease infinite;
+    animation:gradientShift 12s ease infinite;
     padding:20px;
 }
 @keyframes gradientShift {
@@ -910,30 +908,21 @@ body {
     backdrop-filter:blur(20px);
     padding:44px 36px; border-radius:32px;
     box-shadow:0 40px 100px rgba(0,0,0,0.35);
-    width:100%; max-width:400px;
-    text-align:center;
+    width:100%; max-width:400px; text-align:center;
     animation:cardIn 0.8s cubic-bezier(0.16,1,0.3,1);
 }
 @keyframes cardIn {
     from { opacity:0; transform:translateY(50px) scale(0.95); }
     to { opacity:1; transform:translateY(0) scale(1); }
 }
-.logo-svg {
-    width:100px; height:100px;
-    margin:0 auto 24px;
-    display:block;
-}
-h1 {
-    color:#1a1a2e; margin-bottom:8px;
-    font-size:24px; font-weight:900;
-}
+.logo-svg { width:110px; height:110px; margin:0 auto 24px; display:block; }
+h1 { color:#1a1a2e; margin-bottom:8px; font-size:24px; font-weight:900; }
 p.sub { color:#6b7280; margin-bottom:28px; font-size:14px; font-weight:600; }
 input {
     width:100%; padding:16px 18px;
     border:2px solid #e5e7eb; border-radius:16px;
     font-size:16px; font-family:inherit; font-weight:600;
-    transition:all 0.3s; background:#f9fafb;
-    margin-bottom:16px;
+    transition:all 0.3s; background:#f9fafb; margin-bottom:16px;
 }
 input:focus {
     outline:none; border-color:#667eea; background:white;
@@ -951,14 +940,12 @@ input:focus {
 .error {
     background:#fef2f2; color:#dc2626;
     padding:14px; border-radius:12px; margin-bottom:20px;
-    font-size:14px; font-weight:700;
-    border-left:4px solid #dc2626;
+    font-size:14px; font-weight:700; border-left:4px solid #dc2626;
 }
 </style>
 </head>
 <body>
 <div class="card">
-    <!-- LOGO SVG DESIGN -->
     <svg class="logo-svg" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
         <defs>
             <linearGradient id="g1" x1="0%" y1="0%" x2="100%" y2="100%">
@@ -969,35 +956,30 @@ input:focus {
                 <stop offset="0%" style="stop-color:#f093fb"/>
                 <stop offset="100%" style="stop-color:#667eea"/>
             </linearGradient>
+            <radialGradient id="glow">
+                <stop offset="0%" style="stop-color:#667eea;stop-opacity:0.4"/>
+                <stop offset="100%" style="stop-color:#667eea;stop-opacity:0"/>
+            </radialGradient>
         </defs>
-        <!-- Halo phía sau -->
-        <circle cx="50" cy="50" r="45" fill="url(#g2)" opacity="0.15"/>
-        <!-- Vòng ngoài xoay -->
-        <circle cx="50" cy="50" r="42" fill="none" stroke="url(#g1)" stroke-width="2" stroke-dasharray="20 10">
-            <animateTransform attributeName="transform" type="rotate" from="0 50 50" to="360 50 50" dur="8s" repeatCount="indefinite"/>
+        <circle cx="50" cy="50" r="48" fill="url(#glow)"/>
+        <circle cx="50" cy="50" r="42" fill="none" stroke="url(#g1)" stroke-width="2.5" stroke-dasharray="15 8">
+            <animateTransform attributeName="transform" type="rotate" from="0 50 50" to="360 50 50" dur="10s" repeatCount="indefinite"/>
         </circle>
-        <!-- Vòng giữa -->
-        <circle cx="50" cy="50" r="34" fill="none" stroke="url(#g2)" stroke-width="1.5" stroke-dasharray="10 8">
-            <animateTransform attributeName="transform" type="rotate" from="360 50 50" to="0 50 50" dur="6s" repeatCount="indefinite"/>
+        <circle cx="50" cy="50" r="34" fill="none" stroke="url(#g2)" stroke-width="1.5" stroke-dasharray="8 6">
+            <animateTransform attributeName="transform" type="rotate" from="360 50 50" to="0 50 50" dur="7s" repeatCount="indefinite"/>
         </circle>
-        <!-- Center box -->
-        <rect x="25" y="25" width="50" height="50" rx="14" fill="url(#g1)"/>
-        <!-- Icon phone -->
-        <path d="M 38 42 Q 38 38 42 38 L 45 38 Q 48 38 48 41 L 48 44 Q 48 46 46 47 Q 48 52 53 54 Q 54 52 56 52 L 59 52 Q 62 52 62 55 L 62 58 Q 62 62 58 62 Q 42 62 38 46 Z"
+        <rect x="26" y="26" width="48" height="48" rx="14" fill="url(#g1)"/>
+        <path d="M 38 44 Q 38 40 42 40 L 44 40 Q 47 40 47 43 L 47 45 Q 47 46 46 47 Q 48 51 52 53 Q 53 52 54 52 L 56 52 Q 59 52 59 55 L 59 57 Q 59 60 56 60 Q 42 60 38 48 Z"
               fill="white"/>
-        <!-- Ánh sáng lấp lánh -->
-        <circle cx="30" cy="35" r="1.5" fill="white" opacity="0.9">
+        <circle cx="32" cy="38" r="1.5" fill="white" opacity="0.9">
             <animate attributeName="opacity" values="0.9;0.2;0.9" dur="2s" repeatCount="indefinite"/>
         </circle>
-        <circle cx="70" cy="45" r="1" fill="white" opacity="0.7">
+        <circle cx="68" cy="42" r="1" fill="white" opacity="0.7">
             <animate attributeName="opacity" values="0.7;0.1;0.7" dur="3s" repeatCount="indefinite"/>
-        </circle>
-        <circle cx="35" cy="70" r="1.2" fill="white" opacity="0.8">
-            <animate attributeName="opacity" values="0.8;0.15;0.8" dur="2.5s" repeatCount="indefinite"/>
         </circle>
     </svg>
     <h1>ALB FORGE</h1>
-    <p class="sub">Bot by Anh Khôi</p>
+    <p class="sub">by Anh Khôi</p>
     {% if error %}<div class="error">⚠️ {{ error }}</div>{% endif %}
     <form method="POST">
         <input type="password" name="password" placeholder="Nhập mật khẩu" autofocus required>
@@ -1009,9 +991,6 @@ input:focus {
 """
 
 
-# ============================================================
-# HTML — MAIN
-# ============================================================
 HTML_INDEX = """<!DOCTYPE html>
 <html lang="vi">
 <head>
@@ -1024,16 +1003,36 @@ HTML_INDEX = """<!DOCTYPE html>
 html { touch-action:manipulation; }
 body {
     font-family:'Inter',sans-serif;
-    background:linear-gradient(-45deg,#f0f4ff,#f8fafc,#fef3f7,#f0f4ff);
-    background-size:400% 400%;
-    animation:bgShift 20s ease infinite;
+    background:#f5f7fb;
     min-height:100vh;
     color:#1a1a2e;
 }
-@keyframes bgShift {
-    0% { background-position:0% 50%; }
-    50% { background-position:100% 50%; }
-    100% { background-position:0% 50%; }
+
+/* LOADING OVERLAY khi khởi động */
+#boot-overlay {
+    position:fixed; inset:0; z-index:9999;
+    background:linear-gradient(135deg,#667eea,#764ba2,#f5576c);
+    display:flex; flex-direction:column;
+    align-items:center; justify-content:center;
+    transition:opacity 0.6s ease, visibility 0.6s;
+}
+#boot-overlay.hide { opacity:0; visibility:hidden; }
+.boot-logo {
+    width:120px; height:120px;
+    animation:bootPulse 1.4s ease-in-out infinite;
+}
+@keyframes bootPulse {
+    0%,100% { transform:scale(1); filter:drop-shadow(0 0 20px rgba(255,255,255,0.5)); }
+    50% { transform:scale(1.1); filter:drop-shadow(0 0 40px rgba(255,255,255,0.9)); }
+}
+.boot-text {
+    color:white; font-size:16px; font-weight:900;
+    margin-top:20px; letter-spacing:2px;
+    animation:bootFade 1.5s ease-in-out infinite;
+}
+@keyframes bootFade {
+    0%,100% { opacity:0.6; }
+    50% { opacity:1; }
 }
 
 /* HEADER */
@@ -1041,8 +1040,7 @@ body {
     background:linear-gradient(135deg,#667eea 0%,#764ba2 50%,#f5576c 100%);
     background-size:200% 200%;
     animation:headerShift 8s ease infinite;
-    color:white;
-    padding:14px 20px;
+    color:white; padding:14px 20px;
     position:sticky; top:0; z-index:100;
     padding-top:calc(14px + env(safe-area-inset-top, 0px));
     box-shadow:0 4px 25px rgba(102,126,234,0.35);
@@ -1059,12 +1057,15 @@ body {
 .brand-logo {
     width:40px; height:40px;
     filter:drop-shadow(0 4px 10px rgba(0,0,0,0.2));
+    animation:logoSpin 8s linear infinite;
+}
+@keyframes logoSpin {
+    to { transform:rotate(360deg); }
 }
 .brand-text h1 { font-size:16px; font-weight:900; letter-spacing:-0.3px; }
 .brand-text p { font-size:11px; opacity:0.9; margin-top:1px; }
 .btn-logout {
-    width:40px; height:40px;
-    border-radius:50%;
+    width:40px; height:40px; border-radius:50%;
     background:rgba(255,255,255,0.18);
     border:1px solid rgba(255,255,255,0.3);
     color:white; cursor:pointer;
@@ -1084,8 +1085,7 @@ body {
     box-shadow:0 4px 20px rgba(0,0,0,0.05);
 }
 .tab {
-    padding:12px 6px;
-    border-radius:12px;
+    padding:12px 6px; border-radius:12px;
     cursor:pointer;
     font-size:11px; font-weight:800;
     color:#6b7280;
@@ -1094,7 +1094,8 @@ body {
     transition:all 0.3s cubic-bezier(0.16,1,0.3,1);
     user-select:none;
 }
-.tab svg { width:20px; height:20px; }
+.tab svg { width:20px; height:20px; transition:transform 0.3s; }
+.tab:hover svg { transform:scale(1.15); }
 .tab:hover { background:#f9fafb; color:#667eea; }
 .tab.active {
     background:linear-gradient(135deg,#667eea,#764ba2);
@@ -1102,6 +1103,7 @@ body {
     box-shadow:0 6px 18px rgba(102,126,234,0.4);
     transform:translateY(-2px);
 }
+.tab.active svg { transform:scale(1.15); }
 
 .panel { display:none; animation:fadeIn 0.4s; }
 .panel.active { display:block; }
@@ -1113,8 +1115,7 @@ body {
 /* CARD */
 .card {
     background:white;
-    padding:20px;
-    border-radius:20px;
+    padding:20px; border-radius:20px;
     box-shadow:0 4px 25px rgba(0,0,0,0.06);
     margin-bottom:14px;
     border:1px solid #f0f2f5;
@@ -1135,7 +1136,8 @@ body {
     text-transform:uppercase; letter-spacing:0.5px;
 }
 .form-row input,
-.form-row textarea {
+.form-row textarea,
+.form-row select {
     width:100%;
     padding:12px 14px;
     border:2px solid #e5e7eb;
@@ -1146,7 +1148,8 @@ body {
     color:#1a1a2e;
 }
 .form-row input:focus,
-.form-row textarea:focus {
+.form-row textarea:focus,
+.form-row select:focus {
     outline:none; border-color:#667eea; background:white;
     box-shadow:0 0 0 4px rgba(102,126,234,0.1);
 }
@@ -1181,14 +1184,11 @@ body {
 .btn-primary { background:linear-gradient(135deg,#667eea,#764ba2); box-shadow:0 8px 20px rgba(102,126,234,0.35); }
 .btn-success { background:linear-gradient(135deg,#10b981,#059669); box-shadow:0 8px 20px rgba(16,185,129,0.35); }
 .btn-danger  { background:linear-gradient(135deg,#ef4444,#dc2626); box-shadow:0 8px 20px rgba(239,68,68,0.35); }
-.btn-warning { background:linear-gradient(135deg,#f59e0b,#d97706); box-shadow:0 8px 20px rgba(245,158,11,0.35); }
-
 .btn-block { width:100%; margin-bottom:8px; }
 
-/* CIRCLE BUTTONS */
+/* CIRCLE BTNS */
 .btn-circle {
-    width:44px; height:44px;
-    border-radius:50%;
+    width:40px; height:40px; border-radius:50%;
     border:none;
     display:inline-flex; align-items:center; justify-content:center;
     cursor:pointer;
@@ -1206,74 +1206,49 @@ body {
 .btn-circle:hover::after { transform:translateX(100%) rotate(45deg); }
 .btn-circle:hover { transform:translateY(-3px) scale(1.05); }
 .btn-circle:active { transform:translateY(0) scale(0.95); }
-.btn-circle svg { width:20px; height:20px; }
-.btn-circle.sm { width:36px; height:36px; }
-.btn-circle.sm svg { width:16px; height:16px; }
-
+.btn-circle svg { width:18px; height:18px; }
+.btn-circle.sm { width:34px; height:34px; }
+.btn-circle.sm svg { width:15px; height:15px; }
+.btn-circle.green { background:linear-gradient(135deg,#10b981,#059669); box-shadow:0 6px 15px rgba(16,185,129,0.4); }
+.btn-circle.blue { background:linear-gradient(135deg,#3b82f6,#2563eb); box-shadow:0 6px 15px rgba(59,130,246,0.4); }
+.btn-circle.red { background:linear-gradient(135deg,#ef4444,#dc2626); box-shadow:0 6px 15px rgba(239,68,68,0.4); }
 .btn-circle.purple { background:linear-gradient(135deg,#8b5cf6,#7c3aed); box-shadow:0 6px 15px rgba(139,92,246,0.4); }
-.btn-circle.blue   { background:linear-gradient(135deg,#3b82f6,#2563eb); box-shadow:0 6px 15px rgba(59,130,246,0.4); }
-.btn-circle.green  { background:linear-gradient(135deg,#10b981,#059669); box-shadow:0 6px 15px rgba(16,185,129,0.4); }
-.btn-circle.red    { background:linear-gradient(135deg,#ef4444,#dc2626); box-shadow:0 6px 15px rgba(239,68,68,0.4); }
 .btn-circle.orange { background:linear-gradient(135deg,#f59e0b,#d97706); box-shadow:0 6px 15px rgba(245,158,11,0.4); }
-.btn-circle.pink   { background:linear-gradient(135deg,#f093fb,#f5576c); box-shadow:0 6px 15px rgba(245,87,108,0.4); }
 
 /* STATS */
-.stats {
-    display:grid;
-    grid-template-columns:repeat(3, 1fr);
-    gap:8px;
-    margin-bottom:14px;
-}
+.stats { display:grid; grid-template-columns:repeat(3, 1fr); gap:8px; margin-bottom:14px; }
 .stat {
     background:linear-gradient(135deg,#f9fafb,#f3f4f6);
-    padding:12px 10px;
-    border-radius:14px;
+    padding:12px 10px; border-radius:14px;
     text-align:center;
     border:1px solid #e5e7eb;
-    position:relative;
-    overflow:hidden;
+    position:relative; overflow:hidden;
 }
 .stat::before {
-    content:'';
-    position:absolute; top:0; left:0; right:0; height:3px;
+    content:''; position:absolute; top:0; left:0; right:0; height:3px;
     background:linear-gradient(90deg,#667eea,#764ba2,#f5576c);
 }
-.stat .label {
-    font-size:10px; color:#6b7280;
-    font-weight:800; text-transform:uppercase;
-    letter-spacing:0.3px; margin-bottom:4px;
-}
-.stat .value {
-    font-size:22px; font-weight:900; color:#1a1a2e;
-    line-height:1;
-}
+.stat .label { font-size:10px; color:#6b7280; font-weight:800; text-transform:uppercase; margin-bottom:4px; }
+.stat .value { font-size:22px; font-weight:900; color:#1a1a2e; line-height:1; }
 
 /* TABLE */
-.table-wrap { overflow-x:auto; margin:0 -4px; }
+.table-wrap { overflow-x:auto; }
 .table { width:100%; border-collapse:separate; border-spacing:0; }
 .table th, .table td {
-    padding:10px 8px;
-    text-align:left;
-    font-size:12px;
-    border-bottom:1px solid #f0f2f5;
+    padding:10px 8px; text-align:left;
+    font-size:12px; border-bottom:1px solid #f0f2f5;
     white-space:nowrap;
 }
 .table th {
-    background:#f9fafb;
-    font-weight:900; color:#6b7280;
-    font-size:10px; text-transform:uppercase;
-    letter-spacing:0.3px;
+    background:#f9fafb; font-weight:900;
+    color:#6b7280; font-size:10px;
+    text-transform:uppercase;
 }
 .table th:first-child { border-radius:10px 0 0 10px; }
 .table th:last-child { border-radius:0 10px 10px 0; }
 .table tr:hover td { background:#f9fafb; }
 
-.badge {
-    display:inline-block;
-    padding:3px 8px;
-    border-radius:20px;
-    font-size:10px; font-weight:800;
-}
+.badge { display:inline-block; padding:3px 8px; border-radius:20px; font-size:10px; font-weight:800; }
 .badge-ok { background:#d1fae5; color:#065f46; }
 .badge-err { background:#fee2e2; color:#991b1b; }
 .badge-warn { background:#fef3c7; color:#92400e; }
@@ -1281,142 +1256,112 @@ body {
 
 /* TOGGLE */
 .toggle-row {
-    display:grid;
-    grid-template-columns:1fr 1fr;
-    gap:8px;
-    margin-bottom:12px;
+    display:grid; grid-template-columns:1fr 1fr;
+    gap:8px; margin-bottom:12px;
 }
 .toggle {
     padding:12px 8px;
-    border:2px solid #e5e7eb;
-    border-radius:12px;
-    cursor:pointer;
-    text-align:center;
+    border:2px solid #e5e7eb; border-radius:12px;
+    cursor:pointer; text-align:center;
     font-size:12px; font-weight:800;
-    color:#6b7280;
-    background:#f9fafb;
-    user-select:none;
-    transition:all 0.3s;
+    color:#6b7280; background:#f9fafb;
+    user-select:none; transition:all 0.3s;
     display:flex; align-items:center; justify-content:center; gap:6px;
 }
-.toggle svg { width:16px; height:16px; }
 .toggle.active {
     background:linear-gradient(135deg,#667eea,#764ba2);
-    color:white;
-    border-color:transparent;
+    color:white; border-color:transparent;
     box-shadow:0 6px 15px rgba(102,126,234,0.35);
 }
 
-/* DELAY PICKER */
+/* DELAY */
 .delay-grid {
-    display:grid;
-    grid-template-columns:repeat(5, 1fr);
-    gap:6px;
-    margin-bottom:12px;
+    display:grid; grid-template-columns:repeat(5, 1fr);
+    gap:6px; margin-bottom:12px;
 }
 .delay-item {
     padding:10px 4px;
-    border:2px solid #e5e7eb;
-    border-radius:10px;
-    text-align:center;
-    font-size:12px; font-weight:900;
-    cursor:pointer;
-    background:#f9fafb;
-    color:#6b7280;
-    transition:all 0.3s;
-    user-select:none;
+    border:2px solid #e5e7eb; border-radius:10px;
+    text-align:center; font-size:12px; font-weight:900;
+    cursor:pointer; background:#f9fafb; color:#6b7280;
+    transition:all 0.3s; user-select:none;
 }
 .delay-item:hover { border-color:#667eea; color:#667eea; }
 .delay-item.active {
     background:linear-gradient(135deg,#667eea,#764ba2);
-    color:white;
-    border-color:transparent;
+    color:white; border-color:transparent;
     box-shadow:0 6px 15px rgba(102,126,234,0.35);
 }
 
 /* BOX LIST */
 .box-list {
-    max-height:320px;
-    overflow-y:auto;
-    border:2px solid #e5e7eb;
-    border-radius:14px;
-    padding:8px;
-    background:#f9fafb;
+    max-height:320px; overflow-y:auto;
+    border:2px solid #e5e7eb; border-radius:14px;
+    padding:8px; background:#f9fafb;
 }
 .box-item {
-    padding:10px 12px;
-    border-radius:10px;
-    background:white;
-    margin-bottom:6px;
-    cursor:pointer;
-    display:flex; align-items:center; gap:10px;
-    border:2px solid transparent;
-    transition:all 0.2s;
+    padding:10px 12px; border-radius:10px;
+    background:white; margin-bottom:6px;
+    cursor:pointer; display:flex; align-items:center; gap:10px;
+    border:2px solid transparent; transition:all 0.2s;
 }
 .box-item:hover { border-color:#667eea; }
-.box-item.selected {
-    border-color:#10b981;
-    background:linear-gradient(135deg,#ecfdf5,#d1fae5);
-}
+.box-item.selected { border-color:#10b981; background:linear-gradient(135deg,#ecfdf5,#d1fae5); }
 .box-check {
     width:20px; height:20px;
-    border:2px solid #d1d5db;
-    border-radius:6px;
+    border:2px solid #d1d5db; border-radius:6px;
     display:flex; align-items:center; justify-content:center;
-    flex-shrink:0;
-    color:white;
-    font-size:12px; font-weight:900;
+    flex-shrink:0; color:white; font-size:12px; font-weight:900;
 }
-.box-item.selected .box-check {
-    background:#10b981; border-color:#10b981;
-}
+.box-item.selected .box-check { background:#10b981; border-color:#10b981; }
 .box-info { flex:1; min-width:0; }
-.box-name {
-    font-size:13px; font-weight:800;
-    color:#1a1a2e;
-    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
-}
-.box-id {
-    font-size:10px; color:#6b7280;
-    font-family:monospace;
-    margin-top:2px;
-}
-.box-type {
-    padding:2px 8px;
-    border-radius:6px;
-    font-size:9px; font-weight:900;
-}
+.box-name { font-size:13px; font-weight:800; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.box-id { font-size:10px; color:#6b7280; font-family:monospace; margin-top:2px; }
+.box-type { padding:2px 8px; border-radius:6px; font-size:9px; font-weight:900; }
 .type-group { background:#dbeafe; color:#1e40af; }
-.type-user  { background:#fce7f3; color:#9d174d; }
+.type-user { background:#fce7f3; color:#9d174d; }
+
+/* MEMBER LIST */
+.member-list {
+    max-height:200px; overflow-y:auto;
+    border:2px solid #e5e7eb; border-radius:12px;
+    padding:6px; background:#f9fafb; margin-bottom:12px;
+}
+.member-item {
+    padding:8px 10px; border-radius:8px;
+    background:white; margin-bottom:4px;
+    cursor:pointer; display:flex; align-items:center; gap:8px;
+    font-size:12px; transition:all 0.2s;
+    border:2px solid transparent;
+}
+.member-item:hover { background:#f0f4ff; }
+.member-item.selected { border-color:#10b981; background:#ecfdf5; }
+.member-check {
+    width:18px; height:18px;
+    border:2px solid #d1d5db; border-radius:5px;
+    display:flex; align-items:center; justify-content:center;
+    flex-shrink:0; color:white; font-size:10px; font-weight:900;
+}
+.member-item.selected .member-check { background:#10b981; border-color:#10b981; }
+.member-name { font-weight:700; flex:1; }
+.member-id { font-family:monospace; font-size:10px; color:#6b7280; }
 
 /* FILE ITEM */
 .file-item {
     display:flex; align-items:center; gap:10px;
-    padding:12px;
-    border-radius:12px;
-    background:#f9fafb;
-    margin-bottom:8px;
+    padding:12px; border-radius:12px;
+    background:#f9fafb; margin-bottom:8px;
     border:1px solid #e5e7eb;
 }
 .file-info { flex:1; min-width:0; }
-.file-name {
-    font-size:13px; font-weight:800;
-    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
-}
-.file-meta {
-    font-size:11px; color:#6b7280;
-    margin-top:2px;
-}
+.file-name { font-size:13px; font-weight:800; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.file-meta { font-size:11px; color:#6b7280; margin-top:2px; }
 
 /* ALERT */
 .alert {
-    padding:14px 18px;
-    border-radius:12px;
-    font-size:13px; font-weight:800;
-    display:none;
-    position:fixed;
-    top:80px; right:16px;
-    z-index:999;
+    padding:14px 18px; border-radius:12px;
+    font-size:13px; font-weight:800; display:none;
+    position:fixed; top:80px; right:16px; z-index:999;
     box-shadow:0 15px 40px rgba(0,0,0,0.2);
     max-width:340px;
     animation:slideIn 0.4s cubic-bezier(0.16,1,0.3,1);
@@ -1431,10 +1376,8 @@ body {
 
 /* EMPTY */
 .empty {
-    text-align:center;
-    padding:36px 20px;
-    color:#9ca3af;
-    font-size:13px; font-weight:600;
+    text-align:center; padding:36px 20px;
+    color:#9ca3af; font-size:13px; font-weight:600;
 }
 .empty svg { width:48px; height:48px; opacity:0.4; margin-bottom:8px; }
 
@@ -1459,24 +1402,37 @@ body {
 </head>
 <body>
 
+<!-- BOOT LOADING OVERLAY -->
+<div id="boot-overlay">
+    <svg class="boot-logo" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+            <linearGradient id="bg1" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" style="stop-color:#ffffff"/>
+                <stop offset="100%" style="stop-color:#f0f4ff"/>
+            </linearGradient>
+        </defs>
+        <circle cx="50" cy="50" r="42" fill="none" stroke="white" stroke-width="3" stroke-dasharray="15 8" opacity="0.6">
+            <animateTransform attributeName="transform" type="rotate" from="0 50 50" to="360 50 50" dur="3s" repeatCount="indefinite"/>
+        </circle>
+        <rect x="26" y="26" width="48" height="48" rx="14" fill="url(#bg1)"/>
+        <path d="M 38 44 Q 38 40 42 40 L 44 40 Q 47 40 47 43 L 47 45 Q 47 46 46 47 Q 48 51 52 53 Q 53 52 54 52 L 56 52 Q 59 52 59 55 L 59 57 Q 59 60 56 60 Q 42 60 38 48 Z"
+              fill="#667eea"/>
+    </svg>
+    <div class="boot-text">ALB FORGE</div>
+</div>
+
 <div class="header">
     <div class="header-inner">
         <div class="brand">
-            <svg class="brand-logo" viewBox="0 0 100 100">
-                <defs>
-                    <linearGradient id="hg" x1="0%" y1="0%" x2="100%" y2="100%">
-                        <stop offset="0%" style="stop-color:#ffffff"/>
-                        <stop offset="100%" style="stop-color:#f0f4ff"/>
-                    </linearGradient>
-                </defs>
-                <circle cx="50" cy="50" r="45" fill="rgba(255,255,255,0.15)"/>
-                <rect x="25" y="25" width="50" height="50" rx="14" fill="url(#hg)"/>
-                <path d="M 38 42 Q 38 38 42 38 L 45 38 Q 48 38 48 41 L 48 44 Q 48 46 46 47 Q 48 52 53 54 Q 54 52 56 52 L 59 52 Q 62 52 62 55 L 62 58 Q 62 62 58 62 Q 42 62 38 46 Z"
+            <svg class="brand-logo" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="50" cy="50" r="42" fill="none" stroke="white" stroke-width="2.5" stroke-dasharray="12 6" opacity="0.7"/>
+                <rect x="26" y="26" width="48" height="48" rx="14" fill="rgba(255,255,255,0.95)"/>
+                <path d="M 38 44 Q 38 40 42 40 L 44 40 Q 47 40 47 43 L 47 45 Q 47 46 46 47 Q 48 51 52 53 Q 53 52 54 52 L 56 52 Q 59 52 59 55 L 59 57 Q 59 60 56 60 Q 42 60 38 48 Z"
                       fill="#667eea"/>
             </svg>
             <div class="brand-text">
                 <h1>ALB FORGE</h1>
-                <p>v25 • by Anh Khôi</p>
+                <p>v26 • by Anh Khôi</p>
             </div>
         </div>
         <button class="btn-logout" onclick="location.href='/logout'" title="Thoát">
@@ -1502,8 +1458,6 @@ body {
     <div class="tab" data-tab="boxes">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
-            <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
-            <line x1="12" y1="22.08" x2="12" y2="12"/>
         </svg>
         <div>Box</div>
     </div>
@@ -1527,13 +1481,7 @@ body {
 <!-- TAB ACCOUNTS -->
 <div class="panel active" id="panel-accounts">
     <div class="card">
-        <h2>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                <line x1="12" y1="5" x2="12" y2="19"/>
-                <line x1="5" y1="12" x2="19" y2="12"/>
-            </svg>
-            Thêm tài khoản
-        </h2>
+        <h2>➕ Thêm tài khoản</h2>
         <div class="form-row">
             <label>Tên gợi nhớ</label>
             <input id="add-label" placeholder="acc1">
@@ -1546,54 +1494,19 @@ body {
             <label>Cookie (JSON)</label>
             <textarea id="add-cookies" placeholder='{"zpw_sek":"...","zpw_ver":"645"}'></textarea>
         </div>
-        <button class="btn btn-primary btn-block" onclick="addAccount()">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="16" height="16">
-                <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
-                <polyline points="17 21 17 13 7 13 7 21"/>
-                <polyline points="7 3 7 8 15 8"/>
-            </svg>
-            Thêm tài khoản
-        </button>
+        <button class="btn btn-primary btn-block" onclick="addAccount()">💾 Thêm tài khoản</button>
     </div>
 
     <div class="card">
-        <h2>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                <line x1="8" y1="6" x2="21" y2="6"/>
-                <line x1="8" y1="12" x2="21" y2="12"/>
-                <line x1="8" y1="18" x2="21" y2="18"/>
-                <line x1="3" y1="6" x2="3.01" y2="6"/>
-                <line x1="3" y1="12" x2="3.01" y2="12"/>
-                <line x1="3" y1="18" x2="3.01" y2="18"/>
-            </svg>
-            Danh sách tài khoản
-        </h2>
+        <h2>📋 Danh sách tài khoản</h2>
         <div class="stats">
-            <div class="stat">
-                <div class="label">Tổng</div>
-                <div class="value" id="stat-total">0</div>
-            </div>
-            <div class="stat">
-                <div class="label">Active</div>
-                <div class="value" id="stat-active">0</div>
-            </div>
-            <div class="stat">
-                <div class="label">Đã gửi</div>
-                <div class="value" id="stat-sent">0</div>
-            </div>
+            <div class="stat"><div class="label">Tổng</div><div class="value" id="stat-total">0</div></div>
+            <div class="stat"><div class="label">Active</div><div class="value" id="stat-active">0</div></div>
+            <div class="stat"><div class="label">Sent</div><div class="value" id="stat-sent">0</div></div>
         </div>
         <div class="table-wrap">
             <table class="table">
-                <thead>
-                    <tr>
-                        <th>ID</th>
-                        <th>Tên</th>
-                        <th>OK/Lỗi</th>
-                        <th>Risk</th>
-                        <th>Sent</th>
-                        <th></th>
-                    </tr>
-                </thead>
+                <thead><tr><th>ID</th><th>Tên</th><th>OK/Lỗi</th><th>Risk</th><th>Sent</th><th></th></tr></thead>
                 <tbody id="accounts-tbody"></tbody>
             </table>
         </div>
@@ -1603,25 +1516,14 @@ body {
 <!-- TAB BOXES -->
 <div class="panel" id="panel-boxes">
     <div class="card">
-        <h2>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
-            </svg>
-            Load Box & Chat
-        </h2>
+        <h2>📦 Load Box & Chat</h2>
         <div class="form-row">
             <label>Chọn tài khoản</label>
-            <select id="load-acc-select" style="width:100%; padding:12px; border:2px solid #e5e7eb; border-radius:12px; font-family:inherit; font-weight:600; background:#f9fafb; font-size:14px;">
+            <select id="load-acc-select">
                 <option value="">-- Chọn acc --</option>
             </select>
         </div>
-        <button class="btn btn-primary btn-block" onclick="loadBoxes()">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="16" height="16">
-                <polyline points="23 4 23 10 17 10"/>
-                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
-            </svg>
-            Load Box
-        </button>
+        <button class="btn btn-primary btn-block" onclick="loadBoxes()">🔄 Load Box</button>
         <div style="display:flex; gap:6px; margin-bottom:12px;">
             <button class="btn btn-success btn-block" onclick="selectAllBoxes()">Chọn hết</button>
             <button class="btn btn-danger btn-block" onclick="clearAllBoxes()">Bỏ chọn</button>
@@ -1632,12 +1534,7 @@ body {
         </div>
 
         <div class="box-list" id="box-list">
-            <div class="empty">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                    <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
-                </svg>
-                <div>Chưa load box</div>
-            </div>
+            <div class="empty">Chưa load box</div>
         </div>
     </div>
 </div>
@@ -1645,42 +1542,17 @@ body {
 <!-- TAB FILES -->
 <div class="panel" id="panel-files">
     <div class="card">
-        <h2>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                <polyline points="17 8 12 3 7 8"/>
-                <line x1="12" y1="3" x2="12" y2="15"/>
-            </svg>
-            Upload file tin nhắn
-        </h2>
+        <h2>📤 Upload file tin nhắn</h2>
         <div class="form-row">
             <input type="file" id="file-input" accept=".txt" style="padding:10px; background:white;">
         </div>
-        <button class="btn btn-primary btn-block" onclick="uploadFile()">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="16" height="16">
-                <polyline points="16 16 12 12 8 16"/>
-                <line x1="12" y1="12" x2="12" y2="21"/>
-                <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/>
-            </svg>
-            Upload
-        </button>
+        <button class="btn btn-primary btn-block" onclick="uploadFile()">📤 Upload</button>
     </div>
 
     <div class="card">
-        <h2>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-            </svg>
-            Quản lý file
-        </h2>
+        <h2>📁 Quản lý file</h2>
         <div id="files-list">
-            <div class="empty">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                    <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/>
-                    <polyline points="13 2 13 9 20 9"/>
-                </svg>
-                <div>Chưa có file</div>
-            </div>
+            <div class="empty">Chưa có file</div>
         </div>
     </div>
 </div>
@@ -1688,28 +1560,37 @@ body {
 <!-- TAB SPAM -->
 <div class="panel" id="panel-spam">
     <div class="card">
-        <h2>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
-            </svg>
-            Cấu hình spam
-        </h2>
+        <h2>⚡ Cấu hình spam</h2>
 
         <div class="form-row">
-            <label>Chọn file tin nhắn</label>
-            <select id="spam-file-select" style="width:100%; padding:12px; border:2px solid #e5e7eb; border-radius:12px; font-family:inherit; font-weight:600; background:#f9fafb; font-size:14px;">
+            <label>File tin nhắn</label>
+            <select id="spam-file-select">
                 <option value="">-- Chọn file --</option>
             </select>
         </div>
 
         <div class="form-row">
-            <label>Hoặc nhập tin (cách nhau bằng ;)</label>
+            <label>Hoặc nhập tin trực tiếp (cách nhau ;)</label>
             <textarea id="spam-messages" placeholder="Chào;Hello;Hi"></textarea>
         </div>
 
         <div class="form-row">
-            <label>Tag tên (tùy chọn)</label>
-            <input id="spam-tag" placeholder="Tên người cần tag">
+            <label>Chọn acc để lấy member (dùng tag)</label>
+            <select id="tag-acc-select" onchange="onTagAccChange()">
+                <option value="">-- Không tag --</option>
+            </select>
+        </div>
+
+        <div class="form-row" id="tag-group-row" style="display:none;">
+            <label>Chọn nhóm để lấy member</label>
+            <select id="tag-group-select" onchange="loadTagMembers()">
+                <option value="">-- Chọn nhóm --</option>
+            </select>
+        </div>
+
+        <div class="form-row" id="tag-members-row" style="display:none;">
+            <label>Chọn người để tag (click để chọn/bỏ)</label>
+            <div class="member-list" id="tag-members-list"></div>
         </div>
 
         <div class="form-row">
@@ -1729,53 +1610,27 @@ body {
         </div>
 
         <div class="toggle-row">
-            <div class="toggle active" id="toggle-color" onclick="toggleFlag('color')">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                    <circle cx="13.5" cy="6.5" r="2.5"/>
-                    <circle cx="17.5" cy="10.5" r="2.5"/>
-                    <circle cx="8.5" cy="7.5" r="2.5"/>
-                    <circle cx="6.5" cy="12.5" r="2.5"/>
-                    <path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.9 0 1.8-.1 2.7-.3"/>
-                </svg>
-                Đổi màu
-            </div>
             <div class="toggle active" id="toggle-icon" onclick="toggleFlag('icon')">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                    <circle cx="12" cy="12" r="10"/>
-                    <path d="M8 14s1.5 2 4 2 4-2 4-2"/>
-                    <line x1="9" y1="9" x2="9.01" y2="9"/>
-                    <line x1="15" y1="9" x2="15.01" y2="9"/>
-                </svg>
-                Icon Zalo
+                😀 Icon Zalo
+            </div>
+            <div class="toggle active" id="toggle-color-emoji" onclick="toggleFlag('color_emoji')">
+                🎨 Emoji màu
             </div>
         </div>
 
         <button class="btn btn-success btn-block" onclick="startSpam()" style="font-size:15px; padding:16px;">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="18" height="18">
-                <polygon points="5 3 19 12 5 21 5 3" fill="currentColor"/>
-            </svg>
-            BẮT ĐẦU SPAM
+            ▶️ BẮT ĐẦU SPAM
         </button>
         <button class="btn btn-danger btn-block" onclick="stopAll()">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="16" height="16">
-                <rect x="6" y="6" width="12" height="12"/>
-            </svg>
-            DỪNG TẤT CẢ
+            ⏸️ DỪNG TẤT CẢ
         </button>
     </div>
 
     <div class="card">
-        <h2>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-            </svg>
-            Tác vụ đang chạy
-        </h2>
+        <h2>📋 Tác vụ đang chạy</h2>
         <div class="table-wrap">
             <table class="table">
-                <thead>
-                    <tr><th>ID</th><th>Status</th><th></th></tr>
-                </thead>
+                <thead><tr><th>ID</th><th>Status</th><th></th></tr></thead>
                 <tbody id="tasks-tbody">
                     <tr><td colspan="3" class="empty" style="padding:20px;">Chưa có</td></tr>
                 </tbody>
@@ -1787,11 +1642,20 @@ body {
 </div>
 
 <script>
-let flags = { color: true, icon: true };
+// Boot animation
+window.addEventListener('load', () => {
+    setTimeout(() => {
+        document.getElementById('boot-overlay').classList.add('hide');
+    }, 800);
+});
+
+let flags = { icon: true, color_emoji: true };
 let selectedBoxes = [];
 let selectedDelay = 3;
+let selectedTagMembers = [];
+let currentTagAcc = null;
+let currentTagGroup = null;
 
-// TABS
 document.querySelectorAll('.tab').forEach(t => {
     t.onclick = () => {
         document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
@@ -1804,7 +1668,6 @@ document.querySelectorAll('.tab').forEach(t => {
     };
 });
 
-// DELAY PICKER
 document.querySelectorAll('.delay-item').forEach(d => {
     d.onclick = () => {
         document.querySelectorAll('.delay-item').forEach(x => x.classList.remove('active'));
@@ -1831,7 +1694,8 @@ async function api(url, opts) {
 
 function toggleFlag(name) {
     flags[name] = !flags[name];
-    document.getElementById('toggle-' + name).classList.toggle('active', flags[name]);
+    const id = name === 'color_emoji' ? 'toggle-color-emoji' : 'toggle-' + name;
+    document.getElementById(id).classList.toggle('active', flags[name]);
 }
 
 // ACCOUNTS
@@ -1851,15 +1715,9 @@ async function loadAccounts() {
                 '<td><span class="badge ' + riskCls + '">' + risk + '</span></td>' +
                 '<td><span class="badge badge-info">' + (a.total_sent || 0) + '</span></td>' +
                 '<td>' +
-                    '<button class="btn-circle sm green" onclick="checkAcc(' + a.id + ')" title="Check">' +
-                        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>' +
-                    '</button> ' +
-                    '<button class="btn-circle sm blue" onclick="resetAcc(' + a.id + ')" title="Reset">' +
-                        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>' +
-                    '</button> ' +
-                    '<button class="btn-circle sm red" onclick="delAcc(' + a.id + ')" title="Xóa">' +
-                        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>' +
-                    '</button>' +
+                    '<button class="btn-circle sm green" onclick="checkAcc(' + a.id + ')" title="Check">✓</button> ' +
+                    '<button class="btn-circle sm blue" onclick="resetAcc(' + a.id + ')" title="Reset">↻</button> ' +
+                    '<button class="btn-circle sm red" onclick="delAcc(' + a.id + ')" title="Xóa">✕</button>' +
                 '</td>' +
             '</tr>';
         }).join('');
@@ -1868,11 +1726,14 @@ async function loadAccounts() {
     document.getElementById('stat-active').textContent = accounts.filter(a => a.enabled).length;
     document.getElementById('stat-sent').textContent = accounts.reduce((s, a) => s + (a.total_sent || 0), 0);
 
-    const sel = document.getElementById('load-acc-select');
-    const cur = sel.value;
-    sel.innerHTML = '<option value="">-- Chọn acc --</option>' +
-        accounts.map(a => '<option value="' + a.id + '">' + a.label + ' (#' + a.id + ')</option>').join('');
-    sel.value = cur;
+    // Update selects
+    ['load-acc-select', 'tag-acc-select'].forEach(id => {
+        const sel = document.getElementById(id);
+        const cur = sel.value;
+        sel.innerHTML = '<option value="">-- ' + (id === 'tag-acc-select' ? 'Không tag' : 'Chọn acc') + ' --</option>' +
+            accounts.map(a => '<option value="' + a.id + '">' + a.label + ' (#' + a.id + ')</option>').join('');
+        sel.value = cur;
+    });
 }
 
 async function addAccount() {
@@ -1922,7 +1783,7 @@ async function loadBoxes() {
     const all = (r.groups || []).concat(r.friends || []);
     const boxList = document.getElementById('box-list');
     if (!all.length) {
-        boxList.innerHTML = '<div class="empty"><div>Không có box</div></div>';
+        boxList.innerHTML = '<div class="empty">Không có box</div>';
         return;
     }
     boxList.innerHTML = all.map((b, i) => {
@@ -1941,7 +1802,13 @@ async function loadBoxes() {
     window._allBoxes = all;
     selectedBoxes = [];
     document.getElementById('selected-count').textContent = '0';
-    showAlert('Load ' + all.length + ' box (' + r.groups.length + ' nhóm, ' + r.friends.length + ' chat)');
+
+    // Update tag group select
+    const tagGroupSel = document.getElementById('tag-group-select');
+    tagGroupSel.innerHTML = '<option value="">-- Chọn nhóm --</option>' +
+        (r.groups || []).map(g => '<option value="' + g.id + '">' + g.name + '</option>').join('');
+
+    showAlert('Load ' + all.length + ' box');
 }
 
 function toggleBox(el, idx) {
@@ -1968,6 +1835,60 @@ function clearAllBoxes() {
     document.getElementById('selected-count').textContent = '0';
 }
 
+// TAG
+function onTagAccChange() {
+    const aid = document.getElementById('tag-acc-select').value;
+    currentTagAcc = aid;
+    if (aid) {
+        document.getElementById('tag-group-row').style.display = 'block';
+    } else {
+        document.getElementById('tag-group-row').style.display = 'none';
+        document.getElementById('tag-members-row').style.display = 'none';
+    }
+    selectedTagMembers = [];
+}
+
+async function loadTagMembers() {
+    const gid = document.getElementById('tag-group-select').value;
+    if (!gid || !currentTagAcc) return;
+
+    document.getElementById('tag-members-row').style.display = 'block';
+    const list = document.getElementById('tag-members-list');
+    list.innerHTML = '<div class="empty">Đang load...</div>';
+
+    const r = await api('/api/accounts/' + currentTagAcc + '/group_members/' + gid, { method: 'POST' });
+    if (r.error) {
+        list.innerHTML = '<div class="empty">Lỗi: ' + r.error + '</div>';
+        return;
+    }
+
+    const members = r.members || [];
+    if (!members.length) {
+        list.innerHTML = '<div class="empty">Không có member</div>';
+        return;
+    }
+
+    list.innerHTML = members.map((m, i) =>
+        '<div class="member-item" data-idx="' + i + '" onclick="toggleMember(this, ' + i + ')">' +
+            '<div class="member-check">✓</div>' +
+            '<div class="member-name">' + m.name + '</div>' +
+            '<div class="member-id">' + m.id + '</div>' +
+        '</div>'
+    ).join('');
+    window._allMembers = members;
+}
+
+function toggleMember(el, idx) {
+    const m = window._allMembers[idx];
+    if (el.classList.contains('selected')) {
+        el.classList.remove('selected');
+        selectedTagMembers = selectedTagMembers.filter(x => x.uid !== m.id);
+    } else {
+        el.classList.add('selected');
+        selectedTagMembers.push({ uid: m.id, name: m.name });
+    }
+}
+
 // FILES
 async function uploadFile() {
     const input = document.getElementById('file-input');
@@ -1986,7 +1907,7 @@ async function loadFiles() {
     const files = await api('/api/files');
     const list = document.getElementById('files-list');
     if (!files.length) {
-        list.innerHTML = '<div class="empty"><div>Chưa có file</div></div>';
+        list.innerHTML = '<div class="empty">Chưa có file</div>';
     } else {
         list.innerHTML = files.map(f => {
             const size = (f.size / 1024).toFixed(1);
@@ -1996,16 +1917,11 @@ async function loadFiles() {
                     '<div class="file-name">📄 ' + f.filename + '</div>' +
                     '<div class="file-meta">' + f.lines + ' dòng • ' + size + ' KB • ' + date + '</div>' +
                 '</div>' +
-                '<button class="btn-circle sm blue" onclick="previewFile(' + f.id + ')" title="Xem">' +
-                    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>' +
-                '</button>' +
-                '<button class="btn-circle sm red" onclick="delFile(' + f.id + ')" title="Xóa">' +
-                    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>' +
-                '</button>' +
+                '<button class="btn-circle sm blue" onclick="previewFile(' + f.id + ')" title="Xem">👁</button>' +
+                '<button class="btn-circle sm red" onclick="delFile(' + f.id + ')" title="Xóa">✕</button>' +
             '</div>';
         }).join('');
     }
-
     const sel = document.getElementById('spam-file-select');
     const cur = sel.value;
     sel.innerHTML = '<option value="">-- Chọn file --</option>' +
@@ -2033,13 +1949,11 @@ async function startSpam() {
 
     const fileId = document.getElementById('spam-file-select').value;
     const directMsgs = document.getElementById('spam-messages').value.trim();
-    const tagName = document.getElementById('spam-tag').value.trim();
 
     let messages = [];
     if (!fileId && directMsgs) {
         messages = directMsgs.split(';').map(m => m.trim()).filter(m => m);
     }
-
     if (!fileId && !messages.length) {
         return showAlert('Chọn file hoặc nhập tin', 'error');
     }
@@ -2051,13 +1965,13 @@ async function startSpam() {
             file_id: fileId ? parseInt(fileId) : null,
             messages: messages,
             delay: selectedDelay,
-            use_color: flags.color,
             use_icon: flags.icon,
-            tag_name: tagName,
+            use_color_emoji: flags.color_emoji,
+            tag_uids: selectedTagMembers,
         }),
     });
     if (r.error) return showAlert(r.error, 'error');
-    showAlert('Đã bắt đầu spam: ' + r.task_id);
+    showAlert('Đã bắt đầu: ' + r.task_id);
     loadTasks();
 }
 
@@ -2078,12 +1992,10 @@ async function loadTasks() {
         const cls = t.status === 'running' ? 'badge-ok' : 'badge-err';
         const label = t.status === 'running' ? 'Đang chạy' : 'Đã dừng';
         return '<tr>' +
-            '<td><code style="font-size:10px;">' + t.id + '</code></td>' +
+            '<td style="font-size:10px;">' + t.id + '</td>' +
             '<td><span class="badge ' + cls + '">' + label + '</span></td>' +
             '<td>' + (t.status === 'running' ?
-                '<button class="btn-circle sm red" onclick="stopTask(\\'' + t.id + '\\')">' +
-                    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="6" y="6" width="12" height="12"/></svg>' +
-                '</button>' : '') + '</td>' +
+                '<button class="btn-circle sm red" onclick="stopTask(\\'' + t.id + '\\')">⏹</button>' : '') + '</td>' +
         '</tr>';
     }).join('');
 }
