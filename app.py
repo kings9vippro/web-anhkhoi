@@ -1,6 +1,6 @@
 # ============================================================
-# WEB-LENH v26.0 — Bot by Anh Khôi
-# Anti-Ban VIP, block parse, auto UID tag, delay nhanh
+# WEB-LENH v26.1 — Bot by Anh Khôi
+# Universal Forge UI • 2-mode freeze • Notification Stack
 # ============================================================
 import os
 import io
@@ -88,7 +88,7 @@ def new_tid(p):
 
 
 # ============================================================
-# ICON ZALO — BỘ SÁT THƯƠNG
+# ICON ZALO
 # ============================================================
 ZALO_ICON_HARD = [
     ";f", ":d", "=))", "b-)", ";-A", ":-bd",
@@ -121,7 +121,7 @@ def get_icon_hard():
 
 
 # ============================================================
-# ANTI-BAN VIP v26
+# ANTI-BAN VIP v26.1
 # ============================================================
 class AntiBanVIP:
     MIN_DELAY = 0.3
@@ -129,7 +129,6 @@ class AntiBanVIP:
 
     @staticmethod
     def compute_delay(user_delay, risk):
-        """Delay nhanh — min 0.3s, tăng khi risk cao."""
         d = max(AntiBanVIP.MIN_DELAY, user_delay)
         if risk > 0.85:
             d = max(d, 15.0)
@@ -137,7 +136,6 @@ class AntiBanVIP:
             d = max(d, 8.0)
         elif risk > 0.5:
             d = max(d, 4.0)
-        # Jitter ±25% thôi
         d = d * random.uniform(0.75, 1.25)
         return max(AntiBanVIP.MIN_DELAY, min(AntiBanVIP.MAX_DELAY, d))
 
@@ -260,7 +258,6 @@ class Zalo:
             return []
 
     def get_members(self, gid):
-        """Lấy danh sách thành viên nhóm kèm UID + tên."""
         enc = self._enc({"gridVerMap": json.dumps({str(gid): 0})})
         r = self.s.post(
             "https://tt-group-wpa.chat.zalo.me/api/group/getmg-v2",
@@ -272,12 +269,10 @@ class Zalo:
         mem_list = info.get("memVerList", [])
 
         members = []
-        # Gọi API lấy profile của tất cả members 1 lần
         uids = [m.split("_")[0] for m in mem_list]
         if not uids:
             return []
 
-        # Zalo cho phép query nhiều uid 1 lần
         try:
             payload = {"friendId": uids}
             enc2 = self._enc(payload)
@@ -335,13 +330,9 @@ class Zalo:
 
 
 # ============================================================
-# PARSE FILE — THEO BLOCK (dòng trống = ngăn cách)
+# PARSE FILE
 # ============================================================
 def parse_blocks(filepath, max_blocks=2000):
-    """
-    Parse file thành các block ngăn bởi dòng trống.
-    Mỗi block = 1 tin nhắn (giữ nguyên multiline).
-    """
     blocks = []
     current = []
     try:
@@ -368,7 +359,7 @@ def count_blocks(filepath):
 
 
 # ============================================================
-# WORKER
+# WORKER — 2-mode freeze: TREO NGÔN + TREO NHÂY
 # ============================================================
 def update_stats(aid, ok):
     conn = db()
@@ -406,23 +397,27 @@ def pick_account():
 
 
 def spam_worker(tid, targets, blocks, delay, use_color, use_emoji,
-                icon_count, tag_uids_names, stop_event):
+                icon_count, tag_uids_names, stop_event,
+                freeze_text=False, freeze_delay=False,
+                freeze_text_after=0, freeze_delay_after=0):
     """
-    Worker:
-    - blocks: list các tin nhắn (đã là multiline sẵn)
-    - tag_uids_names: list {id, name} cần tag
-    - icon_count: số icon thêm cuối (chỉ khi use_emoji)
+    freeze_text: TREO NGÔN — sau N tin thì gửi đúng 1 tin cố định lặp mãi
+    freeze_delay: TREO NHÂY — sau N tin thì delay giữ nguyên 1 giá trị (không jitter)
     """
     block_idx = 0
     target_idx = 0
     count = 0
     last_acc_id = None
+    frozen_text = None
+    frozen_delay = None
 
     print("[SPAM] Bắt đầu: " + tid)
     print("  Targets: " + str(len(targets)))
     print("  Blocks: " + str(len(blocks)))
     print("  Delay: " + str(delay) + "s")
     print("  Tags: " + str(len(tag_uids_names)))
+    print("  FreezeText: " + str(freeze_text) + " after " + str(freeze_text_after))
+    print("  FreezeDelay: " + str(freeze_delay) + " after " + str(freeze_delay_after))
 
     while not stop_event.is_set():
         acc = pick_account()
@@ -444,11 +439,16 @@ def spam_worker(tid, targets, blocks, delay, use_color, use_emoji,
         target = targets[target_idx % len(targets)]
         target_idx += 1
 
-        # Lấy block nguyên (giữ multiline)
-        raw = blocks[block_idx % len(blocks)]
-        block_idx += 1
+        # -------- TREO NGÔN --------
+        if freeze_text and count >= freeze_text_after:
+            if frozen_text is None:
+                frozen_text = blocks[block_idx % len(blocks)]
+            raw = frozen_text
+        else:
+            raw = blocks[block_idx % len(blocks)]
+            block_idx += 1
 
-        # Tag nếu có
+        # Tag
         if tag_uids_names:
             tags = " ".join(["@" + t["name"] for t in tag_uids_names])
             msg = tags + " " + raw
@@ -469,7 +469,6 @@ def spam_worker(tid, targets, blocks, delay, use_color, use_emoji,
             cookies = json.loads(acc["cookies"])
             z = Zalo(acc["imei"], cookies)
 
-            # Behavior
             z.set_typing(target_id, is_group=is_group)
             time.sleep(random.uniform(0.3, 1.0))
 
@@ -481,16 +480,24 @@ def spam_worker(tid, targets, blocks, delay, use_color, use_emoji,
             status = "OK" if ok else "ERR"
             cs = "[" + color + "]" if color else ""
             preview = msg.replace("\n", " ⏎ ")[:60]
+            tag_frz = ""
+            if freeze_text and count > freeze_text_after:
+                tag_frz = " ❄️TREO-NGÔN"
             print("[#" + str(count) + "] " + acc["label"] + " → " +
-                  str(target_id) + cs + " [" + status + "] " + preview)
+                  str(target_id) + cs + " [" + status + "]" + tag_frz + " " + preview)
 
         except Exception as e:
             update_stats(acc["id"], False)
             print("[SPAM] Error " + acc["label"] + ": " + str(e))
 
-        # Delay
+        # -------- TREO NHÂY --------
         risk = acc["risk"] if acc["risk"] else 0.0
-        actual = AntiBanVIP.compute_delay(delay, risk)
+        if freeze_delay and count >= freeze_delay_after:
+            if frozen_delay is None:
+                frozen_delay = AntiBanVIP.compute_delay(delay, risk)
+            actual = frozen_delay
+        else:
+            actual = AntiBanVIP.compute_delay(delay, risk)
 
         end = time.time() + actual
         while time.time() < end:
@@ -547,7 +554,6 @@ def logout():
     return redirect(url_for("login"))
 
 
-# ---- ACCOUNTS ----
 @app.route("/api/accounts", methods=["GET"])
 @login_required
 def api_accounts():
@@ -653,7 +659,6 @@ def api_load_members(aid, group_id):
         return jsonify({"error": str(e)}), 400
 
 
-# ---- FILES ----
 @app.route("/api/files", methods=["GET"])
 @login_required
 def api_files_list():
@@ -724,7 +729,6 @@ def api_files_preview(fid):
                     "all": blocks})
 
 
-# ---- TASKS ----
 @app.route("/api/tasks", methods=["GET"])
 @login_required
 def api_tasks():
@@ -746,7 +750,12 @@ def api_tasks_start():
     use_color = bool(d.get("use_color", True))
     use_emoji = bool(d.get("use_emoji", True))
     icon_count = int(d.get("icon_count", 3))
-    tag_uids_names = d.get("tag_users", [])  # [{id, name}]
+    tag_uids_names = d.get("tag_users", [])
+
+    freeze_text = bool(d.get("freeze_text", False))
+    freeze_delay = bool(d.get("freeze_delay", False))
+    freeze_text_after = int(d.get("freeze_text_after", 10))
+    freeze_delay_after = int(d.get("freeze_delay_after", 10))
 
     if not targets:
         return jsonify({"error": "Chưa chọn target"}), 400
@@ -758,6 +767,10 @@ def api_tasks_start():
         icon_count = 0
     if icon_count > 20:
         icon_count = 20
+    if freeze_text_after < 0:
+        freeze_text_after = 0
+    if freeze_delay_after < 0:
+        freeze_delay_after = 0
 
     conn = db()
     cnt = conn.execute(
@@ -772,7 +785,9 @@ def api_tasks_start():
     th = threading.Thread(
         target=spam_worker,
         args=(tid, targets, blocks, delay, use_color, use_emoji,
-              icon_count, tag_uids_names, stop_ev),
+              icon_count, tag_uids_names, stop_ev,
+              freeze_text, freeze_delay,
+              freeze_text_after, freeze_delay_after),
         daemon=True,
     )
 
@@ -782,7 +797,9 @@ def api_tasks_start():
         VALUES (?, ?, ?, ?, ?, ?)
     """, (tid, "spam",
           json.dumps({"targets": len(targets), "blocks": len(blocks),
-                      "delay": delay, "tags": len(tag_uids_names)}),
+                      "delay": delay, "tags": len(tag_uids_names),
+                      "freeze_text": freeze_text,
+                      "freeze_delay": freeze_delay}),
           "running", time.time(), "{}"))
     conn.commit()
     conn.close()
@@ -812,46 +829,146 @@ def api_tasks_stop_all():
 
 @app.route("/health")
 def health():
-    return jsonify({"status": "ok", "service": "web-lenh", "version": "26.0"})
+    return jsonify({"status": "ok", "service": "web-lenh", "version": "26.1"})
 
 
 # ============================================================
-# LOGO SVG
+# LOGO SVG — tinh xảo
 # ============================================================
 LOGO_SVG = """<svg viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg" fill="none">
 <defs>
 <linearGradient id="gA" x1="0" y1="0" x2="1" y2="1">
 <stop offset="0%" stop-color="#f093fb"/>
-<stop offset="100%" stop-color="#f5576c"/>
+<stop offset="50%" stop-color="#f5576c"/>
+<stop offset="100%" stop-color="#764ba2"/>
 </linearGradient>
 <linearGradient id="gB" x1="0" y1="1" x2="1" y2="0">
 <stop offset="0%" stop-color="#667eea"/>
-<stop offset="100%" stop-color="#764ba2"/>
+<stop offset="50%" stop-color="#764ba2"/>
+<stop offset="100%" stop-color="#f093fb"/>
+</linearGradient>
+<linearGradient id="gStroke" x1="0" y1="0" x2="1" y2="1">
+<stop offset="0%" stop-color="#ffffff" stop-opacity="0.95"/>
+<stop offset="100%" stop-color="#ffffff" stop-opacity="0.4"/>
 </linearGradient>
 <radialGradient id="gC" cx="0.5" cy="0.5" r="0.6">
-<stop offset="0%" stop-color="#ffffff" stop-opacity="0.9"/>
+<stop offset="0%" stop-color="#ffffff" stop-opacity="0.85"/>
 <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
 </radialGradient>
-<filter id="fg">
-<feGaussianBlur stdDeviation="3" result="b"/>
+<radialGradient id="gGlow" cx="0.5" cy="0.5" r="0.5">
+<stop offset="0%" stop-color="#f5576c" stop-opacity="0.8"/>
+<stop offset="100%" stop-color="#f5576c" stop-opacity="0"/>
+</radialGradient>
+<filter id="fg" x="-50%" y="-50%" width="200%" height="200%">
+<feGaussianBlur stdDeviation="2.5" result="b"/>
 <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
 </filter>
+<filter id="softGlow"><feGaussianBlur stdDeviation="6"/></filter>
 </defs>
-<circle cx="60" cy="60" r="52" fill="url(#gB)" opacity="0.15"/>
-<circle cx="60" cy="60" r="42" fill="url(#gC)" opacity="0.3"/>
-<path d="M60 12 C30 12, 10 32, 10 58 C10 82, 30 102, 60 102 C68 102, 76 100, 82 96 L108 108 L100 84 C110 76, 116 68, 116 58 C116 32, 90 12, 60 12 Z"
+<circle cx="60" cy="60" r="56" fill="url(#gGlow)" filter="url(#softGlow)"/>
+<circle cx="60" cy="60" r="54" fill="none" stroke="url(#gB)" stroke-width="0.8"
+ stroke-dasharray="3 6" opacity="0.55">
+<animateTransform attributeName="transform" type="rotate"
+ from="0 60 60" to="360 60 60" dur="30s" repeatCount="indefinite"/>
+</circle>
+<circle cx="60" cy="60" r="48" fill="none" stroke="url(#gA)" stroke-width="0.6"
+ opacity="0.35" stroke-dasharray="2 4">
+<animateTransform attributeName="transform" type="rotate"
+ from="360 60 60" to="0 60 60" dur="20s" repeatCount="indefinite"/>
+</circle>
+<circle cx="60" cy="60" r="44" fill="url(#gC)" opacity="0.25"/>
+<path d="M60 14 C32 14, 14 32, 14 56 C14 78, 32 96, 60 96 C67 96, 74 94, 80 91
+ L104 102 L98 80 C107 73, 112 65, 112 56 C112 32, 88 14, 60 14 Z"
  fill="url(#gA)" filter="url(#fg)"/>
-<path d="M60 12 C30 12, 10 32, 10 58 C10 82, 30 102, 60 102 C68 102, 76 100, 82 96 L108 108 L100 84 C110 76, 116 68, 116 58 C116 32, 90 12, 60 12 Z"
- fill="none" stroke="white" stroke-width="1.5" opacity="0.7"/>
-<circle cx="40" cy="55" r="5.5" fill="white"/>
-<circle cx="60" cy="55" r="5.5" fill="white"/>
-<circle cx="80" cy="55" r="5.5" fill="white"/>
-<path d="M32 78 Q60 92 88 78" stroke="white" stroke-width="3" stroke-linecap="round" fill="none"/>
-<path d="M92 20 L96 30 L106 33 L96 36 L92 46 L88 36 L78 33 L88 30 Z"
- fill="url(#gB)" filter="url(#fg)"/>
-<path d="M20 90 L24 97 L31 100 L24 103 L20 110 L16 103 L9 100 L16 97 Z"
- fill="url(#gB)" filter="url(#fg)" opacity="0.85"/>
+<path d="M60 14 C32 14, 14 32, 14 56 C14 60, 15 64, 16 68
+ C22 50, 40 30, 60 26 C76 22, 92 30, 100 46
+ C104 50, 107 53, 110 56 C112 32, 88 14, 60 14 Z"
+ fill="white" opacity="0.18"/>
+<path d="M60 14 C32 14, 14 32, 14 56 C14 78, 32 96, 60 96 C67 96, 74 94, 80 91
+ L104 102 L98 80 C107 73, 112 65, 112 56 C112 32, 88 14, 60 14 Z"
+ fill="none" stroke="url(#gStroke)" stroke-width="1.2"/>
+<g>
+<circle cx="42" cy="52" r="6" fill="white"/>
+<circle cx="42" cy="53" r="3.2" fill="#1a1a2e"/>
+<circle cx="43.2" cy="51.4" r="1.1" fill="white"/>
+</g>
+<g>
+<circle cx="62" cy="52" r="6" fill="white"/>
+<circle cx="62" cy="53" r="3.2" fill="#1a1a2e"/>
+<circle cx="63.2" cy="51.4" r="1.1" fill="white"/>
+</g>
+<g>
+<circle cx="82" cy="52" r="6" fill="white"/>
+<circle cx="82" cy="53" r="3.2" fill="#1a1a2e"/>
+<circle cx="83.2" cy="51.4" r="1.1" fill="white"/>
+</g>
+<path d="M36 72 Q60 86 84 72" stroke="white" stroke-width="2.6"
+ stroke-linecap="round" fill="none" opacity="0.95"/>
+<path d="M94 18 L97 27 L106 30 L97 33 L94 42 L91 33 L82 30 L91 27 Z"
+ fill="url(#gB)" filter="url(#fg)">
+<animateTransform attributeName="transform" type="rotate"
+ from="0 94 30" to="360 94 30" dur="12s" repeatCount="indefinite"/>
+</path>
+<path d="M18 88 L20 94 L26 96 L20 98 L18 104 L16 98 L10 96 L16 94 Z"
+ fill="url(#gB)" filter="url(#fg)" opacity="0.9">
+<animateTransform attributeName="transform" type="scale"
+ values="1;1.25;1" dur="2.4s" repeatCount="indefinite" additive="sum"/>
+</path>
+<circle cx="88" cy="76" r="1.4" fill="white" opacity="0.9">
+<animate attributeName="opacity" values="0.3;1;0.3" dur="2s" repeatCount="indefinite"/>
+</circle>
+<circle cx="30" cy="34" r="1.2" fill="white" opacity="0.7">
+<animate attributeName="opacity" values="1;0.3;1" dur="1.8s" repeatCount="indefinite"/>
+</circle>
 </svg>"""
+
+
+# ============================================================
+# CSS ROOT — shared design tokens
+# ============================================================
+CSS_ROOT = """
+:root{
+  --bg-0:#f8fafc; --bg-1:#ffffff; --bg-2:#f1f5f9;
+  --line:#e5e7eb; --line-2:#eef2f7;
+  --txt-0:#0f172a; --txt-1:#1a1a2e; --txt-2:#64748b; --txt-3:#94a3b8;
+  --brand-a:#667eea; --brand-b:#764ba2; --brand-c:#f5576c; --brand-d:#f093fb;
+  --ok:#10b981; --err:#ef4444; --warn:#f59e0b; --info:#3b82f6;
+  --purple:#8b5cf6; --pink:#ec4899; --teal:#14b8a6;
+  --grad-brand:linear-gradient(135deg,#667eea 0%,#764ba2 100%);
+  --grad-hot:linear-gradient(135deg,#f093fb 0%,#f5576c 100%);
+  --grad-ok:linear-gradient(135deg,#10b981,#059669);
+  --grad-err:linear-gradient(135deg,#ef4444,#dc2626);
+  --grad-warn:linear-gradient(135deg,#f59e0b,#d97706);
+  --grad-info:linear-gradient(135deg,#3b82f6,#2563eb);
+  --grad-purple:linear-gradient(135deg,#8b5cf6,#7c3aed);
+  --grad-pink:linear-gradient(135deg,#ec4899,#db2777);
+  --grad-teal:linear-gradient(135deg,#14b8a6,#0d9488);
+  --r-xs:8px; --r-sm:10px; --r-md:14px; --r-lg:18px; --r-xl:22px; --r-2xl:28px;
+  --sh-0:0 1px 2px rgba(15,23,42,.04);
+  --sh-1:0 4px 14px rgba(15,23,42,.06);
+  --sh-2:0 10px 30px rgba(15,23,42,.08);
+  --sh-3:0 20px 50px rgba(102,126,234,.28);
+  --ease:cubic-bezier(.16,1,.3,1);
+  --ease-2:cubic-bezier(.34,1.56,.64,1);
+}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html{touch-action:manipulation;-webkit-text-size-adjust:100%}
+body{
+  font-family:'Inter',system-ui,-apple-system,sans-serif;
+  background:var(--bg-0); color:var(--txt-1);
+  min-height:100vh;
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+  overflow-x:hidden;
+}
+button,input,textarea,select{font-family:inherit;font-feature-settings:'ss01','cv11'}
+::selection{background:rgba(102,126,234,.25)}
+*::-webkit-scrollbar{width:8px;height:8px}
+*::-webkit-scrollbar-track{background:transparent}
+*::-webkit-scrollbar-thumb{background:rgba(100,116,139,.25);border-radius:99px}
+*::-webkit-scrollbar-thumb:hover{background:rgba(100,116,139,.45)}
+:focus-visible{outline:2px solid var(--brand-a);outline-offset:2px;border-radius:6px}
+"""
 
 
 # ============================================================
@@ -861,766 +978,1403 @@ HTML_LOGIN = """<!DOCTYPE html>
 <html lang="vi">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#667eea">
 <title>Đăng nhập — ALB Forge</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <style>
-*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-body{font-family:'Inter',sans-serif;min-height:100vh;min-height:100dvh;display:flex;align-items:center;justify-content:center;
-background:linear-gradient(-45deg,#667eea,#764ba2,#f093fb,#f5576c);background-size:400% 400%;animation:bg 15s ease infinite;padding:20px}
-@keyframes bg{0%{background-position:0% 50%}50%{background-position:100% 50%}100%{background-position:0% 50%}}
-.card{background:rgba(255,255,255,0.98);padding:44px 34px;border-radius:32px;box-shadow:0 40px 100px rgba(0,0,0,0.3);
-width:100%;max-width:420px;text-align:center;animation:in 0.8s cubic-bezier(0.16,1,0.3,1)}
-@keyframes in{from{opacity:0;transform:translateY(50px) scale(0.94)}to{opacity:1;transform:translateY(0) scale(1)}}
-.logo-box{width:120px;height:120px;margin:0 auto 20px;animation:fl 3.5s ease-in-out infinite;position:relative}
-.logo-box::before{content:'';position:absolute;inset:-20px;border-radius:50%;
-background:radial-gradient(circle,rgba(245,87,108,0.5),transparent 70%);filter:blur(20px);animation:gl 3s ease-in-out infinite}
-@keyframes fl{0%,100%{transform:translateY(0) rotate(0)}50%{transform:translateY(-10px) rotate(-3deg)}}
-@keyframes gl{0%,100%{opacity:0.5;transform:scale(1)}50%{opacity:0.9;transform:scale(1.2)}}
+""" + CSS_ROOT + """
+body{
+  display:flex;align-items:center;justify-content:center;
+  min-height:100vh;min-height:100dvh;
+  padding:20px;
+  background:
+    radial-gradient(1200px 800px at 10% 0%,rgba(240,147,251,.35),transparent 60%),
+    radial-gradient(1000px 700px at 90% 100%,rgba(245,87,108,.35),transparent 60%),
+    linear-gradient(-45deg,#667eea,#764ba2,#f093fb,#f5576c);
+  background-size:200% 200%,200% 200%,400% 400%;
+  animation:bgShift 18s ease infinite;
+}
+@keyframes bgShift{
+  0%{background-position:0% 0%,100% 100%,0% 50%}
+  50%{background-position:100% 0%,0% 100%,100% 50%}
+  100%{background-position:0% 0%,100% 100%,0% 50%}
+}
+.card{
+  background:rgba(255,255,255,.98);
+  backdrop-filter:blur(20px) saturate(180%);
+  -webkit-backdrop-filter:blur(20px) saturate(180%);
+  padding:46px 34px 38px;
+  border-radius:var(--r-2xl);
+  border:1px solid rgba(255,255,255,.6);
+  box-shadow:
+    0 40px 100px rgba(15,23,42,.28),
+    0 1px 0 rgba(255,255,255,.9) inset,
+    0 -1px 0 rgba(15,23,42,.05) inset;
+  width:100%;max-width:420px;text-align:center;
+  animation:cardIn .9s var(--ease) both;
+  position:relative;overflow:hidden;
+}
+.card::before{
+  content:'';position:absolute;inset:0;border-radius:inherit;pointer-events:none;
+  background:linear-gradient(135deg,rgba(255,255,255,.6),transparent 40%);
+  mix-blend-mode:overlay;
+}
+@keyframes cardIn{
+  from{opacity:0;transform:translateY(60px) scale(.94)}
+  to{opacity:1;transform:translateY(0) scale(1)}
+}
+.logo-box{
+  width:124px;height:124px;margin:0 auto 18px;position:relative;
+  animation:float 4s ease-in-out infinite;
+  filter:drop-shadow(0 20px 40px rgba(102,126,234,.35));
+}
+.logo-box::before{
+  content:'';position:absolute;inset:-14px;border-radius:50%;
+  background:radial-gradient(circle,rgba(245,87,108,.45),transparent 70%);
+  filter:blur(24px);animation:glowPulse 3.2s ease-in-out infinite;
+  z-index:-1;
+}
+@keyframes float{0%,100%{transform:translateY(0) rotate(0)}50%{transform:translateY(-9px) rotate(-2.5deg)}}
+@keyframes glowPulse{0%,100%{opacity:.55;transform:scale(1)}50%{opacity:.95;transform:scale(1.15)}}
 .logo-box svg{width:100%;height:100%;position:relative;z-index:1}
-h1{color:#1a1a2e;margin-bottom:6px;font-size:24px;font-weight:900;letter-spacing:-0.6px}
-p.sub{color:#6b7280;margin-bottom:28px;font-size:13px}
-input{width:100%;padding:16px;border:2px solid #e5e7eb;border-radius:14px;font-size:15px;
-font-family:inherit;font-weight:500;background:#f9fafb;text-align:center}
-input:focus{outline:none;border-color:#667eea;background:white;box-shadow:0 0 0 4px rgba(102,126,234,0.12)}
-button{width:100%;padding:16px;margin-top:14px;background:linear-gradient(135deg,#667eea,#764ba2);color:white;
-border:none;border-radius:14px;font-size:15px;font-weight:800;font-family:inherit;cursor:pointer;
-box-shadow:0 12px 30px rgba(102,126,234,0.4);transition:0.3s;position:relative;overflow:hidden}
-button::before{content:'';position:absolute;inset:0;background:linear-gradient(120deg,transparent,rgba(255,255,255,0.4),transparent);
-transform:translateX(-100%);transition:0.7s}
-button:hover::before{transform:translateX(100%)}
-button:hover{transform:translateY(-2px)}
-.error{background:#fef2f2;color:#dc2626;padding:12px 16px;border-radius:12px;margin-bottom:16px;
-font-size:13px;font-weight:600;border-left:4px solid #dc2626}
+h1{
+  color:var(--txt-0);
+  font-size:26px;font-weight:900;letter-spacing:-.8px;
+  background:linear-gradient(135deg,#1a1a2e,#667eea 60%,#764ba2);
+  -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;
+  margin-bottom:6px;
+}
+p.sub{color:var(--txt-2);margin-bottom:26px;font-size:12.5px;font-weight:600;letter-spacing:.2px}
+.input-wrap{position:relative;margin-bottom:6px}
+input[type=password]{
+  width:100%;padding:16px 48px 16px 18px;
+  border:2px solid var(--line);border-radius:var(--r-md);
+  font-size:15px;font-weight:600;background:#f9fafb;color:var(--txt-0);
+  letter-spacing:1px;text-align:left;
+  transition:border-color .25s var(--ease),background .25s var(--ease),box-shadow .25s var(--ease);
+}
+input[type=password]::placeholder{color:var(--txt-3);letter-spacing:normal;font-weight:500}
+input[type=password]:focus{
+  outline:none;border-color:var(--brand-a);background:#fff;
+  box-shadow:0 0 0 4px rgba(102,126,234,.14);
+}
+.pw-toggle{
+  position:absolute;right:6px;top:50%;transform:translateY(-50%);
+  width:38px;height:38px;border-radius:10px;border:none;background:transparent;
+  color:var(--txt-2);cursor:pointer;font-size:16px;
+  display:flex;align-items:center;justify-content:center;
+  transition:background .2s var(--ease),color .2s var(--ease);
+}
+.pw-toggle:hover{background:var(--bg-2);color:var(--txt-0)}
+button.submit{
+  width:100%;padding:16px;margin-top:16px;
+  background:var(--grad-brand);color:#fff;border:none;border-radius:var(--r-md);
+  font-size:15px;font-weight:800;letter-spacing:.3px;cursor:pointer;
+  box-shadow:0 14px 34px rgba(102,126,234,.4);
+  transition:transform .3s var(--ease),box-shadow .3s var(--ease);
+  position:relative;overflow:hidden;
+  display:flex;align-items:center;justify-content:center;gap:8px;
+}
+button.submit::before{
+  content:'';position:absolute;inset:0;
+  background:linear-gradient(120deg,transparent 30%,rgba(255,255,255,.5) 50%,transparent 70%);
+  transform:translateX(-100%);transition:transform .8s var(--ease);
+}
+button.submit:hover::before{transform:translateX(100%)}
+button.submit:hover{transform:translateY(-2px);box-shadow:0 20px 44px rgba(102,126,234,.5)}
+button.submit:active{transform:translateY(0) scale(.99)}
+.error{
+  background:linear-gradient(135deg,#fef2f2,#fee2e2);color:#b91c1c;
+  padding:12px 16px;border-radius:var(--r-md);margin-bottom:16px;
+  font-size:12.5px;font-weight:700;
+  border-left:4px solid var(--err);
+  animation:shake .5s var(--ease);text-align:left;
+}
+@keyframes shake{
+  0%,100%{transform:translateX(0)}
+  20%,60%{transform:translateX(-6px)}
+  40%,80%{transform:translateX(6px)}
+}
+.foot{margin-top:22px;font-size:10.5px;color:var(--txt-3);font-weight:600;letter-spacing:.4px}
+.foot b{color:var(--brand-a);font-weight:800}
 </style>
 </head>
 <body>
 <div class="card">
 <div class="logo-box">""" + LOGO_SVG + """</div>
 <h1>ALB FORGE</h1>
-<p class="sub">Bot by Anh Khôi • v26.0</p>
+<p class="sub">Bot by Anh Khôi • v26.1 VIP</p>
 {% if error %}<div class="error">⚠️ {{ error }}</div>{% endif %}
-<form method="POST">
-<input type="password" name="password" placeholder="Nhập mật khẩu" autofocus required>
-<button type="submit">🚀 Đăng nhập</button>
-</form>
+<form method="POST" autocomplete="off">
+<div class="input-wrap">
+<input type="password" name="password" id="pw" placeholder="Nhập mật khẩu..." autofocus required>
+<button type="button" class="pw-toggle" onclick="tgPw()" aria-label="Hiện mật khẩu">👁️</button>
 </div>
+<button type="submit" class="submit">🚀 Đăng nhập</button>
+</form>
+<div class="foot">Secured by <b>ALB</b> • Anti-Ban VIP v26.1</div>
+</div>
+<script>
+function tgPw(){
+  var p=document.getElementById('pw');
+  p.type = p.type==='password' ? 'text' : 'password';
+}
+</script>
 </body>
 </html>
 """
 
 
 # ============================================================
-# HTML — INDEX
+# HTML — INDEX (FULL REWRITE)
 # ============================================================
 HTML_INDEX = """<!DOCTYPE html>
 <html lang="vi">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<title>ALB Forge</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<meta name="theme-color" content="#667eea">
+<title>ALB Forge v26.1</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
 <style>
-*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-html{touch-action:manipulation}
-body{font-family:'Inter',sans-serif;background:#f8fafc;min-height:100vh;color:#1a1a2e;overflow-x:hidden}
+""" + CSS_ROOT + """
 
-.header{background:linear-gradient(135deg,#667eea,#764ba2);color:white;padding:14px 18px;
-box-shadow:0 4px 30px rgba(102,126,234,0.35);position:sticky;top:0;z-index:100;
-padding-top:calc(14px + env(safe-area-inset-top,0px))}
-.header-inner{max-width:1200px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;gap:10px}
-.logo-mini{width:42px;height:42px;display:flex;align-items:center;justify-content:center;
-background:rgba(255,255,255,0.15);border-radius:12px;border:1px solid rgba(255,255,255,0.25);padding:6px;
-animation:logoFl 3.5s ease-in-out infinite}
+/* ---------- HEADER ---------- */
+.header{
+  background:
+    radial-gradient(600px 200px at 0% 0%,rgba(240,147,251,.35),transparent 60%),
+    radial-gradient(500px 220px at 100% 100%,rgba(245,87,108,.4),transparent 60%),
+    linear-gradient(135deg,#667eea 0%,#764ba2 100%);
+  color:#fff;padding:14px 18px;
+  padding-top:calc(14px + env(safe-area-inset-top,0px));
+  box-shadow:0 6px 30px rgba(102,126,234,.35);
+  position:sticky;top:0;z-index:100;
+  border-bottom:1px solid rgba(255,255,255,.15);
+}
+.header-inner{max-width:1200px;margin:0 auto;display:flex;align-items:center;gap:12px}
+.logo-mini{
+  width:42px;height:42px;flex-shrink:0;
+  display:flex;align-items:center;justify-content:center;
+  background:rgba(255,255,255,.14);border-radius:12px;
+  border:1px solid rgba(255,255,255,.28);
+  padding:6px;backdrop-filter:blur(10px);
+  animation:logoFl 4s ease-in-out infinite;
+  box-shadow:0 8px 22px rgba(0,0,0,.18),inset 0 1px 0 rgba(255,255,255,.3);
+}
 @keyframes logoFl{0%,100%{transform:translateY(0)}50%{transform:translateY(-4px)}}
 .logo-mini svg{width:100%;height:100%}
-.header-info{flex:1}
-.header-info h1{font-size:16px;font-weight:900;letter-spacing:-0.3px}
-.header-info p{font-size:10px;opacity:0.85;font-weight:500;margin-top:2px}
-.logout-btn{background:rgba(255,255,255,0.15);color:white;border:1px solid rgba(255,255,255,0.25);
-padding:8px 14px;border-radius:10px;font-size:12px;font-weight:700;font-family:inherit;cursor:pointer;transition:0.25s}
-.logout-btn:hover{background:rgba(255,255,255,0.28)}
+.header-info{flex:1;min-width:0}
+.header-info h1{font-size:16px;font-weight:900;letter-spacing:-.4px;line-height:1.1}
+.header-info p{font-size:10px;opacity:.9;font-weight:600;margin-top:3px;letter-spacing:.4px}
+.logout-btn{
+  display:inline-flex;align-items:center;gap:6px;
+  background:rgba(255,255,255,.14);color:#fff;
+  border:1px solid rgba(255,255,255,.28);
+  padding:8px 12px;border-radius:11px;
+  font-size:11.5px;font-weight:800;cursor:pointer;
+  transition:background .25s var(--ease),transform .25s var(--ease);
+  backdrop-filter:blur(10px);
+}
+.logout-btn:hover{background:rgba(255,255,255,.26);transform:translateY(-1px)}
+.logout-btn:active{transform:translateY(0) scale(.97)}
 
+/* ---------- CONTAINER / TABS ---------- */
 .container{max-width:1200px;margin:0 auto;padding:14px}
+.tabs{
+  display:grid;grid-template-columns:repeat(4,1fr);gap:6px;
+  margin-bottom:14px;padding:6px;
+  background:rgba(255,255,255,.9);
+  backdrop-filter:blur(14px);
+  border-radius:var(--r-lg);
+  box-shadow:0 6px 26px rgba(15,23,42,.06),0 1px 0 rgba(255,255,255,.9) inset;
+  border:1px solid var(--line-2);
+}
+.tab{
+  position:relative;padding:11px 4px;border-radius:12px;cursor:pointer;
+  font-size:10px;font-weight:800;letter-spacing:.3px;
+  text-align:center;color:var(--txt-2);
+  display:flex;flex-direction:column;align-items:center;gap:4px;
+  user-select:none;background:transparent;border:none;
+  transition:color .3s var(--ease),transform .3s var(--ease);
+  isolation:isolate;
+}
+.tab::before{
+  content:'';position:absolute;inset:0;border-radius:inherit;
+  background:var(--grad-brand);opacity:0;transform:scale(.92);
+  transition:opacity .3s var(--ease),transform .3s var(--ease);
+  z-index:-1;box-shadow:0 10px 24px rgba(102,126,234,.42);
+}
+.tab.active{color:#fff;transform:translateY(-2px)}
+.tab.active::before{opacity:1;transform:scale(1)}
+.tab .tab-icon{font-size:18px;line-height:1;transition:transform .3s var(--ease-2)}
+.tab:hover .tab-icon{transform:scale(1.18) rotate(-4deg)}
+.tab.active .tab-icon{transform:scale(1.1)}
 
-.tabs{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:14px;
-background:white;padding:6px;border-radius:16px;box-shadow:0 4px 25px rgba(0,0,0,0.05)}
-.tab{padding:10px 4px;border-radius:12px;cursor:pointer;font-size:10px;font-weight:800;
-text-align:center;color:#6b7280;transition:0.3s;display:flex;flex-direction:column;
-align-items:center;gap:3px;user-select:none}
-.tab-icon{font-size:18px;transition:0.3s}
-.tab:hover .tab-icon{transform:scale(1.15)}
-.tab.active{background:linear-gradient(135deg,#667eea,#764ba2);color:white;
-box-shadow:0 8px 20px rgba(102,126,234,0.4);transform:translateY(-2px)}
-.panel{display:none;animation:fade 0.35s}
+.panel{display:none;animation:fadeUp .35s var(--ease)}
 .panel.active{display:block}
-@keyframes fade{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+@keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
 
-.card{background:white;padding:18px;border-radius:20px;box-shadow:0 6px 30px rgba(0,0,0,0.05);
-margin-bottom:14px;border:1px solid #f0f2f5}
-.card h2{font-size:14px;font-weight:900;margin-bottom:14px;display:flex;align-items:center;gap:8px;letter-spacing:-0.3px}
-.card h2 .bi{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,#667eea,#764ba2);
-display:flex;align-items:center;justify-content:center;font-size:14px;color:white}
+/* ---------- CARD ---------- */
+.card{
+  position:relative;
+  background:linear-gradient(180deg,#fff 0%,#fcfcfe 100%);
+  padding:18px;border-radius:var(--r-xl);
+  box-shadow:
+    0 1px 0 rgba(255,255,255,.9) inset,
+    0 -1px 0 rgba(15,23,42,.03) inset,
+    0 8px 30px rgba(15,23,42,.06);
+  margin-bottom:14px;
+  border:1px solid var(--line-2);
+  transition:box-shadow .35s var(--ease);
+}
+.card:hover{box-shadow:0 12px 40px rgba(15,23,42,.08),0 1px 0 rgba(255,255,255,.9) inset}
+.card h2{
+  font-size:13.5px;font-weight:900;letter-spacing:-.3px;
+  margin-bottom:14px;display:flex;align-items:center;gap:9px;
+}
+.card h2 .bi{
+  width:30px;height:30px;border-radius:10px;
+  background:var(--grad-brand);
+  display:flex;align-items:center;justify-content:center;
+  font-size:13px;color:#fff;
+  box-shadow:0 6px 16px rgba(102,126,234,.35),inset 0 1px 0 rgba(255,255,255,.4);
+}
 
-.form-group{margin-bottom:12px}
-.form-group label{display:block;margin-bottom:5px;font-size:11px;font-weight:800;color:#374151;
-text-transform:uppercase;letter-spacing:0.5px}
-.form-group input,.form-group textarea,.form-group select{width:100%;padding:11px 13px;border:2px solid #e5e7eb;
-border-radius:12px;font-size:13px;font-family:inherit;font-weight:500;background:#f9fafb;color:#1a1a2e;transition:0.25s}
-.form-group input:focus,.form-group textarea:focus,.form-group select:focus{outline:none;border-color:#667eea;
-background:white;box-shadow:0 0 0 4px rgba(102,126,234,0.1)}
-.form-group textarea{min-height:90px;resize:vertical;font-family:monospace;font-size:12px;line-height:1.5}
+/* ---------- FORM ---------- */
+.form-group{margin-bottom:13px}
+.form-group label{
+  display:block;margin-bottom:6px;
+  font-size:10.5px;font-weight:800;color:#374151;
+  text-transform:uppercase;letter-spacing:.6px;
+}
+.form-group input,
+.form-group textarea,
+.form-group select{
+  width:100%;padding:12px 14px;
+  border:2px solid var(--line);border-radius:12px;
+  font-size:13px;font-weight:500;
+  background:#f9fafb;color:var(--txt-0);
+  transition:border-color .25s var(--ease),background .25s var(--ease),box-shadow .25s var(--ease);
+}
+.form-group input:focus,
+.form-group textarea:focus,
+.form-group select:focus{
+  outline:none;border-color:var(--brand-a);background:#fff;
+  box-shadow:0 0 0 4px rgba(102,126,234,.12);
+}
+.form-group textarea{
+  min-height:96px;resize:vertical;
+  font-family:'JetBrains Mono',ui-monospace,monospace;
+  font-size:12px;line-height:1.55;
+}
+.form-group select{
+  appearance:none;-webkit-appearance:none;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  background-repeat:no-repeat;background-position:right 14px center;
+  padding-right:38px;cursor:pointer;
+}
 
-.btn-circle{width:52px;height:52px;border-radius:50%;border:none;cursor:pointer;display:inline-flex;
-align-items:center;justify-content:center;font-size:20px;color:white;transition:all 0.3s cubic-bezier(0.16,1,0.3,1);
-box-shadow:0 10px 25px rgba(0,0,0,0.15);position:relative;overflow:hidden;margin:3px}
-.btn-circle::before{content:'';position:absolute;inset:0;
-background:linear-gradient(120deg,transparent,rgba(255,255,255,0.4),transparent);transform:translateX(-100%);transition:0.6s}
-.btn-circle:hover::before{transform:translateX(100%)}
-.btn-circle:hover{transform:translateY(-4px) scale(1.06);box-shadow:0 15px 35px rgba(0,0,0,0.25)}
-.btn-circle:active{transform:translateY(-1px) scale(0.98)}
-.btn-circle.primary{background:linear-gradient(135deg,#667eea,#764ba2)}
-.btn-circle.danger{background:linear-gradient(135deg,#ef4444,#dc2626)}
-.btn-circle.success{background:linear-gradient(135deg,#10b981,#059669)}
-.btn-circle.warning{background:linear-gradient(135deg,#f59e0b,#d97706)}
-.btn-circle.info{background:linear-gradient(135deg,#3b82f6,#2563eb)}
-.btn-circle.purple{background:linear-gradient(135deg,#8b5cf6,#7c3aed)}
-.btn-circle.pink{background:linear-gradient(135deg,#ec4899,#db2777)}
-.btn-circle.teal{background:linear-gradient(135deg,#14b8a6,#0d9488)}
+/* ---------- BUTTONS ---------- */
+.btn-circle{
+  width:52px;height:52px;border-radius:50%;border:none;cursor:pointer;
+  display:inline-flex;align-items:center;justify-content:center;
+  font-size:20px;color:#fff;
+  transition:transform .3s var(--ease-2),box-shadow .3s var(--ease),filter .3s var(--ease);
+  box-shadow:0 10px 24px rgba(15,23,42,.16),inset 0 1px 0 rgba(255,255,255,.35);
+  position:relative;overflow:hidden;margin:3px;
+  isolation:isolate;
+}
+.btn-circle::before{
+  content:'';position:absolute;inset:0;border-radius:inherit;
+  background:linear-gradient(120deg,transparent 30%,rgba(255,255,255,.5) 50%,transparent 70%);
+  transform:translateX(-120%);
+  transition:transform .7s var(--ease);
+}
+.btn-circle:hover{transform:translateY(-4px) scale(1.06);filter:brightness(1.06)}
+.btn-circle:hover::before{transform:translateX(120%)}
+.btn-circle:active{transform:translateY(-1px) scale(.98)}
+.btn-circle:disabled{opacity:.5;cursor:not-allowed;filter:grayscale(.4)}
+.btn-circle.primary{background:var(--grad-brand);box-shadow:0 12px 28px rgba(102,126,234,.45),inset 0 1px 0 rgba(255,255,255,.35)}
+.btn-circle.danger{background:var(--grad-err);box-shadow:0 12px 28px rgba(239,68,68,.42),inset 0 1px 0 rgba(255,255,255,.35)}
+.btn-circle.success{background:var(--grad-ok);box-shadow:0 12px 28px rgba(16,185,129,.42),inset 0 1px 0 rgba(255,255,255,.35)}
+.btn-circle.warning{background:var(--grad-warn);box-shadow:0 12px 28px rgba(245,158,11,.42),inset 0 1px 0 rgba(255,255,255,.35)}
+.btn-circle.info{background:var(--grad-info);box-shadow:0 12px 28px rgba(59,130,246,.42),inset 0 1px 0 rgba(255,255,255,.35)}
+.btn-circle.purple{background:var(--grad-purple);box-shadow:0 12px 28px rgba(139,92,246,.42),inset 0 1px 0 rgba(255,255,255,.35)}
+.btn-circle.pink{background:var(--grad-pink);box-shadow:0 12px 28px rgba(236,72,153,.42),inset 0 1px 0 rgba(255,255,255,.35)}
+.btn-circle.teal{background:var(--grad-teal);box-shadow:0 12px 28px rgba(20,184,166,.42),inset 0 1px 0 rgba(255,255,255,.35)}
 .btn-circle.small{width:38px;height:38px;font-size:15px}
-.btn-circle.big{width:70px;height:70px;font-size:26px}
+.btn-circle.big{width:72px;height:72px;font-size:26px}
 
-.btn-rect{padding:11px 18px;border:none;border-radius:12px;cursor:pointer;font-size:12px;font-weight:800;
-font-family:inherit;color:white;transition:0.3s;box-shadow:0 8px 20px rgba(0,0,0,0.15);
-display:inline-flex;align-items:center;gap:6px}
-.btn-rect:hover{transform:translateY(-3px)}
-.btn-rect.primary{background:linear-gradient(135deg,#667eea,#764ba2)}
-.btn-rect.danger{background:linear-gradient(135deg,#ef4444,#dc2626)}
-.btn-rect.success{background:linear-gradient(135deg,#10b981,#059669)}
-.btn-rect.info{background:linear-gradient(135deg,#3b82f6,#2563eb)}
-.btn-rect.purple{background:linear-gradient(135deg,#8b5cf6,#7c3aed)}
+.btn-rect{
+  padding:11px 18px;border:none;border-radius:12px;cursor:pointer;
+  font-size:12px;font-weight:800;letter-spacing:.2px;color:#fff;
+  display:inline-flex;align-items:center;gap:7px;
+  box-shadow:0 10px 22px rgba(15,23,42,.16),inset 0 1px 0 rgba(255,255,255,.3);
+  transition:transform .3s var(--ease-2),box-shadow .3s var(--ease),filter .3s var(--ease);
+}
+.btn-rect:hover{transform:translateY(-3px);filter:brightness(1.06)}
+.btn-rect:active{transform:translateY(-1px) scale(.98)}
+.btn-rect.primary{background:var(--grad-brand)}
+.btn-rect.danger{background:var(--grad-err)}
+.btn-rect.success{background:var(--grad-ok)}
+.btn-rect.info{background:var(--grad-info)}
+.btn-rect.purple{background:var(--grad-purple)}
+.btn-rect.full{width:100%;justify-content:center}
 
+/* ---------- STAT ---------- */
 .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:8px;margin-bottom:14px}
-.stat{background:linear-gradient(135deg,#f9fafb,#f3f4f6);padding:12px;border-radius:14px;
-border:1px solid #e5e7eb;position:relative;overflow:hidden}
-.stat::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;
-background:linear-gradient(90deg,#667eea,#764ba2)}
-.stat .label{font-size:9px;color:#6b7280;margin-bottom:5px;text-transform:uppercase;
-letter-spacing:0.5px;font-weight:800}
-.stat .value{font-size:22px;font-weight:900;color:#1a1a2e;line-height:1}
+.stat{
+  position:relative;overflow:hidden;
+  background:linear-gradient(180deg,#f9fafb,#f3f4f6);
+  padding:13px 12px;border-radius:var(--r-md);
+  border:1px solid var(--line);
+  box-shadow:0 1px 0 rgba(255,255,255,.9) inset;
+}
+.stat::before{
+  content:'';position:absolute;top:0;left:0;right:0;height:3px;
+  background:var(--grad-brand);
+}
+.stat::after{
+  content:'';position:absolute;inset:0;pointer-events:none;
+  background:linear-gradient(120deg,transparent 40%,rgba(255,255,255,.6) 50%,transparent 60%);
+  transform:translateX(-100%);
+  animation:statShimmer 3.5s ease-in-out infinite;
+}
+@keyframes statShimmer{0%,60%{transform:translateX(-100%)}80%,100%{transform:translateX(100%)}}
+.stat .label{font-size:9px;color:var(--txt-2);margin-bottom:6px;text-transform:uppercase;letter-spacing:.6px;font-weight:800}
+.stat .value{font-size:22px;font-weight:900;color:var(--txt-0);line-height:1;font-variant-numeric:tabular-nums}
 
-.table-wrap{overflow-x:auto}
+/* ---------- TABLE ---------- */
+.table-wrap{
+  overflow-x:auto;border-radius:var(--r-md);
+  border:1px solid var(--line-2);background:#fff;
+}
 .table{width:100%;border-collapse:collapse}
-.table th,.table td{padding:9px 6px;text-align:left;font-size:11px;border-bottom:1px solid #f0f2f5;white-space:nowrap}
-.table th{background:#f9fafb;font-weight:800;color:#6b7280;text-transform:uppercase;font-size:9px;letter-spacing:0.5px}
-.table td code{background:#f3f4f6;padding:2px 6px;border-radius:5px;font-size:10px;font-family:monospace}
+.table th,.table td{
+  padding:10px 8px;text-align:left;font-size:11px;
+  border-bottom:1px solid var(--line-2);white-space:nowrap;
+}
+.table th{
+  background:#f8fafc;font-weight:800;color:var(--txt-2);
+  text-transform:uppercase;font-size:9px;letter-spacing:.6px;
+  position:sticky;top:0;z-index:1;
+}
+.table tbody tr{transition:background .2s var(--ease)}
+.table tbody tr:hover{background:#f8fafc}
+.table tbody tr:last-child td{border-bottom:none}
+.table td code{
+  background:#f3f4f6;padding:2px 7px;border-radius:6px;
+  font-size:10px;font-family:'JetBrains Mono',ui-monospace,monospace;
+  color:#475569;font-weight:600;
+}
 
-.badge{display:inline-flex;align-items:center;gap:2px;padding:3px 7px;border-radius:20px;font-size:9px;font-weight:800}
+/* ---------- BADGE ---------- */
+.badge{
+  display:inline-flex;align-items:center;gap:4px;
+  padding:3px 8px;border-radius:20px;
+  font-size:9.5px;font-weight:800;letter-spacing:.2px;
+}
+.badge::before{content:'';width:5px;height:5px;border-radius:50%;background:currentColor;opacity:.7}
 .badge-ok{background:#d1fae5;color:#065f46}
 .badge-err{background:#fee2e2;color:#991b1b}
 .badge-warn{background:#fef3c7;color:#92400e}
 .badge-info{background:#dbeafe;color:#1e40af}
+.badge-frz{background:linear-gradient(135deg,#dbeafe,#bfdbfe);color:#1e40af}
 
-.box-list{max-height:340px;overflow-y:auto;border:2px solid #e5e7eb;border-radius:14px;
-padding:8px;background:#f9fafb}
-.box-item{padding:10px;border-radius:10px;background:white;margin-bottom:6px;cursor:pointer;
-border:2px solid transparent;transition:0.2s;display:flex;align-items:center;gap:10px;font-size:12px}
-.box-item:hover{border-color:#667eea}
-.box-item.selected{border-color:#10b981;background:#ecfdf5}
-.box-item .check{width:18px;height:18px;border:2px solid #d1d5db;border-radius:5px;
-display:flex;align-items:center;justify-content:center;font-size:10px;color:white;font-weight:900;flex-shrink:0}
-.box-item.selected .check{background:#10b981;border-color:#10b981}
+/* ---------- BOX LIST ---------- */
+.box-list{
+  max-height:340px;overflow-y:auto;
+  border:2px solid var(--line);border-radius:var(--r-md);
+  padding:8px;background:#f9fafb;
+  box-shadow:inset 0 1px 3px rgba(15,23,42,.04);
+}
+.box-item{
+  padding:11px;border-radius:11px;background:#fff;
+  margin-bottom:6px;cursor:pointer;
+  border:2px solid transparent;
+  display:flex;align-items:center;gap:10px;font-size:12px;
+  box-shadow:0 1px 3px rgba(15,23,42,.05);
+  transition:border-color .25s var(--ease),transform .25s var(--ease),box-shadow .25s var(--ease);
+}
+.box-item:hover{border-color:var(--brand-a);transform:translateX(2px);box-shadow:0 6px 18px rgba(102,126,234,.14)}
+.box-item.selected{
+  border-color:var(--ok);background:linear-gradient(180deg,#ecfdf5,#d1fae5);
+  box-shadow:0 6px 18px rgba(16,185,129,.2);
+}
+.box-item .check{
+  width:19px;height:19px;border:2px solid #d1d5db;border-radius:6px;
+  display:flex;align-items:center;justify-content:center;
+  font-size:10px;color:transparent;font-weight:900;flex-shrink:0;
+  transition:background .25s var(--ease),border-color .25s var(--ease),color .25s var(--ease),transform .25s var(--ease-2);
+}
+.box-item.selected .check{
+  background:var(--ok);border-color:var(--ok);color:#fff;transform:scale(1.05);
+}
 .box-item .info{flex:1;min-width:0}
 .box-item .name{font-weight:700;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.box-item .meta{font-size:10px;color:#6b7280;font-family:monospace;margin-top:2px}
+.box-item .meta{font-size:10px;color:var(--txt-2);font-family:'JetBrains Mono',monospace;margin-top:2px}
 
-.file-item{display:flex;align-items:center;gap:10px;padding:10px;border-radius:12px;
-background:#f9fafb;margin-bottom:8px;border:1px solid #e5e7eb}
+/* ---------- FILE ---------- */
+.file-item{
+  display:flex;align-items:center;gap:10px;
+  padding:11px;border-radius:12px;
+  background:#fff;margin-bottom:8px;
+  border:1px solid var(--line);
+  box-shadow:0 1px 3px rgba(15,23,42,.05);
+  transition:border-color .25s var(--ease),transform .25s var(--ease),box-shadow .25s var(--ease);
+}
+.file-item:hover{border-color:var(--brand-a);transform:translateY(-2px);box-shadow:0 10px 24px rgba(102,126,234,.12)}
 .file-item .info{flex:1;min-width:0}
 .file-item .name{font-weight:700;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.file-item .meta{font-size:10px;color:#6b7280;margin-top:2px}
+.file-item .meta{font-size:10px;color:var(--txt-2);margin-top:2px}
 
+/* ---------- CHIP ---------- */
 .chip-group{display:flex;flex-wrap:wrap;gap:5px;margin-top:5px}
-.chip{padding:7px 13px;background:#f3f4f6;color:#374151;border-radius:20px;font-size:11px;
-font-weight:800;cursor:pointer;transition:0.2s;border:2px solid transparent;user-select:none}
-.chip:hover{background:#e5e7eb}
-.chip.active{background:linear-gradient(135deg,#667eea,#764ba2);color:white;
-box-shadow:0 4px 15px rgba(102,126,234,0.4)}
+.chip{
+  position:relative;
+  padding:8px 14px;background:#f3f4f6;color:#374151;
+  border-radius:20px;font-size:11px;font-weight:800;letter-spacing:.2px;
+  cursor:pointer;user-select:none;
+  border:2px solid transparent;
+  transition:background .25s var(--ease),color .25s var(--ease),transform .25s var(--ease-2),box-shadow .25s var(--ease);
+}
+.chip:hover{background:#e5e7eb;transform:translateY(-1px)}
+.chip.active{
+  background:var(--grad-brand);color:#fff;
+  box-shadow:0 8px 22px rgba(102,126,234,.45),inset 0 1px 0 rgba(255,255,255,.35);
+  transform:translateY(-2px);
+}
+.chip.freeze.active{
+  background:linear-gradient(135deg,#3b82f6,#1d4ed8);
+  box-shadow:0 8px 22px rgba(59,130,246,.5),inset 0 1px 0 rgba(255,255,255,.35);
+}
 
+/* ---------- TOGGLE ---------- */
 .toggle-group{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px}
-.toggle{padding:11px;border:2px solid #e5e7eb;border-radius:12px;cursor:pointer;
-text-align:center;font-weight:800;font-size:11px;background:#f9fafb;color:#6b7280;user-select:none;transition:0.25s}
-.toggle.active{background:linear-gradient(135deg,#667eea,#764ba2);color:white;border-color:transparent;
-box-shadow:0 8px 20px rgba(102,126,234,0.4);transform:translateY(-2px)}
+.toggle{
+  position:relative;padding:12px 10px;
+  border:2px solid var(--line);border-radius:var(--r-md);
+  cursor:pointer;text-align:center;
+  font-weight:800;font-size:11px;letter-spacing:.2px;
+  background:#f9fafb;color:var(--txt-2);
+  user-select:none;isolation:isolate;
+  transition:color .3s var(--ease),transform .3s var(--ease-2),box-shadow .3s var(--ease);
+}
+.toggle::before{
+  content:'';position:absolute;inset:-2px;border-radius:inherit;
+  background:var(--grad-brand);opacity:0;transform:scale(.94);
+  transition:opacity .3s var(--ease),transform .3s var(--ease);
+  z-index:-1;box-shadow:0 10px 24px rgba(102,126,234,.4);
+}
+.toggle.active{color:#fff;border-color:transparent;transform:translateY(-2px)}
+.toggle.active::before{opacity:1;transform:scale(1)}
 
-.alert{padding:13px 16px;border-radius:12px;margin-bottom:10px;font-size:12px;font-weight:700;display:none;
-position:fixed;top:80px;right:14px;z-index:999;box-shadow:0 15px 45px rgba(0,0,0,0.2);max-width:320px}
-.alert.show{display:flex;gap:8px;animation:sl 0.35s}
-@keyframes sl{from{opacity:0;transform:translateX(120%)}to{opacity:1;transform:translateX(0)}}
-.alert-success{background:linear-gradient(135deg,#d1fae5,#a7f3d0);color:#065f46;border-left:5px solid #10b981}
-.alert-error{background:linear-gradient(135deg,#fee2e2,#fecaca);color:#991b1b;border-left:5px solid #ef4444}
-
-.tag-selector{max-height:240px;overflow-y:auto;border:2px solid #e5e7eb;border-radius:12px;
-padding:8px;background:#f9fafb;display:none;margin-top:8px}
+/* ---------- TAG SELECTOR ---------- */
+.tag-selector{
+  max-height:240px;overflow-y:auto;
+  border:2px solid var(--line);border-radius:12px;
+  padding:8px;background:#f9fafb;display:none;margin-top:8px;
+}
 .tag-selector.show{display:block}
-.tag-member{padding:8px;border-radius:8px;background:white;margin-bottom:4px;cursor:pointer;
-border:2px solid transparent;font-size:12px;display:flex;align-items:center;gap:8px}
-.tag-member:hover{border-color:#8b5cf6}
-.tag-member.selected{border-color:#8b5cf6;background:#f3e8ff}
-.tag-member .check{width:16px;height:16px;border:2px solid #d1d5db;border-radius:4px;
-display:flex;align-items:center;justify-content:center;font-size:9px;color:white;font-weight:900;flex-shrink:0}
-.tag-member.selected .check{background:#8b5cf6;border-color:#8b5cf6}
+.tag-member{
+  padding:8px;border-radius:8px;background:#fff;margin-bottom:4px;cursor:pointer;
+  border:2px solid transparent;font-size:12px;
+  display:flex;align-items:center;gap:8px;
+  transition:border-color .2s var(--ease),background .2s var(--ease);
+}
+.tag-member:hover{border-color:var(--purple)}
+.tag-member.selected{border-color:var(--purple);background:#f3e8ff}
+.tag-member .check{
+  width:16px;height:16px;border:2px solid #d1d5db;border-radius:4px;
+  display:flex;align-items:center;justify-content:center;
+  font-size:9px;color:transparent;font-weight:900;flex-shrink:0;
+  transition:background .2s var(--ease),border-color .2s var(--ease),color .2s var(--ease);
+}
+.tag-member.selected .check{background:var(--purple);border-color:var(--purple);color:#fff}
 
+/* ---------- NOTIFICATION STACK ---------- */
+#toast-stack{
+  position:fixed;top:calc(20px + env(safe-area-inset-top,0px));right:16px;
+  z-index:9999;display:flex;flex-direction:column;gap:10px;
+  max-width:380px;width:calc(100% - 32px);pointer-events:none;
+}
+.toast{
+  pointer-events:auto;
+  position:relative;overflow:hidden;
+  padding:14px 16px 14px 58px;
+  border-radius:16px;
+  background:rgba(255,255,255,.98);
+  backdrop-filter:blur(16px) saturate(180%);
+  -webkit-backdrop-filter:blur(16px) saturate(180%);
+  box-shadow:
+    0 20px 50px rgba(15,23,42,.22),
+    0 1px 0 rgba(255,255,255,.9) inset,
+    0 -1px 0 rgba(15,23,42,.04) inset;
+  border:1px solid rgba(255,255,255,.6);
+  display:flex;flex-direction:column;gap:3px;
+  animation:toastIn .5s var(--ease-2) both;
+}
+.toast.removing{animation:toastOut .35s var(--ease) both}
+@keyframes toastIn{
+  from{opacity:0;transform:translateX(120%) scale(.9)}
+  to{opacity:1;transform:translateX(0) scale(1)}
+}
+@keyframes toastOut{
+  from{opacity:1;transform:translateX(0) scale(1)}
+  to{opacity:0;transform:translateX(120%) scale(.9)}
+}
+.toast::before{
+  content:'';position:absolute;left:0;top:0;bottom:0;width:4px;
+  background:var(--grad-brand);
+}
+.toast.success::before{background:var(--grad-ok)}
+.toast.error::before{background:var(--grad-err)}
+.toast.warning::before{background:var(--grad-warn)}
+.toast.info::before{background:var(--grad-info)}
+.toast .t-icon{
+  position:absolute;left:14px;top:50%;transform:translateY(-50%);
+  width:32px;height:32px;border-radius:10px;
+  display:flex;align-items:center;justify-content:center;
+  font-size:16px;color:#fff;
+  box-shadow:0 6px 16px rgba(15,23,42,.2),inset 0 1px 0 rgba(255,255,255,.4);
+}
+.toast.success .t-icon{background:var(--grad-ok)}
+.toast.error .t-icon{background:var(--grad-err)}
+.toast.warning .t-icon{background:var(--grad-warn)}
+.toast.info .t-icon{background:var(--grad-info)}
+.toast .t-title{font-size:12.5px;font-weight:900;color:var(--txt-0);letter-spacing:-.2px}
+.toast .t-msg{font-size:11.5px;font-weight:600;color:var(--txt-2);line-height:1.45}
+.toast .t-progress{
+  position:absolute;left:0;right:0;bottom:0;height:2px;
+  background:rgba(15,23,42,.06);
+  overflow:hidden;
+}
+.toast .t-progress::after{
+  content:'';display:block;height:100%;width:100%;
+  background:currentColor;opacity:.4;
+  transform-origin:left;
+  animation:toastBar linear forwards;
+}
+.toast.success .t-progress::after{color:var(--ok)}
+.toast.error .t-progress::after{color:var(--err)}
+.toast.warning .t-progress::after{color:var(--warn)}
+.toast.info .t-progress::after{color:var(--info)}
+@keyframes toastBar{from{transform:scaleX(1)}to{transform:scaleX(0)}}
+.toast .t-close{
+  position:absolute;top:8px;right:8px;
+  width:22px;height:22px;border-radius:6px;border:none;
+  background:transparent;color:var(--txt-3);cursor:pointer;
+  font-size:12px;display:flex;align-items:center;justify-content:center;
+  transition:background .2s var(--ease),color .2s var(--ease);
+}
+.toast .t-close:hover{background:var(--bg-2);color:var(--txt-0)}
+
+/* ---------- FREEZE PANEL ---------- */
+.freeze-panel{
+  margin-top:12px;padding:14px;
+  border-radius:var(--r-md);
+  background:linear-gradient(135deg,#eff6ff,#dbeafe);
+  border:1px solid #bfdbfe;
+  display:none;
+}
+.freeze-panel.show{display:block;animation:fadeUp .35s var(--ease)}
+.freeze-panel .fp-title{
+  font-size:11px;font-weight:900;color:#1e40af;
+  text-transform:uppercase;letter-spacing:.6px;
+  display:flex;align-items:center;gap:6px;margin-bottom:8px;
+}
+.freeze-panel .fp-desc{
+  font-size:10.5px;color:#1e3a8a;font-weight:600;line-height:1.55;
+  margin-bottom:10px;
+}
+.freeze-panel input[type=number]{
+  width:100%;padding:9px 12px;border:2px solid #bfdbfe;border-radius:10px;
+  background:#fff;font-size:12px;font-weight:700;color:#1e3a8a;
+  transition:border-color .2s var(--ease),box-shadow .2s var(--ease);
+}
+.freeze-panel input[type=number]:focus{
+  outline:none;border-color:var(--info);
+  box-shadow:0 0 0 4px rgba(59,130,246,.15);
+}
+
+/* ---------- ANTI-BAN INFO ---------- */
+.anti-ban-card{
+  background:linear-gradient(135deg,#fef3c7,#fde68a);
+  border:2px solid #fbbf24;
+}
+.anti-ban-card h2{color:#92400e}
+.anti-ban-card h2 .bi{background:#92400e;box-shadow:none}
+.anti-ban-list{
+  color:#78350f;font-size:11px;line-height:1.95;font-weight:600;
+}
+.anti-ban-list div{display:flex;align-items:flex-start;gap:6px}
+.anti-ban-list .dot{flex-shrink:0;margin-top:3px}
+
+/* ---------- RESPONSIVE ---------- */
 @media (max-width:640px){
-.container{padding:10px}
-.card{padding:14px;border-radius:18px}
-.header{padding:10px 12px}
-.header-info h1{font-size:14px}
-.header-info p{font-size:9px}
-.logo-mini{width:36px;height:36px}
-.logout-btn{padding:7px 10px;font-size:11px}
-.tab{padding:9px 3px;font-size:9px}
-.tab-icon{font-size:16px}
-.stat .value{font-size:18px}
-.btn-circle{width:46px;height:46px;font-size:18px}
-.btn-circle.small{width:34px;height:34px;font-size:13px}
-.btn-circle.big{width:62px;height:62px;font-size:22px}
-.alert{left:10px;right:10px;max-width:none}
+  .container{padding:10px}
+  .card{padding:14px;border-radius:var(--r-lg)}
+  .header{padding:10px 12px;padding-top:calc(10px + env(safe-area-inset-top,0px))}
+  .header-info h1{font-size:14px}
+  .header-info p{font-size:9px}
+  .logo-mini{width:36px;height:36px}
+  .logout-btn{padding:7px 10px;font-size:10.5px}
+  .logout-btn span{display:none}
+  .tab{padding:9px 3px;font-size:9px}
+  .tab .tab-icon{font-size:16px}
+  .stat .value{font-size:18px}
+  .btn-circle{width:46px;height:46px;font-size:18px}
+  .btn-circle.small{width:34px;height:34px;font-size:13px}
+  .btn-circle.big{width:62px;height:62px;font-size:22px}
+  #toast-stack{left:12px;right:12px;max-width:none;width:auto}
+}
+
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{
+    animation-duration:.001ms !important;
+    animation-iteration-count:1 !important;
+    transition-duration:.001ms !important;
+  }
 }
 </style>
 </head>
 <body>
 
 <div class="header">
-<div class="header-inner">
-<div class="logo-mini">""" + LOGO_SVG + """</div>
-<div class="header-info">
-<h1>ALB FORGE</h1>
-<p>Bot by Anh Khôi • v26.0 VIP</p>
+  <div class="header-inner">
+    <div class="logo-mini">""" + LOGO_SVG + """</div>
+    <div class="header-info">
+      <h1>ALB FORGE</h1>
+      <p>Bot by Anh Khôi • v26.1 VIP</p>
+    </div>
+    <button class="logout-btn" onclick="location.href='/logout'">
+      <span>Thoát</span>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="2.4"
+           stroke-linecap="round" stroke-linejoin="round">
+        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+        <polyline points="16 17 21 12 16 7"/>
+        <line x1="21" y1="12" x2="9" y2="12"/>
+      </svg>
+    </button>
+  </div>
 </div>
-<button class="logout-btn" onclick="location.href='/logout'">🚪 Thoát</button>
-</div>
-</div>
+
+<div id="toast-stack"></div>
 
 <div class="container">
 
 <div class="tabs">
-<div class="tab active" data-tab="accounts"><div class="tab-icon">🔐</div><div>Acc</div></div>
-<div class="tab" data-tab="boxes"><div class="tab-icon">📦</div><div>Box</div></div>
-<div class="tab" data-tab="files"><div class="tab-icon">📁</div><div>File</div></div>
-<div class="tab" data-tab="spam"><div class="tab-icon">🎯</div><div>Spam</div></div>
+  <button type="button" class="tab active" data-tab="accounts"><div class="tab-icon">🔐</div><div>Acc</div></button>
+  <button type="button" class="tab" data-tab="boxes"><div class="tab-icon">📦</div><div>Box</div></button>
+  <button type="button" class="tab" data-tab="files"><div class="tab-icon">📁</div><div>File</div></button>
+  <button type="button" class="tab" data-tab="spam"><div class="tab-icon">🎯</div><div>Spam</div></button>
 </div>
 
-<div id="alert" class="alert"></div>
-
-<!-- ACCOUNTS -->
+<!-- ============ ACCOUNTS ============ -->
 <div class="panel active" id="panel-accounts">
-<div class="card">
-<h2><span class="bi">➕</span> Thêm tài khoản</h2>
-<div class="form-group"><label>Tên gợi nhớ</label><input id="add-label" placeholder="acc1"></div>
-<div class="form-group"><label>IMEI</label><input id="add-imei" placeholder="000000000000000"></div>
-<div class="form-group"><label>Cookie (JSON)</label>
-<textarea id="add-cookies" placeholder='{"zpw_sek":"...","zpw_ver":"645","zpw_type":"30"}'></textarea></div>
-<button class="btn-rect primary" onclick="addAccount()">💾 Thêm tài khoản</button>
-</div>
-<div class="card">
-<h2><span class="bi">📋</span> Danh sách</h2>
-<div class="stat-grid">
-<div class="stat"><div class="label">Tổng</div><div class="value" id="stat-total">0</div></div>
-<div class="stat"><div class="label">Active</div><div class="value" id="stat-active">0</div></div>
-<div class="stat"><div class"="label">Sent</div><div class="value" onclick id="stat-sent">0</div></div>
-="</div>
-<div class="table-wrap"><table classclear="table"><thead><tr>
-<th>ID</th><th>Tên</th><th>OK/Lỗi</th><th>Risk</th><th>Sent</th><th></th>
-</tr></thead><tbody id="accounts-tbody"></tbody></table></div>
-</div>
+  <div class="card">
+    <h2><span class="bi">➕</span> Thêm tài khoản</h2>
+    <div class="form-group"><label>Tên gợi nhớ</label><input id="add-label" placeholder="acc1"></div>
+    <div class="form-group"><label>IMEI</label><input id="add-imei" placeholder="000000000000000"></div>
+    <div class="form-group"><label>Cookie (JSON)</label>
+      <textarea id="add-cookies" placeholder='{"zpw_sek":"...","zpw_ver":"645","zpw_type":"30"}'></textarea>
+    </div>
+    <button type="button" class="btn-rect primary full" onclick="addAccount()">💾 Thêm tài khoản</button>
+  </div>
+  <div class="card">
+    <h2><span class="bi">📋</span> Danh sách</h2>
+    <div class="stat-grid">
+      <div class="stat"><div class="label">Tổng</div><div class="value" id="stat-total">0</div></div>
+      <div class="stat"><div class="label">Active</div><div class="value" id="stat-active">0</div></div>
+      <div class="stat"><div class="label">Sent</div><div class="value" id="stat-sent">0</div></div>
+    </div>
+    <div class="table-wrap">
+      <table class="table">
+        <thead><tr>
+          <th>ID</th><th>Tên</th><th>OK/Lỗi</th><th>Risk</th><th>Sent</th><th></th>
+        </tr></thead>
+        <tbody id="accounts-tbody"></tbody>
+      </table>
+    </div>
+  </div>
 </div>
 
-<!-- BOXES -->
+<!-- ============ BOXES ============ -->
 <div class="panel" id="panel-boxes">
-<div class="card">
-<h2><span class="bi">📦</span> Load Box</h2>
-<div class="form-group">
-<label>Chọn tài khoản</label>
-<select id="load-acc-select"><option value="">-- Chọn --</option></select>
-</div>
-<div style="text-align:center;">
-<button class="btn-circle primary" onclick="loadBoxes()" title="Load">🔄</button>
-<button class="btn-circle success" onclick="selectAllBoxes()" title="Chọn tất cả">✅</button>
-<button class="btn-circle dangerAllBoxes()" title="Bỏ chọn">❌</button>
-</div>
-<div style="margin-top:12px;">
-<div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:11px;">
-<b>Đã chọn: <span id="selected-count" style="color:#667eea;">0</span></b>
-</div>
-<div class="box-list" id="box-list">
-<div style="text-align:center;padding:20px;color:#999;font-size:11px;">Chưa load</div>
-</div>
-</div>
-</div>
+  <div class="card">
+    <h2><span class="bi">📦</span> Load Box</h2>
+    <div class="form-group">
+      <label>Chọn tài khoản</label>
+      <select id="load-acc-select"><option value="">-- Chọn --</option></select>
+    </div>
+    <div style="text-align:center;">
+      <button type="button" class="btn-circle primary" onclick="loadBoxes()" title="Load">🔄</button>
+      <button type="button" class="btn-circle success" onclick="selectAllBoxes()" title="Chọn tất cả">✅</button>
+      <button type="button" class="btn-circle danger" onclick="clearAllBoxes()" title="Bỏ chọn">❌</button>
+    </div>
+    <div style="margin-top:12px;">
+      <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:11px;">
+        <b>Đã chọn: <span id="selected-count" style="color:#667eea;">0</span></b>
+      </div>
+      <div class="box-list" id="box-list">
+        <div style="text-align:center;padding:20px;color:#999;font-size:11px;">Chưa load</div>
+      </div>
+    </div>
+  </div>
 </div>
 
-<!-- FILES -->
+<!-- ============ FILES ============ -->
 <div class="panel" id="panel-files">
-<div class="card">
-<h2><span class="bi">📤</span> Upload file</h2>
-<div class="form-group"><input type="file" id="file-input" accept=".txt" style="padding:6px;"></div>
-<button class="btn-rect primary" onclick="uploadFile()">📤 Upload</button>
-<div style="margin-top:10px;font-size:11px;color:#6b7280;line-height:1.6;">
-💡 Mỗi khối ngăn bởi **dòng trống** = 1 tin nhắn (giữ nguyên multiline)
-</div>
-</div>
-<div class="card">
-<h2><span class="bi">📁</span> File đã upload</h2>
-<div id="files-list"><div style="text-align:center;padding:20px;color:#999;font-size:11px;">Chưa có</div></div>
-</div>
+  <div class="card">
+    <h2><span class="bi">📤</span> Upload file</h2>
+    <div class="form-group"><input type="file" id="file-input" accept=".txt" style="padding:6px;"></div>
+    <button type="button" class="btn-rect primary full" onclick="uploadFile()">📤 Upload</button>
+    <div style="margin-top:10px;font-size:11px;color:#6b7280;line-height:1.6;">
+      💡 Mỗi khối ngăn bởi <b>dòng trống</b> = 1 tin nhắn (giữ nguyên multiline)
+    </div>
+  </div>
+  <div class="card">
+    <h2><span class="bi">📁</span> File đã upload</h2>
+    <div id="files-list"><div style="text-align:center;padding:20px;color:#999;font-size:11px;">Chưa có</div></div>
+  </div>
 </div>
 
-<!-- SPAM -->
+<!-- ============ SPAM ============ -->
 <div class="panel" id="panel-spam">
-<div class="card">
-<h2><span class="bi">🎯</span> Cấu hình spam</h2>
+  <div class="card">
+    <h2><span class="bi">🎯</span> Cấu hình spam</h2>
 
-<div class="form-group">
-<label>Chọn file tin nhắn</label>
-<select id="spam-file-select"><option value="">-- Chọn file --</option></select>
-</div>
+    <div class="form-group">
+      <label>Chọn file tin nhắn</label>
+      <select id="spam-file-select"><option value="">-- Chọn file --</option></select>
+    </div>
 
-<div class="form-group">
-<label>Hoặc nhập tin (mỗi khối cách nhau dấu ;)</label>
-<textarea id="spam-messages" placeholder="Tin 1 dòng 1&#10;Tin 1 dòng 2;Tin 2"></textarea>
-</div>
+    <div class="form-group">
+      <label>Hoặc nhập tin (mỗi khối cách nhau dấu ;)</label>
+      <textarea id="spam-messages" placeholder="Tin 1 dòng 1&#10;Tin 1 dòng 2;Tin 2"></textarea>
+    </div>
 
-<div class="form-group">
-<label>⏱ Delay (giây)</label>
-<div class="chip-group" id="delay-chips">
-<div class="chip" data-delay="0.3">0.3s</div>
-<div class="chip" data-delay="0.5">0.5s</div>
-<div class="chip" data-delay="1">1s</div>
-<div class="chip active" data-delay="2">2s</div>
-<div class="chip" data-delay="3">3s</div>
-<div class="chip" data-delay="5">5s</div>
-<div class="chip" data-delay="10">10s</div>
-<div class="chip" data-delay="30">30s</div>
-</div>
-<input type="hidden" id="spam-delay" value="2">
-</div>
+    <div class="form-group">
+      <label>⏱ Delay (giây)</label>
+      <div class="chip-group" id="delay-chips">
+        <div class="chip" data-delay="0.3">0.3s</div>
+        <div class="chip" data-delay="0.5">0.5s</div>
+        <div class="chip" data-delay="1">1s</div>
+        <div class="chip active" data-delay="2">2s</div>
+        <div class="chip" data-delay="3">3s</div>
+        <div class="chip" data-delay="5">5s</div>
+        <div class="chip" data-delay="10">10s</div>
+        <div class="chip" data-delay="30">30s</div>
+      </div>
+      <input type="hidden" id="spam-delay" value="2">
+    </div>
 
-<div class="form-group">
-<label>😈 Số icon cuối câu</label>
-<div class="chip-group" id="icon-chips">
-<div class="chip" data-icon="0">0</div>
-<div class="chip" data-icon="2">2</div>
-<div class="chip active" data-icon="5">5</div>
-<div class="chip" data-icon="10">10</div>
-<div class="chip" data-icon="15">15</div>
-<div class="chip" data-icon="20">20</div>
-</div>
-<input type="hidden" id="icon-count" value="5">
-</div>
+    <div class="form-group">
+      <label>😈 Số icon cuối câu</label>
+      <div class="chip-group" id="icon-chips">
+        <div class="chip" data-icon="0">0</div>
+        <div class="chip" data-icon="2">2</div>
+        <div class="chip active" data-icon="5">5</div>
+        <div class="chip" data-icon="10">10</div>
+        <div class="chip" data-icon="15">15</div>
+        <div class="chip" data-icon="20">20</div>
+      </div>
+      <input type="hidden" id="icon-count" value="5">
+    </div>
 
-<div class="toggle-group">
-<div class="toggle active" id="tg-color" onclick="tgFlag('color')">🎨 Đổi màu</div>
-<div class="toggle active" id="tg-emoji" onclick="tgFlag('emoji')">😈 Thêm icon</div>
-</div>
+    <div class="toggle-group">
+      <div class="toggle active" id="tg-color" onclick="tgFlag('color')">🎨 Đổi màu</div>
+      <div class="toggle active" id="tg-emoji" onclick="tgFlag('emoji')">😈 Thêm icon</div>
+    </div>
 
-<div class="form-group">
-<label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
-<input type="checkbox" id="tg-tag" onchange="tgTag()" style="width:auto;">
-Tag UID trong tin nhắn
-</label>
-<div id="tag-wrap" style="display:none;margin-top:8px;">
-<div class="form-group">
-<select id="member-acc-select"><option value="">-- Chọn acc để load members --</option></select>
-</div>
-<button class="btn-rect info" onclick="loadMembers()">🔄 Load members</button>
-<div class="tag-selector" id="tag-selector"></div>
-<input type="hidden" id="tag-selected" value="">
-</div>
-</div>
+    <div class="form-group">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+        <input type="checkbox" id="tg-tag" onchange="tgTag()" style="width:auto;">
+        Tag UID trong tin nhắn
+      </label>
+      <div id="tag-wrap" style="display:none;margin-top:8px;">
+        <div class="form-group">
+          <select id="member-acc-select"><option value="">-- Chọn acc để load members --</option></select>
+        </div>
+        <button type="button" class="btn-rect info" onclick="loadMembers()">🔄 Load members</button>
+        <div class="tag-selector" id="tag-selector"></div>
+        <input type="hidden" id="tag-selected" value="">
+      </div>
+    </div>
+  </div>
 
-<div style="text-align:center;margin-top:18px;">
-<button class="btn-circle success big" onclick="startSpam()" title="Bắt đầu">▶️</button>
-<button class="btn-circle danger big" onclick="stopAll()" title="Dừng">⏸️</button>
-</div>
-</div>
+  <div class="card">
+    <h2><span class="bi">❄️</span> Chế độ treo nâng cao</h2>
 
-<div class="card" style="background:linear-gradient(135deg,#fef3c7,#fde68a);border:2px solid #fbbf24;">
-<h2 style="color:#92400e;"><span class="bi" style="background:#92400e;">🛡️</span> Anti-Ban VIP v26</h2>
-<div style="color:#78350f;font-size:11px;line-height:1.9;font-weight:600;">
-✅ Delay min 0.3s — gửi siêu nhanh<br>
-✅ Không warmup chậm<br>
-✅ Acc + Target rotation<br>
-✅ 12 màu Zalo ngẫu nhiên<br>
-✅ Icon sát thương Zalo<br>
-✅ Risk adaptive delay<br>
-✅ Fail 50 lần → auto disable<br>
-✅ Giữ nguyên 100% text user
-</div>
-</div>
+    <div class="toggle-group" style="grid-template-columns:1fr 1fr;">
+      <div class="toggle" id="tg-freeze-text" onclick="tgFlag('freeze_text')">
+        🧊 TREO NGÔN
+      </div>
+      <div class="toggle" id="tg-freeze-delay" onclick="tgFlag('freeze_delay')">
+        🌀 TREO NHÂY
+      </div>
+    </div>
 
-<div class="card">
-<h2><span class="bi">📋</span> Tác vụ</h2>
-<button class="btn-circle danger small" onclick="stopAll()" title="Dừng hết">⏸️</button>
-<div class="table-wrap" style="margin-top:10px;">
-<table class="table"><thead><tr>
-<th>ID</th><th>Trạng thái</th><th>Bắt đầu</th><th></th>
-</tr></thead><tbody id="tasks-tbody"></tbody></table>
-</div>
-</div>
+    <div class="freeze-panel" id="fp-text">
+      <div class="fp-title">🧊 TREO NGÔN — Freeze Text Mode</div>
+      <div class="fp-desc">
+        Sau <b>N</b> tin đầu (xoay vòng bình thường), bot <b>khoá cứng 1 tin duy nhất</b>
+        và lặp mãi mãi cho tới khi dừng.<br>
+        👉 Dùng khi muốn spam 1 câu cố định với tần suất cao, không đổi nội dung.
+      </div>
+      <label style="font-size:10.5px;font-weight:800;color:#1e40af;letter-spacing:.5px;text-transform:uppercase;">
+        Khoá sau bao nhiêu tin?
+      </label>
+      <input type="number" id="freeze-text-after" value="10" min="0" max="10000" style="margin-top:6px;">
+    </div>
+
+    <div class="freeze-panel" id="fp-delay">
+      <div class="fp-title">🌀 TREO NHÂY — Freeze Delay Mode</div>
+      <div class="fp-desc">
+        Sau <b>N</b> tin đầu (delay có jitter ngẫu nhiên), bot <b>khoá cứng 1 giá trị delay duy nhất</b>
+        và dùng nó lặp mãi mãi — không jitter, không dao động.<br>
+        👉 Dùng khi muốn nhịp gửi đều tăm tắp, chính xác đến từng ms.
+      </div>
+      <label style="font-size:10.5px;font-weight:800;color:#1e40af;letter-spacing:.5px;text-transform:uppercase;">
+        Khoá delay sau bao nhiêu tin?
+      </label>
+      <input type="number" id="freeze-delay-after" value="10" min="0" max="10000" style="margin-top:6px;">
+    </div>
+
+    <div style="margin-top:12px;font-size:10.5px;color:var(--txt-2);line-height:1.6;padding:10px;background:#f8fafc;border-radius:10px;border-left:3px solid var(--info);">
+      💡 <b>2 mode độc lập</b> — bật cùng lúc được. Ví dụ: 10 tin đầu đa dạng → treo cứng 1 câu + nhịp 3s đều.
+    </div>
+  </div>
+
+  <div style="text-align:center;margin-bottom:14px;">
+    <button type="button" class="btn-circle success big" onclick="startSpam()" title="Bắt đầu">▶️</button>
+    <button type="button" class="btn-circle danger big" onclick="stopAll()" title="Dừng">⏸️</button>
+  </div>
+
+  <div class="card anti-ban-card">
+    <h2><span class="bi">🛡️</span> Anti-Ban VIP v26.1</h2>
+    <div class="anti-ban-list">
+      <div><span class="dot">✅</span><span>Delay min 0.3s — gửi siêu nhanh</span></div>
+      <div><span class="dot">✅</span><span>Acc + Target rotation thông minh</span></div>
+      <div><span class="dot">✅</span><span>12 màu Zalo ngẫu nhiên</span></div>
+      <div><span class="dot">✅</span><span>Icon sát thương Zalo</span></div>
+      <div><span class="dot">✅</span><span>Risk adaptive delay</span></div>
+      <div><span class="dot">✅</span><span>Fail 50 lần → auto disable</span></div>
+      <div><span class="dot">✅</span><span>Giữ nguyên 100% text user</span></div>
+      <div><span class="dot">❄️</span><span>2 chế độ treo: ngôn + nhây</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2><span class="bi">📋</span> Tác vụ</h2>
+    <button type="button" class="btn-circle danger small" onclick="stopAll()" title="Dừng hết">⏸️</button>
+    <div class="table-wrap" style="margin-top:10px;">
+      <table class="table"><thead><tr>
+        <th>ID</th><th>Trạng thái</th><th>Bắt đầu</th><th></th>
+      </tr></thead><tbody id="tasks-tbody"></tbody></table>
+    </div>
+  </div>
 </div>
 
 </div>
 
 <script>
-let flags = { color: true, emoji: true };
-let selectedBoxes = [];
-let selectedTags = [];
+/* ============================================================
+   STATE
+============================================================ */
+var flags = { color: true, emoji: true, freeze_text: false, freeze_delay: false };
+var selectedBoxes = [];
+var selectedTags = [];
+var _boxes = [];
+var _members = [];
 
-document.querySelectorAll('.tab').forEach(t => {
-    t.onclick = () => {
-        document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
-        document.querySelectorAll('.panel').forEach(x => x.classList.remove('active'));
-        t.classList.add('active');
-        document.getElementById('panel-' + t.dataset.tab).classList.add('active');
-        refreshAll();
-    };
-});
 
-document.querySelectorAll('#delay-chips .chip').forEach(c => {
-    c.onclick = () => {
-        document.querySelectorAll('#delay-chips .chip').forEach(x => x.classList.remove('active'));
-        c.classList.add('active');
-        document.getElementById('spam-delay').value = c.dataset.delay;
-    };
-});
+/* ============================================================
+   TOAST NOTIFICATION SYSTEM
+============================================================ */
+var Toast = (function(){
+  var stack = null;
+  function ensure(){ if(!stack) stack = document.getElementById('toast-stack'); return stack; }
 
-document.querySelectorAll('#icon-chips .chip').forEach(c => {
-    c.onclick = () => {
-        document.querySelectorAll('#icon-chips .chip').forEach(x => x.classList.remove('active'));
-        c.classList.add('active');
-        document.getElementById('icon-count').value = c.dataset.icon;
-    };
-});
+  var ICONS = { success:'✓', error:'✕', warning:'!', info:'i' };
+  var TITLES = { success:'Thành công', error:'Lỗi', warning:'Cảnh báo', info:'Thông tin' };
 
-function showAlert(msg, type) {
+  function show(msg, type, title, duration){
     type = type || 'success';
-    const a = document.getElementById('alert');
-    a.innerHTML = (type === 'success' ? '✅ ' : '⚠️ ') + msg;
-    a.className = 'alert show alert-' + type;
-    setTimeout(() => a.classList.remove('show'), 3500);
-}
+    duration = duration || 3500;
+    var s = ensure();
+    if(!s) return;
 
-async function api(url, opts) {
-    opts = opts || {};
-    const r = await fetch(url, {
-        headers: { 'Content-Type': 'application/json' },
-        ...opts,
-    });
-    return r.json();
-}
+    var el = document.createElement('div');
+    el.className = 'toast ' + type;
+    el.innerHTML =
+      '<div class="t-icon">' + (ICONS[type] || '•') + '</div>' +
+      '<button type="button" class="t-close" aria-label="Đóng">✕</button>' +
+      '<div class="t-title">' + (title || TITLES[type] || '') + '</div>' +
+      '<div class="t-msg">' + msg + '</div>' +
+      '<div class="t-progress" style="animation-duration:' + duration + 'ms;"></div>';
 
-function tgFlag(name) {
-    flags[name] = !flags[name];
-    document.getElementById('tg-' + name).classList.toggle('active', flags[name]);
-}
+    s.appendChild(el);
 
-function tgTag() {
-    const c = document.getElementById('tg-tag').checked;
-    document.getElementById('tag-wrap').style.display = c ? 'block' : 'none';
-}
-
-async function loadAccounts() {
-    const accs = await api('/api/accounts');
-    const tb = document.getElementById('accounts-tbody');
-    if (!accs.length) {
-        tb.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;padding:20px;">Chưa có</td></tr>';
-    } else {
-        tb.innerHTML = accs.map(a => {
-            const risk = (a.risk || 0).toFixed(2);
-            const rc = risk > 0.5 ? 'badge-err' : risk > 0.2 ? 'badge-warn' : 'badge-ok';
-            return '<tr>' +
-                '<td>' + a.id + '</td>' +
-                '<td><b>' + a.label + '</b></td>' +
-                '<td><span class="badge badge-ok">' + a.ok_count + '</span> <span class="badge badge-err">' + a.fail_count + '</span></td>' +
-                '<td><span class="badge ' + rc + '">' + risk + '</span></td>' +
-                '<td><span class="badge badge-info">' + (a.total_sent || 0) + '</span></td>' +
-                '<td>' +
-                    '<button class="btn-circle primary small" onclick="checkAcc(' + a.id + ')">🔍</button>' +
-                    '<button class="btn-circle warning small" onclick="resetAcc(' + a.id + ')">🔄</button>' +
-                    '<button class="btn-circle danger small" onclick="delAcc(' + a.id + ')">🗑️</button>' +
-                '</td>' +
-            '</tr>';
-        }).join('');
+    var timer = setTimeout(remove, duration);
+    function remove(){
+      clearTimeout(timer);
+      el.classList.add('removing');
+      el.addEventListener('animationend', function(){ el.remove(); }, { once:true });
     }
-    document.getElementById('stat-total').textContent = accs.length;
-    document.getElementById('stat-active').textContent = accs.filter(a => a.enabled).length;
-    document.getElementById('stat-sent').textContent = accs.reduce((s, a) => s + (a.total_sent || 0), 0);
+    el.querySelector('.t-close').addEventListener('click', remove);
+    return el;
+  }
 
-    const s1 = document.getElementById('load-acc-select');
-    const s2 = document.getElementById('member-acc-select');
-    const opts = '<option value="">-- Chọn --</option>' +
-        accs.map(a => '<option value="' + a.id + '">' + a.label + '</option>').join('');
-    const v1 = s1.value, v2 = s2.value;
-    s1.innerHTML = opts; s1.value = v1;
-    s2.innerHTML = opts; s2.value = v2;
+  return {
+    success: function(m,t,d){ return show(m,'success',t,d); },
+    error:   function(m,t,d){ return show(m,'error',t,d); },
+    warning: function(m,t,d){ return show(m,'warning',t,d); },
+    info:    function(m,t,d){ return show(m,'info',t,d); },
+    show: show
+  };
+})();
+
+/* legacy alias */
+function showAlert(msg, type){
+  type = (type === 'error') ? 'error' : (type === 'warning' ? 'warning' : 'success');
+  Toast.show(msg, type);
 }
 
-async function addAccount() {
-    const label = document.getElementById('add-label').value.trim();
-    const imei = document.getElementById('add-imei').value.trim();
-    const cookies = document.getElementById('add-cookies').value.trim();
-    if (!imei || !cookies) return showAlert('Điền IMEI và cookie', 'error');
-    const r = await api('/api/accounts/add', {
-        method: 'POST',
-        body: JSON.stringify({ label, imei, cookies }),
-    });
-    if (r.error) return showAlert(r.error, 'error');
-    showAlert('Đã thêm ' + r.label);
-    document.getElementById('add-label').value = '';
-    document.getElementById('add-imei').value = '';
-    document.getElementById('add-cookies').value = '';
+
+/* ============================================================
+   TABS
+============================================================ */
+document.querySelectorAll('.tab').forEach(function(t){
+  t.addEventListener('click', function(){
+    document.querySelectorAll('.tab').forEach(function(x){ x.classList.remove('active'); });
+    document.querySelectorAll('.panel').forEach(function(x){ x.classList.remove('active'); });
+    t.classList.add('active');
+    var p = document.getElementById('panel-' + t.dataset.tab);
+    if(p) p.classList.add('active');
     refreshAll();
+  });
+});
+
+
+/* ============================================================
+   CHIP SELECTORS
+============================================================ */
+document.querySelectorAll('#delay-chips .chip').forEach(function(c){
+  c.addEventListener('click', function(){
+    document.querySelectorAll('#delay-chips .chip').forEach(function(x){ x.classList.remove('active'); });
+    c.classList.add('active');
+    document.getElementById('spam-delay').value = c.dataset.delay;
+  });
+});
+
+document.querySelectorAll('#icon-chips .chip').forEach(function(c){
+  c.addEventListener('click', function(){
+    document.querySelectorAll('#icon-chips .chip').forEach(function(x){ x.classList.remove('active'); });
+    c.classList.add('active');
+    document.getElementById('icon-count').value = c.dataset.icon;
+  });
+});
+
+
+/* ============================================================
+   TOGGLES
+============================================================ */
+function tgFlag(name){
+  flags[name] = !flags[name];
+  var el = document.getElementById('tg-' + name.replace('_','-'));
+  if(el) el.classList.toggle('active', flags[name]);
+
+  if(name === 'freeze_text'){
+    var p = document.getElementById('fp-text');
+    if(p) p.classList.toggle('show', flags.freeze_text);
+  }
+  if(name === 'freeze_delay'){
+    var p2 = document.getElementById('fp-delay');
+    if(p2) p2.classList.toggle('show', flags.freeze_delay);
+  }
 }
 
-async function delAcc(id) {
-    if (!confirm('Xóa?')) return;
-    await api('/api/accounts/' + id, { method: 'DELETE' });
-    showAlert('Đã xóa');
-    refreshAll();
+function tgTag(){
+  var c = document.getElementById('tg-tag');
+  var wrap = document.getElementById('tag-wrap');
+  if(wrap) wrap.style.display = c.checked ? 'block' : 'none';
 }
 
-async function resetAcc(id) {
-    await api('/api/accounts/' + id + '/reset', { method: 'POST' });
-    showAlert('Đã reset');
-    refreshAll();
+
+/* ============================================================
+   API HELPER (with timeout + error handling)
+============================================================ */
+async function api(url, opts){
+  opts = opts || {};
+  var ctrl = new AbortController();
+  var to = setTimeout(function(){ ctrl.abort(); }, 60000);
+  try {
+    var r = await fetch(url, Object.assign({ signal: ctrl.signal }, opts, {
+      headers: Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {})
+    }));
+    clearTimeout(to);
+    return await r.json();
+  } catch(e){
+    clearTimeout(to);
+    return { error: 'Kết nối lỗi: ' + e.message };
+  }
 }
 
-async function checkAcc(id) {
-    const r = await api('/api/accounts/' + id + '/check', { method: 'POST' });
-    if (r.error) return showAlert(r.error, 'error');
-    showAlert('Cookie sống! UID: ' + r.uid);
+
+/* ============================================================
+   ACCOUNTS
+============================================================ */
+async function loadAccounts(){
+  var accs = await api('/api/accounts');
+  if(!Array.isArray(accs)) accs = [];
+  var tb = document.getElementById('accounts-tbody');
+  if(!accs.length){
+    tb.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;padding:20px;">Chưa có</td></tr>';
+  } else {
+    tb.innerHTML = accs.map(function(a){
+      var risk = (a.risk || 0).toFixed(2);
+      var rc = risk > 0.5 ? 'badge-err' : risk > 0.2 ? 'badge-warn' : 'badge-ok';
+      return '<tr>' +
+        '<td>' + a.id + '</td>' +
+        '<td><b>' + a.label + '</b></td>' +
+        '<td><span class="badge badge-ok">' + a.ok_count + '</span> <span class="badge badge-err">' + a.fail_count + '</span></td>' +
+        '<td><span class="badge ' + rc + '">' + risk + '</span></td>' +
+        '<td><span class="badge badge-info">' + (a.total_sent || 0) + '</span></td>' +
+        '<td>' +
+          '<button type="button" class="btn-circle primary small" onclick="checkAcc(' + a.id + ')" title="Check">🔍</button>' +
+          '<button type="button" class="btn-circle warning small" onclick="resetAcc(' + a.id + ')" title="Reset">🔄</button>' +
+          '<button type="button" class="btn-circle danger small" onclick="delAcc(' + a.id + ')" title="Xoá">🗑️</button>' +
+        '</td>' +
+      '</tr>';
+    }).join('');
+  }
+  document.getElementById('stat-total').textContent = accs.length;
+  document.getElementById('stat-active').textContent = accs.filter(function(a){ return a.enabled; }).length;
+  document.getElementById('stat-sent').textContent = accs.reduce(function(s,a){ return s + (a.total_sent || 0); }, 0);
+
+  var s1 = document.getElementById('load-acc-select');
+  var s2 = document.getElementById('member-acc-select');
+  var opts = '<option value="">-- Chọn --</option>' +
+    accs.map(function(a){ return '<option value="' + a.id + '">' + a.label + '</option>'; }).join('');
+  var v1 = s1.value, v2 = s2.value;
+  s1.innerHTML = opts; s1.value = v1;
+  s2.innerHTML = opts; s2.value = v2;
 }
 
-async function loadBoxes() {
-    const aid = document.getElementById('load-acc-select').value;
-    if (!aid) return showAlert('Chọn acc', 'error');
-    showAlert('Đang load...');
-    const r = await api('/api/accounts/' + aid + '/load_boxes', { method: 'POST' });
-    if (r.error) return showAlert(r.error, 'error');
-
-    const all = [...(r.groups || []), ...(r.friends || [])];
-    const bl = document.getElementById('box-list');
-    if (!all.length) {
-        bl.innerHTML = '<div style="text-align:center;padding:20px;color:#999;">Không có</div>';
-        return;
-    }
-    bl.innerHTML = all.map((b, i) =>
-        '<div class="box-item" data-idx="' + i + '" onclick="tgBox(this, ' + i + ')">' +
-            '<div class="check">✓</div>' +
-            '<div class="info">' +
-                '<div class="name">' + b.name + '</div>' +
-                '<div class="meta">' + b.id + ' | ' + b.type + '</div>' +
-            '</div>' +
-        '</div>'
-    ).join('');
-    window._boxes = all;
-    selectedBoxes = [];
-    document.getElementById('selected-count').textContent = '0';
-    showAlert('Đã load ' + all.length + ' box');
+async function addAccount(){
+  var label = document.getElementById('add-label').value.trim();
+  var imei = document.getElementById('add-imei').value.trim();
+  var cookies = document.getElementById('add-cookies').value.trim();
+  if(!imei || !cookies){ return Toast.error('Điền IMEI và cookie'); }
+  var r = await api('/api/accounts/add', {
+    method: 'POST',
+    body: JSON.stringify({ label: label, imei: imei, cookies: cookies })
+  });
+  if(r.error){ return Toast.error(r.error); }
+  Toast.success('Đã thêm tài khoản <b>' + r.label + '</b>');
+  document.getElementById('add-label').value = '';
+  document.getElementById('add-imei').value = '';
+  document.getElementById('add-cookies').value = '';
+  refreshAll();
 }
 
-function tgBox(el, idx) {
-    const b = window._boxes[idx];
-    if (el.classList.contains('selected')) {
-        el.classList.remove('selected');
-        selectedBoxes = selectedBoxes.filter(x => x.id !== b.id);
-    } else {
-        el.classList.add('selected');
-        selectedBoxes.push(b);
-    }
-    document.getElementById('selected-count').textContent = selectedBoxes.length;
+async function delAcc(id){
+  if(!confirm('Xóa tài khoản #' + id + '?')) return;
+  await api('/api/accounts/' + id, { method: 'DELETE' });
+  Toast.success('Đã xóa #' + id);
+  refreshAll();
 }
 
-function selectAllBoxes() {
-    document.querySelectorAll('.box-item').forEach(el => el.classList.add('selected'));
-    selectedBoxes = [...(window._boxes || [])];
-    document.getElementById('selected-count').textContent = selectedBoxes.length;
+async function resetAcc(id){
+  await api('/api/accounts/' + id + '/reset', { method: 'POST' });
+  Toast.info('Đã reset risk #' + id);
+  refreshAll();
 }
 
-function clearAllBoxes() {
-    document.querySelectorAll('.box-item').forEach(el => el.classList.remove('selected'));
-    selectedBoxes = [];
-    document.getElementById('selected-count').textContent = '0';
+async function checkAcc(id){
+  var t = Toast.info('Đang check cookie #' + id + '...', 'Kiểm tra', 20000);
+  var r = await api('/api/accounts/' + id + '/check', { method: 'POST' });
+  if(r.error){ return Toast.error(r.error, 'Check thất bại'); }
+  Toast.success('Cookie sống • UID: <code>' + r.uid + '</code>', 'Check OK');
 }
 
-async function uploadFile() {
-    const input = document.getElementById('file-input');
-    if (!input.files.length) return showAlert('Chọn file', 'error');
-    const fd = new FormData();
-    fd.append('file', input.files[0]);
-    showAlert('Đang upload...');
-    const r = await fetch('/api/files/upload', { method: 'POST', body: fd }).then(r => r.json());
-    if (r.error) return showAlert(r.error, 'error');
-    showAlert('Đã upload ' + r.filename + ' (' + r.lines + ' khối)');
+
+/* ============================================================
+   BOXES
+============================================================ */
+async function loadBoxes(){
+  var aid = document.getElementById('load-acc-select').value;
+  if(!aid) return Toast.error('Chọn tài khoản trước');
+  Toast.info('Đang load box...', 'Vui lòng đợi', 60000);
+  var r = await api('/api/accounts/' + aid + '/load_boxes', { method: 'POST' });
+  if(r.error) return Toast.error(r.error, 'Load thất bại');
+
+  var all = (r.groups || []).concat(r.friends || []);
+  var bl = document.getElementById('box-list');
+  if(!all.length){
+    bl.innerHTML = '<div style="text-align:center;padding:20px;color:#999;">Không có box nào</div>';
+    return;
+  }
+  bl.innerHTML = all.map(function(b, i){
+    return '<div class="box-item" data-idx="' + i + '" onclick="tgBox(this, ' + i + ')">' +
+      '<div class="check">✓</div>' +
+      '<div class="info">' +
+        '<div class="name">' + b.name + '</div>' +
+        '<div class="meta">' + b.id + ' | ' + b.type + '</div>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+  _boxes = all;
+  selectedBoxes = [];
+  document.getElementById('selected-count').textContent = '0';
+  Toast.success('Đã load <b>' + all.length + '</b> box', 'Load OK');
+}
+
+function tgBox(el, idx){
+  var b = _boxes[idx];
+  if(!b) return;
+  if(el.classList.contains('selected')){
+    el.classList.remove('selected');
+    selectedBoxes = selectedBoxes.filter(function(x){ return x.id !== b.id; });
+  } else {
+    el.classList.add('selected');
+    selectedBoxes.push(b);
+  }
+  document.getElementById('selected-count').textContent = selectedBoxes.length;
+}
+
+function selectAllBoxes(){
+  document.querySelectorAll('.box-item').forEach(function(el){ el.classList.add('selected'); });
+  selectedBoxes = _boxes.slice();
+  document.getElementById('selected-count').textContent = selectedBoxes.length;
+  Toast.info('Đã chọn ' + selectedBoxes.length + ' box');
+}
+
+function clearAllBoxes(){
+  document.querySelectorAll('.box-item').forEach(function(el){ el.classList.remove('selected'); });
+  selectedBoxes = [];
+  document.getElementById('selected-count').textContent = '0';
+  Toast.info('Đã bỏ chọn tất cả');
+}
+
+
+/* ============================================================
+   FILES
+============================================================ */
+async function uploadFile(){
+  var input = document.getElementById('file-input');
+  if(!input.files.length) return Toast.error('Chưa chọn file');
+  var fd = new FormData();
+  fd.append('file', input.files[0]);
+  Toast.info('Đang upload...', 'Vui lòng đợi', 60000);
+  try {
+    var r = await fetch('/api/files/upload', { method: 'POST', body: fd }).then(function(x){ return x.json(); });
+    if(r.error) return Toast.error(r.error);
+    Toast.success('Đã upload <b>' + r.filename + '</b><br>' + r.lines + ' khối tin nhắn', 'Upload OK');
     input.value = '';
     loadFiles();
+  } catch(e){
+    Toast.error('Upload lỗi: ' + e.message);
+  }
 }
 
-async function loadFiles() {
-    const files = await api('/api/files');
-    const list = document.getElementById('files-list');
-    if (!files.length) {
-        list.innerHTML = '<div style="text-align:center;padding:20px;color:#999;font-size:11px;">Chưa có</div>';
-    } else {
-        list.innerHTML = files.map(f => {
-            const kb = (f.size / 1024).toFixed(1);
-            return '<div class="file-item">' +
-                '<div class="info">' +
-                    '<div class="name">📄 ' + f.filename + '</div>' +
-                    '<div class="meta">' + f.lines + ' khối • ' + kb + ' KB</div>' +
-                '</div>' +
-                '<button class="btn-circle info small" onclick="previewFile(' + f.id + ')">👁️</button>' +
-                '<button class="btn-circle danger small" onclick="delFile(' + f.id + ')">🗑️</button>' +
-            '</div>';
-        }).join('');
-    }
-    const s = document.getElementById('spam-file-select');
-    s.innerHTML = '<option value="">-- Chọn file --</option>' +
-        files.map(f => '<option value="' + f.id + '">' + f.filename + ' (' + f.lines + ')</option>').join('');
-}
-
-async function previewFile(fid) {
-    const r = await api('/api/files/' + fid + '/preview');
-    if (r.error) return showAlert(r.error, 'error');
-    const pv = r.preview.map((m, i) => '--- Khối ' + (i + 1) + ' ---\n' + m).join('\n\n');
-    alert('File: ' + r.filename + '\nTổng: ' + r.total + ' khối\n\n' + pv);
-}
-
-async function delFile(fid) {
-    if (!confirm('Xóa file?')) return;
-    await api('/api/files/' + fid, { method: 'DELETE' });
-    showAlert('Đã xóa');
-    loadFiles();
-}
-
-async function loadMembers() {
-    const aid = document.getElementById('member-acc-select').value;
-    if (!aid) return showAlert('Chọn acc', 'error');
-    const box = selectedBoxes.find(b => b.type === 'group');
-    if (!box) return showAlert('Cần chọn 1 nhóm trước', 'error');
-
-    showAlert('Đang load members...');
-    const r = await api('/api/accounts/' + aid + '/members/' + box.id, { method: 'POST' });
-    if (r.error) return showAlert(r.error, 'error');
-
-    const mem = r.members || [];
-    const sel = document.getElementById('tag-selector');
-    sel.classList.add('show');
-    if (!mem.length) {
-        sel.innerHTML = '<div style="padding:14px;text-align:center;color:#999;font-size:11px;">Không có members</div>';
-        return;
-    }
-    sel.innerHTML = mem.map((m, i) =>
-        '<div class="tag-member" data-idx="' + i + '" onclick="tgMember(this, ' + i + ')">' +
-            '<div class="check">✓</div>' +
-            '<div><b>' + m.name + '</b> <span style="color:#999;font-size:10px;">' + m.id + '</span></div>' +
-        '</div>'
-    ).join('');
-    window._members = mem;
-    showAlert('Đã load ' + mem.length + ' members - bấm chọn');
-}
-
-function tgMember(el, idx) {
-    const m = window._members[idx];
-    if (el.classList.contains('selected')) {
-        el.classList.remove('selected');
-        selectedTags = selectedTags.filter(t => t.id !== m.id);
-    } else {
-        el.classList.add('selected');
-        selectedTags.push({ id: m.id, name: m.name });
-    }
-    document.getElementById('tag-selected').value = JSON.stringify(selectedTags);
-}
-
-async function startSpam() {
-    if (!selectedBoxes.length) return showAlert('Chưa chọn box', 'error');
-
-    const fid = document.getElementById('spam-file-select').value;
-    const direct = document.getElementById('spam-messages').value.trim();
-    let blocks = [];
-
-    if (fid) {
-        const r = await api('/api/files/' + fid + '/preview');
-        if (r.error) return showAlert('Lỗi file: ' + r.error, 'error');
-        blocks = r.all || [];
-    } else if (direct) {
-        blocks = direct.split(';').map(m => m.trim()).filter(m => m);
-    }
-
-    if (!blocks.length) return showAlert('Chưa có tin', 'error');
-
-    const delay = parseFloat(document.getElementById('spam-delay').value) || 2;
-    const iconCount = parseInt(document.getElementById('icon-count').value) || 5;
-
-    let tagUsers = [];
-    if (document.getElementById('tg-tag').checked) {
-        tagUsers = selectedTags;
-    }
-
-    const r = await api('/api/tasks/start', {
-        method: 'POST',
-        body: JSON.stringify({
-            targets: selectedBoxes,
-            blocks: blocks,
-            delay: delay,
-            use_color: flags.color,
-            use_emoji: flags.emoji,
-            icon_count: iconCount,
-            tag_users: tagUsers,
-        }),
-    });
-    if (r.error) return showAlert(r.error, 'error');
-    showAlert('🚀 Đã bắt đầu: ' + r.task_id);
-    loadTasks();
-}
-
-async function stopAll() {
-    await api('/api/tasks/stop_all', { method: 'POST' });
-    showAlert('Đã dừng tất cả');
-    loadTasks();
-}
-
-async function loadTasks() {
-    const tasks = await api('/api/tasks');
-    const tb = document.getElementById('tasks-tbody');
-    if (!tasks.length) {
-        tb.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#999;padding:16px;">Chưa có</td></tr>';
-        return;
-    }
-    tb.innerHTML = tasks.map(t => {
-        const st = new Date(t.started_at * 1000).toLocaleString('vi-VN');
-        const b = t.status === 'running' ? 'badge-ok' : 'badge-err';
-        const txt = t.status === 'running' ? 'Đang chạy' : 'Đã dừng';
-        return '<tr>' +
-            '<td><code>' + t.id + '</code></td>' +
-            '<td><span class="badge ' + b + '">' + txt + '</span></td>' +
-            '<td style="font-size:10px;">' + st + '</td>' +
-            '<td>' + (t.status === 'running' ? '<button class="btn-circle danger small" onclick="stopTask(\'' + t.id + '\')">⏸️</button>' : '') + '</td>' +
-        '</tr>';
+async function loadFiles(){
+  var files = await api('/api/files');
+  if(!Array.isArray(files)) files = [];
+  var list = document.getElementById('files-list');
+  if(!files.length){
+    list.innerHTML = '<div style="text-align:center;padding:20px;color:#999;font-size:11px;">Chưa có</div>';
+  } else {
+    list.innerHTML = files.map(function(f){
+      var kb = (f.size / 1024).toFixed(1);
+      return '<div class="file-item">' +
+        '<div class="info">' +
+          '<div class="name">📄 ' + f.filename + '</div>' +
+          '<div class="meta">' + f.lines + ' khối • ' + kb + ' KB</div>' +
+        '</div>' +
+        '<button type="button" class="btn-circle info small" onclick="previewFile(' + f.id + ')" title="Xem">👁️</button>' +
+        '<button type="button" class="btn-circle danger small" onclick="delFile(' + f.id + ')" title="Xoá">🗑️</button>' +
+      '</div>';
     }).join('');
+  }
+  var s = document.getElementById('spam-file-select');
+  var cur = s.value;
+  s.innerHTML = '<option value="">-- Chọn file --</option>' +
+    files.map(function(f){ return '<option value="' + f.id + '">' + f.filename + ' (' + f.lines + ')</option>'; }).join('');
+  s.value = cur;
 }
 
-async function stopTask(tid) {
-    await api('/api/tasks/' + tid + '/stop', { method: 'POST' });
-    showAlert('Đã dừng');
-    loadTasks();
+async function previewFile(fid){
+  var r = await api('/api/files/' + fid + '/preview');
+  if(r.error) return Toast.error(r.error);
+  var pv = (r.preview || []).map(function(m, i){ return '--- Khối ' + (i+1) + ' ---\\n' + m; }).join('\\n\\n');
+  alert('File: ' + r.filename + '\\nTổng: ' + r.total + ' khối\\n\\n' + pv);
 }
 
-function refreshAll() {
-    loadAccounts();
-    loadFiles();
-    loadTasks();
+async function delFile(fid){
+  if(!confirm('Xóa file?')) return;
+  await api('/api/files/' + fid, { method: 'DELETE' });
+  Toast.success('Đã xóa file');
+  loadFiles();
+}
+
+
+/* ============================================================
+   TAG MEMBERS
+============================================================ */
+async function loadMembers(){
+  var aid = document.getElementById('member-acc-select').value;
+  if(!aid) return Toast.error('Chọn acc để load members');
+  var box = selectedBoxes.find(function(b){ return b.type === 'group'; });
+  if(!box) return Toast.error('Cần chọn 1 NHÓM trong tab Box trước');
+
+  Toast.info('Đang load members...', 'Vui lòng đợi', 60000);
+  var r = await api('/api/accounts/' + aid + '/members/' + box.id, { method: 'POST' });
+  if(r.error) return Toast.error(r.error);
+
+  var mem = r.members || [];
+  var sel = document.getElementById('tag-selector');
+  sel.classList.add('show');
+  if(!mem.length){
+    sel.innerHTML = '<div style="padding:14px;text-align:center;color:#999;font-size:11px;">Không có members</div>';
+    return;
+  }
+  sel.innerHTML = mem.map(function(m, i){
+    return '<div class="tag-member" data-idx="' + i + '" onclick="tgMember(this, ' + i + ')">' +
+      '<div class="check">✓</div>' +
+      '<div><b>' + m.name + '</b> <span style="color:#999;font-size:10px;">' + m.id + '</span></div>' +
+    '</div>';
+  }).join('');
+  _members = mem;
+  selectedTags = [];
+  Toast.success('Đã load <b>' + mem.length + '</b> members — bấm chọn', 'Load OK');
+}
+
+function tgMember(el, idx){
+  var m = _members[idx];
+  if(!m) return;
+  if(el.classList.contains('selected')){
+    el.classList.remove('selected');
+    selectedTags = selectedTags.filter(function(t){ return t.id !== m.id; });
+  } else {
+    el.classList.add('selected');
+    selectedTags.push({ id: m.id, name: m.name });
+  }
+  document.getElementById('tag-selected').value = JSON.stringify(selectedTags);
+}
+
+
+/* ============================================================
+   SPAM
+============================================================ */
+async function startSpam(){
+  if(!selectedBoxes.length) return Toast.error('Chưa chọn box — vào tab Box chọn target trước');
+
+  var fid = document.getElementById('spam-file-select').value;
+  var direct = document.getElementById('spam-messages').value.trim();
+  var blocks = [];
+
+  if(fid){
+    var r = await api('/api/files/' + fid + '/preview');
+    if(r.error) return Toast.error('Lỗi file: ' + r.error);
+    blocks = r.all || [];
+  } else if(direct){
+    blocks = direct.split(';').map(function(m){ return m.trim(); }).filter(function(m){ return m; });
+  }
+
+  if(!blocks.length) return Toast.error('Chưa có tin nhắn — chọn file hoặc nhập tay');
+
+  var delay = parseFloat(document.getElementById('spam-delay').value) || 2;
+  var iconCount = parseInt(document.getElementById('icon-count').value) || 5;
+
+  var tagUsers = [];
+  if(document.getElementById('tg-tag').checked) tagUsers = selectedTags;
+
+  var freezeTextAfter = parseInt(document.getElementById('freeze-text-after').value) || 0;
+  var freezeDelayAfter = parseInt(document.getElementById('freeze-delay-after').value) || 0;
+
+  var payload = {
+    targets: selectedBoxes,
+    blocks: blocks,
+    delay: delay,
+    use_color: flags.color,
+    use_emoji: flags.emoji,
+    icon_count: iconCount,
+    tag_users: tagUsers,
+    freeze_text: flags.freeze_text,
+    freeze_delay: flags.freeze_delay,
+    freeze_text_after: freezeTextAfter,
+    freeze_delay_after: freezeDelayAfter
+  };
+
+  var r = await api('/api/tasks/start', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+  if(r.error) return Toast.error(r.error);
+
+  var frz = [];
+  if(flags.freeze_text) frz.push('❄️ Treo ngôn');
+  if(flags.freeze_delay) frz.push('🌀 Treo nhây');
+  var suffix = frz.length ? '<br><small>' + frz.join(' • ') + '</small>' : '';
+  Toast.success('🚀 Đã bắt đầu: <code>' + r.task_id + '</code>' + suffix, 'Task running', 5000);
+  loadTasks();
+}
+
+async function stopAll(){
+  await api('/api/tasks/stop_all', { method: 'POST' });
+  Toast.warning('Đã ra lệnh dừng tất cả task');
+  loadTasks();
+}
+
+async function loadTasks(){
+  var tasks = await api('/api/tasks');
+  if(!Array.isArray(tasks)) tasks = [];
+  var tb = document.getElementById('tasks-tbody');
+  if(!tasks.length){
+    tb.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#999;padding:16px;">Chưa có</td></tr>';
+    return;
+  }
+  tb.innerHTML = tasks.map(function(t){
+    var st = new Date(t.started_at * 1000).toLocaleString('vi-VN');
+    var running = t.status === 'running';
+    var b = running ? 'badge-ok' : 'badge-err';
+    var txt = running ? 'Đang chạy' : 'Đã dừng';
+    var meta = {};
+    try { meta = JSON.parse(t.meta || '{}'); } catch(e){}
+    var frzTags = '';
+    if(meta.freeze_text) frzTags += ' <span class="badge badge-frz">❄️Ngôn</span>';
+    if(meta.freeze_delay) frzTags += ' <span class="badge badge-frz">🌀Nhây</span>';
+    return '<tr>' +
+      '<td><code>' + t.id + '</code></td>' +
+      '<td><span class="badge ' + b + '">' + txt + '</span>' + frzTags + '</td>' +
+      '<td style="font-size:10px;">' + st + '</td>' +
+      '<td>' + (running ? '<button type="button" class="btn-circle danger small" onclick="stopTask(\\'' + t.id + '\\')" title="Dừng">⏸️</button>' : '') + '</td>' +
+    '</tr>';
+  }).join('');
+}
+
+async function stopTask(tid){
+  await api('/api/tasks/' + tid + '/stop', { method: 'POST' });
+  Toast.warning('Đã dừng task <code>' + tid + '</code>');
+  loadTasks();
+}
+
+
+/* ============================================================
+   BOOT
+============================================================ */
+function refreshAll(){
+  loadAccounts();
+  loadFiles();
+  loadTasks();
 }
 
 setInterval(loadTasks, 5000);
