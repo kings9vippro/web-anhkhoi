@@ -1,7 +1,6 @@
 # ============================================================
-# WEB-LENH v26.0 — Spam PRO MAX (Bot by Anh Khôi)
-# 2 chế độ: Nhây (theo số) + Ngôn (y chang)
-# Anti-ban chuyên gia — Spam siêu nhanh
+# WEB-LENH v26.0 — Bot by Anh Khôi
+# Anti-Ban VIP, block parse, auto UID tag, delay nhanh
 # ============================================================
 import os
 import io
@@ -12,11 +11,8 @@ import sqlite3
 import threading
 import random
 import base64
-import string
-import hashlib
 import re
 from functools import wraps
-from datetime import datetime
 from collections import deque
 
 from flask import (
@@ -26,9 +22,6 @@ from flask import (
 from Crypto.Cipher import AES
 import requests
 
-# ============================================================
-# CONFIG
-# ============================================================
 APP_PASSWORD = os.environ.get("APP_PASSWORD", "anhkhoidz")
 DATA_DIR = os.environ.get("DATA_DIR", "/tmp/alb_web")
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -37,7 +30,7 @@ UPLOAD_DIR = os.path.join(DATA_DIR, "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "alb-lenh-2026-secret")
+app.secret_key = os.environ.get("SECRET_KEY", "alb-lenh-2026")
 app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024
 
 
@@ -50,9 +43,7 @@ def init_db():
     c.execute("""
         CREATE TABLE IF NOT EXISTS accounts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            label TEXT,
-            imei TEXT,
-            cookies TEXT,
+            label TEXT, imei TEXT, cookies TEXT,
             ok_count INTEGER DEFAULT 0,
             fail_count INTEGER DEFAULT 0,
             risk REAL DEFAULT 0.0,
@@ -64,21 +55,15 @@ def init_db():
     """)
     c.execute("""
         CREATE TABLE IF NOT EXISTS tasks (
-            id TEXT PRIMARY KEY,
-            type TEXT,
-            meta TEXT,
-            status TEXT,
-            started_at REAL,
-            stats TEXT
+            id TEXT PRIMARY KEY, type TEXT, meta TEXT,
+            status TEXT, started_at REAL, stats TEXT
         )
     """)
     c.execute("""
         CREATE TABLE IF NOT EXISTS files (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            filename TEXT,
-            filepath TEXT,
-            lines INTEGER DEFAULT 0,
-            size INTEGER DEFAULT 0,
+            filename TEXT, filepath TEXT,
+            lines INTEGER DEFAULT 0, size INTEGER DEFAULT 0,
             uploaded_at REAL
         )
     """)
@@ -103,106 +88,58 @@ def new_tid(p):
 
 
 # ============================================================
-# ZALO ICONS / EMOJI
+# ICON ZALO — BỘ SÁT THƯƠNG
 # ============================================================
-ZALO_UNICODE = [
-    "😀", "😁", "😂", "🤣", "😃", "😄", "😅", "😆", "😉", "😊",
-    "😋", "😎", "😍", "😘", "🥰", "😗", "😙", "😚", "🙂", "🤗",
-    "🤩", "🤔", "🤨", "😐", "😑", "😶", "🙄", "😏", "😣", "😥",
-    "😮", "🤐", "😯", "😪", "😫", "🥱", "😴", "😌", "😛", "😜",
-    "😝", "🤤", "😒", "😓", "😔", "😕", "🙃", "🤑", "😲", "🙁",
-    "❤️", "🧡", "💛", "💚", "💙", "💜", "🖤", "🤍", "🤎", "💔",
-    "❣️", "💕", "💞", "💓", "💗", "💖", "💘", "💝", "💟", "☮️",
-    "👍", "👎", "👊", "✊", "🤛", "🤜", "🤞", "✌️", "🤟", "🤘",
-    "🔥", "💯", "✨", "⭐", "🌟", "💫", "⚡", "💥", "💢", "💨",
-    "🎉", "🎊", "🎈", "🎁", "🏆", "🥇", "🥈", "🥉", "🎯", "🎮",
+ZALO_ICON_HARD = [
+    ";f", ":d", "=))", "b-)", ";-A", ":-bd",
+    ":-R", ":-L", ":-F", "x-)", ":v", ":3",
+    ":>", ":$", ";)p", ";;)", ":p", ":-p",
+    ":-d", "8-)", ":-*", ":-h", ":-?", ":-s",
+    ":-x", ":x", ":-o", ":o", ":-|", ":|",
+    "/-no", "/-ok", "/-v", "/-punch", "/-bad",
+    "/-shit", "/-li", "/-strong", "/-weak",
+    "/-fade", "/-bome", "/-bd", "/-thanks",
+    "/-share", "/-loveu", "/-rose", "/-coffee",
+    "/-beer", "/-cake", "/-heart", "/-break",
+    "/-flag", "/-showlove", ":-bye", ">-)",
+    "p-(", ":--|", ":-DIG", ":-bye", "8-|",
+    "/-cake", ";-!", ":-t", "=d>", ":q",
 ]
 
-ZALO_EMOJI_CODES = [
-    ":-*", ":-d", ":-p", ":-(", ":-)", "=))", "b-)", ":-o",
-    ":-s", ":-h", "8-|", ":->", ";;)", ":-<", ":-$", ":3",
-    ":-?", ":-x", "8*)", "=d>", ":-bd", ":-L", ":-R",
-    ":-F", ";-)", "p-(", ":-bye", ";-/", ":-q", "x-)", ";-!",
+ZALO_ICON_UNICODE = [
+    "🤣", "😂", "😹", "😏", "😜", "😝", "🤪", "🤬",
+    "😈", "👊", "🖕", "💩", "🤡", "👎", "🖕", "😤",
+    "🤮", "🤢", "💀", "☠️", "🔥", "💢", "🗿", "🖕",
+    "😆", "🙄", "😒", "😑", "🤦", "🖕", "😺", "🐒",
 ]
 
 
-def get_random_emoji():
-    if random.random() < 0.5:
-        return random.choice(ZALO_UNICODE)
-    return random.choice(ZALO_EMOJI_CODES)
+def get_icon_hard():
+    if random.random() < 0.6:
+        return random.choice(ZALO_ICON_HARD)
+    return random.choice(ZALO_ICON_UNICODE)
 
 
 # ============================================================
-# ANTI-BAN CHUYÊN GIA v26 — CỰC MẠNH
+# ANTI-BAN VIP v26
 # ============================================================
-class AntiBanExpert:
-    """
-    Anti-ban chuyên gia — chống ban Zalo cực mạnh:
-
-    1. Adaptive delay: tự điều chỉnh theo tỉ lệ thành công
-    2. Session rotation: đổi session sau N request
-    3. Zero-width Unicode mask: 8 loại ký tự vô hình
-    4. Content variation: xoay dòng ngẫu nhiên (nhây) hoặc y chang (ngôn)
-    5. Emoji rotation: nhiều emoji mỗi tin
-    6. Color rotation: 12 màu Zalo
-    7. Account rotation: đổi acc mỗi tin
-    8. Target rotation: đổi box mỗi tin
-    9. Warmup: 2 tin đầu delay dài
-    10. Risk score: tự disable acc yếu
-    11. Dedup: không gửi trùng 5 tin gần nhất
-    12. Human typing: set typing trước khi gửi
-    13. Micro-pause: nghỉ ngẫu nhiên giữa tin
-    """
-
+class AntiBanVIP:
     MIN_DELAY = 0.3
     MAX_DELAY = 30.0
-    WARMUP_COUNT = 2
-
-    ZERO_WIDTH = ["\u200b", "\u200c", "\u200d", "\ufeff",
-                  "\u2060", "\u180e", "\u2061", "\u2062"]
-
-    ZALO_COLORS = [
-        "red", "orange", "yellow", "green",
-        "ocean", "blue", "purple", "pink",
-        "brown", "black", "gray", "white",
-    ]
 
     @staticmethod
-    def compute_delay(user_delay, risk, ok_count):
-        """Delay adaptive: min = user_delay, max = 30s nếu risk cao."""
-        d = user_delay
-        if ok_count < AntiBanExpert.WARMUP_COUNT:
-            d = max(d, 4.0)
-        if risk > 0.7:
-            d = max(d, 10.0)
+    def compute_delay(user_delay, risk):
+        """Delay nhanh — min 0.3s, tăng khi risk cao."""
+        d = max(AntiBanVIP.MIN_DELAY, user_delay)
+        if risk > 0.85:
+            d = max(d, 15.0)
+        elif risk > 0.7:
+            d = max(d, 8.0)
         elif risk > 0.5:
-            d = max(d, 5.0)
-        elif risk > 0.3:
-            d = max(d, 3.0)
-        # Jitter ±30%
-        d = d * random.uniform(0.7, 1.3)
-        return max(AntiBanExpert.MIN_DELAY, min(AntiBanExpert.MAX_DELAY, d))
-
-    @staticmethod
-    def entropy_mask(text):
-        """Chèn zero-width char — không thay đổi nội dung hiển thị."""
-        if random.random() < 0.5:
-            zw = random.choice(AntiBanExpert.ZERO_WIDTH)
-            pos = random.randint(1, max(1, len(text) - 1))
-            text = text[:pos] + zw + text[pos:]
-        return text
-
-    @staticmethod
-    def append_emojis(text, count=10):
-        """Thêm N emoji ngẫu nhiên cuối câu."""
-        if count <= 0:
-            return text
-        emojis = [get_random_emoji() for _ in range(count)]
-        return text + " " + " ".join(emojis)
-
-    @staticmethod
-    def random_color():
-        return random.choice(AntiBanExpert.ZALO_COLORS)
+            d = max(d, 4.0)
+        # Jitter ±25% thôi
+        d = d * random.uniform(0.75, 1.25)
+        return max(AntiBanVIP.MIN_DELAY, min(AntiBanVIP.MAX_DELAY, d))
 
     @staticmethod
     def compute_risk(ok, fail):
@@ -211,15 +148,22 @@ class AntiBanExpert:
             return 0.0
         return min(1.0, fail / total)
 
+    ZALO_COLORS = ["red", "orange", "yellow", "green", "ocean",
+                   "blue", "purple", "pink", "brown", "black",
+                   "gray", "white"]
+
     @staticmethod
-    def micro_pause():
-        """Nghỉ ngắn random."""
-        if random.random() < 0.1:
-            time.sleep(random.uniform(0.3, 1.5))
+    def random_color():
+        return random.choice(AntiBanVIP.ZALO_COLORS)
+
+    @staticmethod
+    def append_icons(text, count):
+        icons = [get_icon_hard() for _ in range(count)]
+        return text + " " + " ".join(icons)
 
 
 # ============================================================
-# ZALO TOOLS
+# ZALO API
 # ============================================================
 class Zalo:
     def __init__(self, imei, cookies):
@@ -248,11 +192,11 @@ class Zalo:
         d = r.json()
         ud = d.get("data")
         if not isinstance(ud, dict):
-            raise Exception("Cookie hoặc IMEI không đúng")
+            raise Exception("Cookie/IMEI không đúng")
         self.uid = ud.get("send2me_id")
         self.secret_key = ud.get("zpw_enk")
         if not self.secret_key:
-            raise Exception("Không lấy được khóa")
+            raise Exception("Không lấy được key")
 
     def _enc(self, params):
         key = base64.b64decode(self.secret_key)
@@ -268,7 +212,7 @@ class Zalo:
         d = cipher.decrypt(base64.b64decode(enc))
         return d[:-d[-1]].decode("utf-8", "ignore")
 
-    def get_groups(self):
+    def groups(self):
         r = self.s.get(
             "https://tt-group-wpa.chat.zalo.me/api/group/getlg/v4",
             params={"zpw_ver": 645, "zpw_type": 30}, timeout=20,
@@ -279,10 +223,9 @@ class Zalo:
         for gid in grid:
             try:
                 info = self.group_info(gid)
-                out.append({
-                    "id": gid, "name": info["name"],
-                    "type": "group", "members": info["totalMember"],
-                })
+                out.append({"id": gid, "name": info["name"],
+                            "type": "group",
+                            "members": info["totalMember"]})
             except Exception:
                 continue
         return out
@@ -299,7 +242,7 @@ class Zalo:
         return {"name": info.get("name", "?"),
                 "totalMember": info.get("totalMember", "?")}
 
-    def get_friends(self):
+    def friends(self):
         try:
             enc = self._enc({"offset": 0, "count": 500})
             r = self.s.post(
@@ -308,18 +251,53 @@ class Zalo:
                 data={"params": enc}, timeout=20,
             )
             dec = self._dec(r.json()["data"])
-            data = json.loads(dec).get("data", [])
-            users = data if isinstance(data, list) else data.get("users", [])
-            out = []
-            for u in users:
-                out.append({
-                    "id": u.get("userId"),
-                    "name": u.get("zaloName", "?"),
-                    "type": "user",
-                })
-            return out
+            d = json.loads(dec).get("data", [])
+            users = d if isinstance(d, list) else d.get("users", [])
+            return [{"id": u.get("userId"),
+                     "name": u.get("zaloName", "?"),
+                     "type": "user"} for u in users]
         except Exception:
             return []
+
+    def get_members(self, gid):
+        """Lấy danh sách thành viên nhóm kèm UID + tên."""
+        enc = self._enc({"gridVerMap": json.dumps({str(gid): 0})})
+        r = self.s.post(
+            "https://tt-group-wpa.chat.zalo.me/api/group/getmg-v2",
+            params={"zpw_ver": 645, "zpw_type": 30},
+            data={"params": enc}, timeout=20,
+        )
+        dec = self._dec(r.json()["data"])
+        info = json.loads(dec).get("data", {}).get("gridInfoMap", {}).get(str(gid), {})
+        mem_list = info.get("memVerList", [])
+
+        members = []
+        # Gọi API lấy profile của tất cả members 1 lần
+        uids = [m.split("_")[0] for m in mem_list]
+        if not uids:
+            return []
+
+        # Zalo cho phép query nhiều uid 1 lần
+        try:
+            payload = {"friendId": uids}
+            enc2 = self._enc(payload)
+            r2 = self.s.post(
+                "https://tt-group-wpa.chat.zalo.me/api/group/getuserinfo",
+                params={"zpw_ver": 645, "zpw_type": 30},
+                data={"params": enc2}, timeout=20,
+            )
+            dec2 = self._dec(r2.json()["data"])
+            profiles = json.loads(dec2).get("data", {}).get("profiles", {})
+            for uid in uids:
+                p = profiles.get(uid, {})
+                members.append({
+                    "id": uid,
+                    "name": p.get("displayName") or p.get("zaloName") or "User_" + uid[:6],
+                })
+        except Exception:
+            for uid in uids:
+                members.append({"id": uid, "name": "User_" + uid[:6]})
+        return members
 
     def send(self, msg, thread_id, color=None, is_group=True):
         url = ("https://tt-group-wpa.chat.zalo.me/api/group/sendmsg"
@@ -357,28 +335,40 @@ class Zalo:
 
 
 # ============================================================
-# FILE PARSER
+# PARSE FILE — THEO BLOCK (dòng trống = ngăn cách)
 # ============================================================
-def parse_message_file(filepath, max_lines=10000):
-    messages = []
+def parse_blocks(filepath, max_blocks=2000):
+    """
+    Parse file thành các block ngăn bởi dòng trống.
+    Mỗi block = 1 tin nhắn (giữ nguyên multiline).
+    """
+    blocks = []
+    current = []
     try:
         with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-            for i, line in enumerate(f):
-                if i >= max_lines:
+            for line in f:
+                if len(blocks) >= max_blocks:
                     break
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                line = re.sub(r"^\d+[\.\)\-\:]\s*", "", line)
-                if line:
-                    messages.append(line)
+                stripped = line.rstrip("\n").rstrip("\r")
+                if stripped.strip() == "":
+                    if current:
+                        blocks.append("\n".join(current))
+                        current = []
+                else:
+                    current.append(stripped)
+            if current:
+                blocks.append("\n".join(current))
     except Exception as e:
-        print("[FILE] parse error: " + str(e))
-    return messages
+        print("[FILE] error: " + str(e))
+    return blocks
+
+
+def count_blocks(filepath):
+    return len(parse_blocks(filepath))
 
 
 # ============================================================
-# SPAM WORKER — 2 CHẾ ĐỘ
+# WORKER
 # ============================================================
 def update_stats(aid, ok):
     conn = db()
@@ -389,7 +379,7 @@ def update_stats(aid, ok):
     ok_c = row["ok_count"] + (1 if ok else 0)
     fail_c = row["fail_count"] + (0 if ok else 1)
     sent = row["total_sent"] + (1 if ok else 0)
-    risk = AntiBanExpert.compute_risk(ok_c, fail_c)
+    risk = AntiBanVIP.compute_risk(ok_c, fail_c)
     enabled = row["enabled"]
     if fail_c >= 50 and ok_c / max(fail_c, 1) < 0.05:
         enabled = 0
@@ -415,36 +405,24 @@ def pick_account():
     return rows[0] if rows else None
 
 
-def spam_worker(tid, targets, messages, delay, use_color, use_emoji,
-                emoji_count, tag_uids, mode, stop_event):
+def spam_worker(tid, targets, blocks, delay, use_color, use_emoji,
+                icon_count, tag_uids_names, stop_event):
     """
-    Worker 2 chế độ:
-    - mode='nhay': xoay dòng ngẫu nhiên, không trùng 5 tin gần nhất
-    - mode='ngon': gửi Y CHANG nội dung, không đổi
+    Worker:
+    - blocks: list các tin nhắn (đã là multiline sẵn)
+    - tag_uids_names: list {id, name} cần tag
+    - icon_count: số icon thêm cuối (chỉ khi use_emoji)
     """
+    block_idx = 0
     target_idx = 0
     count = 0
     last_acc_id = None
-    recent_msgs = deque(maxlen=5)
 
-    # Xoay dòng: trộn list 1 lần, dùng tuần tự, khi hết thì trộn lại
-    shuffled_msgs = []
-    shuffle_idx = 0
-
-    def next_nhay():
-        nonlocal shuffled_msgs, shuffle_idx
-        if not shuffled_msgs or shuffle_idx >= len(shuffled_msgs):
-            shuffled_msgs = random.sample(messages, len(messages))
-            shuffle_idx = 0
-        m = shuffled_msgs[shuffle_idx]
-        shuffle_idx += 1
-        return m
-
-    print("[SPAM] Task " + tid + " | Mode: " + mode)
+    print("[SPAM] Bắt đầu: " + tid)
     print("  Targets: " + str(len(targets)))
-    print("  Messages: " + str(len(messages)))
+    print("  Blocks: " + str(len(blocks)))
     print("  Delay: " + str(delay) + "s")
-    print("  Color: " + str(use_color) + " | Emoji: " + str(use_emoji))
+    print("  Tags: " + str(len(tag_uids_names)))
 
     while not stop_event.is_set():
         acc = pick_account()
@@ -452,7 +430,6 @@ def spam_worker(tid, targets, messages, delay, use_color, use_emoji,
             time.sleep(0.5)
             continue
 
-        # Rotate acc
         if acc["id"] == last_acc_id:
             conn = db()
             cnt = conn.execute(
@@ -460,38 +437,30 @@ def spam_worker(tid, targets, messages, delay, use_color, use_emoji,
             ).fetchone()["c"]
             conn.close()
             if cnt > 1:
-                time.sleep(0.1)
+                time.sleep(0.15)
                 continue
         last_acc_id = acc["id"]
 
-        # Target rotation
         target = targets[target_idx % len(targets)]
         target_idx += 1
 
-        # Lấy message theo mode
-        if mode == "nhay":
-            raw_msg = next_nhay()
-            tries = 0
-            while raw_msg in recent_msgs and tries < 10:
-                raw_msg = next_nhay()
-                tries += 1
-            recent_msgs.append(raw_msg)
-            # Nhây: chèn entropy + emoji
-            msg = raw_msg
-            msg = AntiBanExpert.entropy_mask(msg)
-            if use_emoji and emoji_count > 0:
-                msg = AntiBanExpert.append_emojis(msg, emoji_count)
-        else:
-            # Ngôn: y chang, KHÔNG đổi
-            msg = messages[count % len(messages)]
+        # Lấy block nguyên (giữ multiline)
+        raw = blocks[block_idx % len(blocks)]
+        block_idx += 1
 
-        # Tag UID
-        if tag_uids:
-            tags = " ".join(["@" + u for u in tag_uids])
-            msg = tags + " " + msg
+        # Tag nếu có
+        if tag_uids_names:
+            tags = " ".join(["@" + t["name"] for t in tag_uids_names])
+            msg = tags + " " + raw
+        else:
+            msg = raw
+
+        # Icon
+        if use_emoji and icon_count > 0:
+            msg = AntiBanVIP.append_icons(msg, icon_count)
 
         # Color
-        color = AntiBanExpert.random_color() if use_color else None
+        color = AntiBanVIP.random_color() if use_color else None
 
         is_group = target.get("type") == "group"
         target_id = target.get("id")
@@ -500,24 +469,20 @@ def spam_worker(tid, targets, messages, delay, use_color, use_emoji,
             cookies = json.loads(acc["cookies"])
             z = Zalo(acc["imei"], cookies)
 
-            # Warmup
-            if acc["ok_count"] < AntiBanExpert.WARMUP_COUNT:
-                time.sleep(random.uniform(2, 4))
-
             # Behavior
             z.set_typing(target_id, is_group=is_group)
-            time.sleep(random.uniform(0.2, 0.8))
+            time.sleep(random.uniform(0.3, 1.0))
 
             r = z.send(msg, target_id, color=color, is_group=is_group)
             ok = bool(r and r.status_code == 200)
 
             update_stats(acc["id"], ok)
             count += 1
-
             status = "OK" if ok else "ERR"
-            color_s = "[" + color + "]" if color else ""
-            print("[#" + str(count) + "] " + acc["label"] + " -> " +
-                  str(target_id) + color_s + " [" + status + "] " + msg[:60])
+            cs = "[" + color + "]" if color else ""
+            preview = msg.replace("\n", " ⏎ ")[:60]
+            print("[#" + str(count) + "] " + acc["label"] + " → " +
+                  str(target_id) + cs + " [" + status + "] " + preview)
 
         except Exception as e:
             update_stats(acc["id"], False)
@@ -525,16 +490,13 @@ def spam_worker(tid, targets, messages, delay, use_color, use_emoji,
 
         # Delay
         risk = acc["risk"] if acc["risk"] else 0.0
-        ok_c = acc["ok_count"] if acc["ok_count"] else 0
-        actual = AntiBanExpert.compute_delay(delay, risk, ok_c)
+        actual = AntiBanVIP.compute_delay(delay, risk)
 
         end = time.time() + actual
         while time.time() < end:
             if stop_event.is_set():
                 break
             time.sleep(0.05)
-
-        AntiBanExpert.micro_pause()
 
     conn = db()
     conn.execute(
@@ -544,11 +506,11 @@ def spam_worker(tid, targets, messages, delay, use_color, use_emoji,
     conn.commit()
     conn.close()
     ACTIVE_TASKS.pop(tid, None)
-    print("[SPAM] Task " + tid + " dừng - Tổng: " + str(count))
+    print("[SPAM] Task " + tid + " stop - total: " + str(count))
 
 
 # ============================================================
-# AUTH + ROUTES
+# AUTH
 # ============================================================
 def login_required(f):
     @wraps(f)
@@ -559,6 +521,9 @@ def login_required(f):
     return wrapper
 
 
+# ============================================================
+# ROUTES
+# ============================================================
 @app.route("/")
 @login_required
 def index():
@@ -582,9 +547,7 @@ def logout():
     return redirect(url_for("login"))
 
 
-# ============================================================
-# API — ACCOUNTS
-# ============================================================
+# ---- ACCOUNTS ----
 @app.route("/api/accounts", methods=["GET"])
 @login_required
 def api_accounts():
@@ -601,23 +564,21 @@ def api_accounts():
 @app.route("/api/accounts/add", methods=["POST"])
 @login_required
 def api_accounts_add():
-    data = request.json
-    label = data.get("label", "").strip() or "acc" + str(int(time.time()))
-    imei = data.get("imei", "").strip()
-    ck_raw = data.get("cookies", "").strip()
-
-    if not imei or not ck_raw:
+    d = request.json
+    label = d.get("label", "").strip() or "acc" + str(int(time.time()))
+    imei = d.get("imei", "").strip()
+    ck = d.get("cookies", "").strip()
+    if not imei or not ck:
         return jsonify({"error": "Thiếu IMEI hoặc cookie"}), 400
     try:
-        cookies = json.loads(ck_raw)
+        ck_obj = json.loads(ck)
     except Exception:
         return jsonify({"error": "Cookie không phải JSON"}), 400
-
     conn = db()
     conn.execute("""
         INSERT INTO accounts (label, imei, cookies, added_at)
         VALUES (?, ?, ?, ?)
-    """, (label, imei, json.dumps(cookies), time.time()))
+    """, (label, imei, json.dumps(ck_obj), time.time()))
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "label": label})
@@ -637,9 +598,7 @@ def api_accounts_delete(aid):
 @login_required
 def api_accounts_reset(aid):
     conn = db()
-    conn.execute(
-        "UPDATE accounts SET risk = 0, enabled = 1 WHERE id = ?", (aid,)
-    )
+    conn.execute("UPDATE accounts SET risk = 0, enabled = 1 WHERE id = ?", (aid,))
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
@@ -654,8 +613,7 @@ def api_accounts_check(aid):
     if not row:
         return jsonify({"error": "Không tìm thấy"}), 404
     try:
-        cookies = json.loads(row["cookies"])
-        z = Zalo(row["imei"], cookies)
+        z = Zalo(row["imei"], json.loads(row["cookies"]))
         return jsonify({"ok": True, "uid": z.uid})
     except Exception as e:
         return jsonify({"error": str(e)}), 400
@@ -670,23 +628,32 @@ def api_load_boxes(aid):
     if not row:
         return jsonify({"error": "Không tìm thấy"}), 404
     try:
-        cookies = json.loads(row["cookies"])
-        z = Zalo(row["imei"], cookies)
-        groups = z.get_groups()
-        friends = z.get_friends()
-        return jsonify({
-            "ok": True,
-            "groups": groups,
-            "friends": friends,
-            "total": len(groups) + len(friends),
-        })
+        z = Zalo(row["imei"], json.loads(row["cookies"]))
+        gs = z.groups()
+        fs = z.friends()
+        return jsonify({"ok": True, "groups": gs, "friends": fs,
+                        "total": len(gs) + len(fs)})
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
 
-# ============================================================
-# API — FILES
-# ============================================================
+@app.route("/api/accounts/<int:aid>/members/<group_id>", methods=["POST"])
+@login_required
+def api_load_members(aid, group_id):
+    conn = db()
+    row = conn.execute("SELECT * FROM accounts WHERE id = ?", (aid,)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"error": "Không tìm thấy"}), 404
+    try:
+        z = Zalo(row["imei"], json.loads(row["cookies"]))
+        members = z.get_members(group_id)
+        return jsonify({"ok": True, "members": members})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
+# ---- FILES ----
 @app.route("/api/files", methods=["GET"])
 @login_required
 def api_files_list():
@@ -706,30 +673,21 @@ def api_files_upload():
         return jsonify({"error": "Không có file"}), 400
     f = request.files["file"]
     if not f.filename:
-        return jsonify({"error": "Tên file trống"}), 400
-
-    filename = f.filename
-    safe_name = str(int(time.time())) + "_" + filename
-    filepath = os.path.join(UPLOAD_DIR, safe_name)
-    f.save(filepath)
-
-    messages = parse_message_file(filepath, max_lines=10000)
-    size = os.path.getsize(filepath)
-
+        return jsonify({"error": "Tên trống"}), 400
+    safe = str(int(time.time())) + "_" + f.filename
+    fp = os.path.join(UPLOAD_DIR, safe)
+    f.save(fp)
+    blocks = parse_blocks(fp, max_blocks=2000)
+    size = os.path.getsize(fp)
     conn = db()
     conn.execute("""
         INSERT INTO files (filename, filepath, lines, size, uploaded_at)
         VALUES (?, ?, ?, ?, ?)
-    """, (filename, filepath, len(messages), size, time.time()))
+    """, (f.filename, fp, len(blocks), size, time.time()))
     conn.commit()
     conn.close()
-
-    return jsonify({
-        "ok": True,
-        "filename": filename,
-        "lines": len(messages),
-        "preview": messages[:5],
-    })
+    return jsonify({"ok": True, "filename": f.filename,
+                    "lines": len(blocks), "preview": blocks[:3]})
 
 
 @app.route("/api/files/<int:fid>", methods=["DELETE"])
@@ -759,18 +717,14 @@ def api_files_preview(fid):
     conn.close()
     if not row:
         return jsonify({"error": "Không tìm thấy"}), 404
-    messages = parse_message_file(row["filepath"], max_lines=10000)
-    return jsonify({
-        "filename": row["filename"],
-        "total": len(messages),
-        "preview": messages[:20],
-        "all": messages,
-    })
+    blocks = parse_blocks(row["filepath"], max_blocks=2000)
+    return jsonify({"filename": row["filename"],
+                    "total": len(blocks),
+                    "preview": blocks[:5],
+                    "all": blocks})
 
 
-# ============================================================
-# API — TASKS
-# ============================================================
+# ---- TASKS ----
 @app.route("/api/tasks", methods=["GET"])
 @login_required
 def api_tasks():
@@ -785,44 +739,40 @@ def api_tasks():
 @app.route("/api/tasks/start", methods=["POST"])
 @login_required
 def api_tasks_start():
-    data = request.json
-    targets = data.get("targets", [])
-    messages = data.get("messages", [])
-    delay = float(data.get("delay", 3))
-    use_color = bool(data.get("use_color", True))
-    use_emoji = bool(data.get("use_emoji", True))
-    emoji_count = int(data.get("emoji_count", 10))
-    tag_uids = data.get("tag_uids", [])
-    mode = data.get("mode", "nhay")  # nhay / ngon
+    d = request.json
+    targets = d.get("targets", [])
+    blocks = d.get("blocks", [])
+    delay = float(d.get("delay", 3))
+    use_color = bool(d.get("use_color", True))
+    use_emoji = bool(d.get("use_emoji", True))
+    icon_count = int(d.get("icon_count", 3))
+    tag_uids_names = d.get("tag_users", [])  # [{id, name}]
 
     if not targets:
         return jsonify({"error": "Chưa chọn target"}), 400
-    if not messages:
+    if not blocks:
         return jsonify({"error": "Chưa có tin nhắn"}), 400
-    if delay < 0.3:
-        delay = 0.3
-    if emoji_count < 0:
-        emoji_count = 0
-    if emoji_count > 15:
-        emoji_count = 15
-    if mode not in ("nhay", "ngon"):
-        mode = "nhay"
+    if delay < AntiBanVIP.MIN_DELAY:
+        delay = AntiBanVIP.MIN_DELAY
+    if icon_count < 0:
+        icon_count = 0
+    if icon_count > 20:
+        icon_count = 20
 
     conn = db()
-    count = conn.execute(
+    cnt = conn.execute(
         "SELECT COUNT(*) as c FROM accounts WHERE enabled = 1"
     ).fetchone()["c"]
     conn.close()
-
-    if count == 0:
+    if cnt == 0:
         return jsonify({"error": "Kho tài khoản trống"}), 400
 
     tid = new_tid("spam")
-    stop_event = threading.Event()
-    thread = threading.Thread(
+    stop_ev = threading.Event()
+    th = threading.Thread(
         target=spam_worker,
-        args=(tid, targets, messages, delay, use_color, use_emoji,
-              emoji_count, tag_uids, mode, stop_event),
+        args=(tid, targets, blocks, delay, use_color, use_emoji,
+              icon_count, tag_uids_names, stop_ev),
         daemon=True,
     )
 
@@ -830,21 +780,17 @@ def api_tasks_start():
     conn.execute("""
         INSERT INTO tasks (id, type, meta, status, started_at, stats)
         VALUES (?, ?, ?, ?, ?, ?)
-    """, (tid, "spam_" + mode,
-          json.dumps({
-              "targets": len(targets),
-              "messages": len(messages),
-              "delay": delay,
-              "mode": mode,
-          }),
+    """, (tid, "spam",
+          json.dumps({"targets": len(targets), "blocks": len(blocks),
+                      "delay": delay, "tags": len(tag_uids_names)}),
           "running", time.time(), "{}"))
     conn.commit()
     conn.close()
 
-    ACTIVE_TASKS[tid] = {"stop": stop_event, "thread": thread}
-    thread.start()
+    ACTIVE_TASKS[tid] = {"stop": stop_ev, "thread": th}
+    th.start()
 
-    return jsonify({"ok": True, "task_id": tid, "mode": mode})
+    return jsonify({"ok": True, "task_id": tid})
 
 
 @app.route("/api/tasks/<tid>/stop", methods=["POST"])
@@ -853,7 +799,7 @@ def api_tasks_stop(tid):
     if tid in ACTIVE_TASKS:
         ACTIVE_TASKS[tid]["stop"].set()
         return jsonify({"ok": True})
-    return jsonify({"error": "Task không tồn tại"}), 404
+    return jsonify({"error": "Không tồn tại"}), 404
 
 
 @app.route("/api/tasks/stop_all", methods=["POST"])
@@ -866,32 +812,45 @@ def api_tasks_stop_all():
 
 @app.route("/health")
 def health():
-    return jsonify({
-        "status": "ok",
-        "service": "web-lenh",
-        "version": "26.0",
-        "tasks": len(ACTIVE_TASKS),
-    })
+    return jsonify({"status": "ok", "service": "web-lenh", "version": "26.0"})
 
 
 # ============================================================
 # LOGO SVG
 # ============================================================
-LOGO_SVG = """<svg class="logo-svg" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <defs>
-        <linearGradient id="lg1" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stop-color="#f093fb"/>
-            <stop offset="50%" stop-color="#f5576c"/>
-            <stop offset="100%" stop-color="#ee5a6f"/>
-        </linearGradient>
-    </defs>
-    <path d="M50 5 C30 5, 15 20, 15 40 C15 60, 30 75, 50 75 C55 75, 60 74, 64 72 L85 85 L82 65 C90 58, 95 49, 95 40 C95 20, 70 5, 50 5 Z"
-          fill="url(#lg1)"/>
-    <circle cx="35" cy="40" r="4" fill="white"/>
-    <circle cx="50" cy="40" r="4" fill="white"/>
-    <circle cx="65" cy="40" r="4" fill="white"/>
-    <path d="M30 55 Q50 65 70 55" stroke="white" stroke-width="2.5"
-          stroke-linecap="round" fill="none"/>
+LOGO_SVG = """<svg viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg" fill="none">
+<defs>
+<linearGradient id="gA" x1="0" y1="0" x2="1" y2="1">
+<stop offset="0%" stop-color="#f093fb"/>
+<stop offset="100%" stop-color="#f5576c"/>
+</linearGradient>
+<linearGradient id="gB" x1="0" y1="1" x2="1" y2="0">
+<stop offset="0%" stop-color="#667eea"/>
+<stop offset="100%" stop-color="#764ba2"/>
+</linearGradient>
+<radialGradient id="gC" cx="0.5" cy="0.5" r="0.6">
+<stop offset="0%" stop-color="#ffffff" stop-opacity="0.9"/>
+<stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+</radialGradient>
+<filter id="fg">
+<feGaussianBlur stdDeviation="3" result="b"/>
+<feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+</filter>
+</defs>
+<circle cx="60" cy="60" r="52" fill="url(#gB)" opacity="0.15"/>
+<circle cx="60" cy="60" r="42" fill="url(#gC)" opacity="0.3"/>
+<path d="M60 12 C30 12, 10 32, 10 58 C10 82, 30 102, 60 102 C68 102, 76 100, 82 96 L108 108 L100 84 C110 76, 116 68, 116 58 C116 32, 90 12, 60 12 Z"
+ fill="url(#gA)" filter="url(#fg)"/>
+<path d="M60 12 C30 12, 10 32, 10 58 C10 82, 30 102, 60 102 C68 102, 76 100, 82 96 L108 108 L100 84 C110 76, 116 68, 116 58 C116 32, 90 12, 60 12 Z"
+ fill="none" stroke="white" stroke-width="1.5" opacity="0.7"/>
+<circle cx="40" cy="55" r="5.5" fill="white"/>
+<circle cx="60" cy="55" r="5.5" fill="white"/>
+<circle cx="80" cy="55" r="5.5" fill="white"/>
+<path d="M32 78 Q60 92 88 78" stroke="white" stroke-width="3" stroke-linecap="round" fill="none"/>
+<path d="M92 20 L96 30 L106 33 L96 36 L92 46 L88 36 L78 33 L88 30 Z"
+ fill="url(#gB)" filter="url(#fg)"/>
+<path d="M20 90 L24 97 L31 100 L24 103 L20 110 L16 103 L9 100 L16 97 Z"
+ fill="url(#gB)" filter="url(#fg)" opacity="0.85"/>
 </svg>"""
 
 
@@ -906,75 +865,45 @@ HTML_LOGIN = """<!DOCTYPE html>
 <title>Đăng nhập — ALB Forge</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <style>
-* { margin:0; padding:0; box-sizing:border-box; }
-body {
-    font-family:'Inter',sans-serif;
-    min-height:100vh; display:flex; align-items:center; justify-content:center;
-    background:linear-gradient(-45deg,#667eea,#764ba2,#f093fb,#f5576c);
-    background-size:400% 400%;
-    animation:gradientShift 15s ease infinite;
-    padding:20px;
-}
-@keyframes gradientShift {
-    0% { background-position:0% 50%; }
-    50% { background-position:100% 50%; }
-    100% { background-position:0% 50%; }
-}
-.card {
-    background:white; padding:44px 32px; border-radius:32px;
-    box-shadow:0 40px 100px rgba(0,0,0,0.3);
-    width:100%; max-width:400px; text-align:center;
-    animation:cardIn 0.8s cubic-bezier(0.16,1,0.3,1);
-}
-@keyframes cardIn {
-    from { opacity:0; transform:translateY(50px) scale(0.94); }
-    to { opacity:1; transform:translateY(0) scale(1); }
-}
-.logo-svg { width:100px; height:100px; margin:0 auto 20px; display:block;
-    animation:logoFloat 3.5s ease-in-out infinite; }
-@keyframes logoFloat {
-    0%,100% { transform:translateY(0) rotate(0deg); }
-    50% { transform:translateY(-10px) rotate(-3deg); }
-}
-h1 { color:#1a1a2e; margin-bottom:8px; font-size:26px; font-weight:900; }
-p.sub { color:#6b7280; margin-bottom:28px; font-size:13px; }
-input {
-    width:100%; padding:16px;
-    border:2px solid #e5e7eb; border-radius:14px;
-    font-size:16px; font-family:inherit; font-weight:500;
-    background:#f9fafb; text-align:center;
-}
-input:focus {
-    outline:none; border-color:#667eea; background:white;
-    box-shadow:0 0 0 5px rgba(102,126,234,0.12);
-}
-button {
-    width:100%; padding:16px; margin-top:14px;
-    background:linear-gradient(135deg,#667eea,#764ba2);
-    color:white; border:none; border-radius:14px;
-    font-size:16px; font-weight:800; font-family:inherit;
-    cursor:pointer; box-shadow:0 12px 30px rgba(102,126,234,0.4);
-    transition:all 0.3s;
-}
-button:hover { transform:translateY(-2px); }
-.error {
-    background:#fef2f2; color:#dc2626;
-    padding:12px 16px; border-radius:12px;
-    margin-bottom:18px; font-size:13px; font-weight:600;
-    border-left:4px solid #dc2626;
-}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{font-family:'Inter',sans-serif;min-height:100vh;min-height:100dvh;display:flex;align-items:center;justify-content:center;
+background:linear-gradient(-45deg,#667eea,#764ba2,#f093fb,#f5576c);background-size:400% 400%;animation:bg 15s ease infinite;padding:20px}
+@keyframes bg{0%{background-position:0% 50%}50%{background-position:100% 50%}100%{background-position:0% 50%}}
+.card{background:rgba(255,255,255,0.98);padding:44px 34px;border-radius:32px;box-shadow:0 40px 100px rgba(0,0,0,0.3);
+width:100%;max-width:420px;text-align:center;animation:in 0.8s cubic-bezier(0.16,1,0.3,1)}
+@keyframes in{from{opacity:0;transform:translateY(50px) scale(0.94)}to{opacity:1;transform:translateY(0) scale(1)}}
+.logo-box{width:120px;height:120px;margin:0 auto 20px;animation:fl 3.5s ease-in-out infinite;position:relative}
+.logo-box::before{content:'';position:absolute;inset:-20px;border-radius:50%;
+background:radial-gradient(circle,rgba(245,87,108,0.5),transparent 70%);filter:blur(20px);animation:gl 3s ease-in-out infinite}
+@keyframes fl{0%,100%{transform:translateY(0) rotate(0)}50%{transform:translateY(-10px) rotate(-3deg)}}
+@keyframes gl{0%,100%{opacity:0.5;transform:scale(1)}50%{opacity:0.9;transform:scale(1.2)}}
+.logo-box svg{width:100%;height:100%;position:relative;z-index:1}
+h1{color:#1a1a2e;margin-bottom:6px;font-size:24px;font-weight:900;letter-spacing:-0.6px}
+p.sub{color:#6b7280;margin-bottom:28px;font-size:13px}
+input{width:100%;padding:16px;border:2px solid #e5e7eb;border-radius:14px;font-size:15px;
+font-family:inherit;font-weight:500;background:#f9fafb;text-align:center}
+input:focus{outline:none;border-color:#667eea;background:white;box-shadow:0 0 0 4px rgba(102,126,234,0.12)}
+button{width:100%;padding:16px;margin-top:14px;background:linear-gradient(135deg,#667eea,#764ba2);color:white;
+border:none;border-radius:14px;font-size:15px;font-weight:800;font-family:inherit;cursor:pointer;
+box-shadow:0 12px 30px rgba(102,126,234,0.4);transition:0.3s;position:relative;overflow:hidden}
+button::before{content:'';position:absolute;inset:0;background:linear-gradient(120deg,transparent,rgba(255,255,255,0.4),transparent);
+transform:translateX(-100%);transition:0.7s}
+button:hover::before{transform:translateX(100%)}
+button:hover{transform:translateY(-2px)}
+.error{background:#fef2f2;color:#dc2626;padding:12px 16px;border-radius:12px;margin-bottom:16px;
+font-size:13px;font-weight:600;border-left:4px solid #dc2626}
 </style>
 </head>
 <body>
 <div class="card">
-    <div class="logo-svg">""" + LOGO_SVG + """</div>
-    <h1>ALB FORGE</h1>
-    <p class="sub">Bot by Anh Khôi — v26.0 PRO MAX</p>
-    {% if error %}<div class="error">⚠️ {{ error }}</div>{% endif %}
-    <form method="POST">
-        <input type="password" name="password" placeholder="Mật khẩu" autofocus required>
-        <button type="submit">🚀 Đăng nhập</button>
-    </form>
+<div class="logo-box">""" + LOGO_SVG + """</div>
+<h1>ALB FORGE</h1>
+<p class="sub">Bot by Anh Khôi • v26.0</p>
+{% if error %}<div class="error">⚠️ {{ error }}</div>{% endif %}
+<form method="POST">
+<input type="password" name="password" placeholder="Nhập mật khẩu" autofocus required>
+<button type="submit">🚀 Đăng nhập</button>
+</form>
 </div>
 </body>
 </html>
@@ -989,598 +918,356 @@ HTML_INDEX = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<title>ALB Forge v26</title>
+<title>ALB Forge</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <style>
-* { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
-body { font-family:'Inter',sans-serif; background:#f8fafc; min-height:100vh; color:#1a1a2e; }
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html{touch-action:manipulation}
+body{font-family:'Inter',sans-serif;background:#f8fafc;min-height:100vh;color:#1a1a2e;overflow-x:hidden}
 
-.header {
-    background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);
-    color:white; padding:16px 20px;
-    box-shadow:0 4px 30px rgba(102,126,234,0.35);
-    position:sticky; top:0; z-index:100;
-    padding-top:calc(16px + env(safe-area-inset-top, 0px));
-}
-.header-inner {
-    max-width:1200px; margin:0 auto;
-    display:flex; align-items:center; justify-content:space-between; gap:12px;
-}
-.logo-mini {
-    width:44px; height:44px;
-    display:flex; align-items:center; justify-content:center;
-    background:rgba(255,255,255,0.15);
-    border-radius:14px;
-    border:1px solid rgba(255,255,255,0.25);
-    padding:8px;
-}
-.logo-mini svg { width:100%; height:100%; }
-.header-info { flex:1; }
-.header-info h1 { font-size:18px; font-weight:900; }
-.header-info p { font-size:11px; opacity:0.85; margin-top:2px; }
-.logout-btn {
-    background:rgba(255,255,255,0.15); color:white;
-    border:1px solid rgba(255,255,255,0.25);
-    padding:10px 16px; border-radius:12px;
-    font-size:12px; font-weight:700; font-family:inherit;
-    cursor:pointer; transition:all 0.25s;
-}
-.logout-btn:hover { background:rgba(255,255,255,0.28); }
+.header{background:linear-gradient(135deg,#667eea,#764ba2);color:white;padding:14px 18px;
+box-shadow:0 4px 30px rgba(102,126,234,0.35);position:sticky;top:0;z-index:100;
+padding-top:calc(14px + env(safe-area-inset-top,0px))}
+.header-inner{max-width:1200px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;gap:10px}
+.logo-mini{width:42px;height:42px;display:flex;align-items:center;justify-content:center;
+background:rgba(255,255,255,0.15);border-radius:12px;border:1px solid rgba(255,255,255,0.25);padding:6px;
+animation:logoFl 3.5s ease-in-out infinite}
+@keyframes logoFl{0%,100%{transform:translateY(0)}50%{transform:translateY(-4px)}}
+.logo-mini svg{width:100%;height:100%}
+.header-info{flex:1}
+.header-info h1{font-size:16px;font-weight:900;letter-spacing:-0.3px}
+.header-info p{font-size:10px;opacity:0.85;font-weight:500;margin-top:2px}
+.logout-btn{background:rgba(255,255,255,0.15);color:white;border:1px solid rgba(255,255,255,0.25);
+padding:8px 14px;border-radius:10px;font-size:12px;font-weight:700;font-family:inherit;cursor:pointer;transition:0.25s}
+.logout-btn:hover{background:rgba(255,255,255,0.28)}
 
-.container { max-width:1200px; margin:0 auto; padding:16px; }
+.container{max-width:1200px;margin:0 auto;padding:14px}
 
-.tabs {
-    display:grid; grid-template-columns:repeat(4,1fr);
-    gap:6px; margin-bottom:16px;
-    background:white; padding:6px;
-    border-radius:18px;
-    box-shadow:0 4px 25px rgba(0,0,0,0.05);
-}
-.tab {
-    padding:12px 6px; border-radius:14px;
-    cursor:pointer; font-size:11px; font-weight:800;
-    text-align:center; color:#6b7280;
-    transition:all 0.3s;
-    display:flex; flex-direction:column; align-items:center; gap:4px;
-}
-.tab-icon { font-size:18px; }
-.tab.active {
-    background:linear-gradient(135deg,#667eea,#764ba2);
-    color:white;
-    box-shadow:0 8px 20px rgba(102,126,234,0.4);
-}
+.tabs{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:14px;
+background:white;padding:6px;border-radius:16px;box-shadow:0 4px 25px rgba(0,0,0,0.05)}
+.tab{padding:10px 4px;border-radius:12px;cursor:pointer;font-size:10px;font-weight:800;
+text-align:center;color:#6b7280;transition:0.3s;display:flex;flex-direction:column;
+align-items:center;gap:3px;user-select:none}
+.tab-icon{font-size:18px;transition:0.3s}
+.tab:hover .tab-icon{transform:scale(1.15)}
+.tab.active{background:linear-gradient(135deg,#667eea,#764ba2);color:white;
+box-shadow:0 8px 20px rgba(102,126,234,0.4);transform:translateY(-2px)}
+.panel{display:none;animation:fade 0.35s}
+.panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
 
-.panel { display:none; animation:fadeIn 0.35s; }
-.panel.active { display:block; }
-@keyframes fadeIn {
-    from { opacity:0; transform:translateY(12px); }
-    to { opacity:1; transform:translateY(0); }
-}
+.card{background:white;padding:18px;border-radius:20px;box-shadow:0 6px 30px rgba(0,0,0,0.05);
+margin-bottom:14px;border:1px solid #f0f2f5}
+.card h2{font-size:14px;font-weight:900;margin-bottom:14px;display:flex;align-items:center;gap:8px;letter-spacing:-0.3px}
+.card h2 .bi{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,#667eea,#764ba2);
+display:flex;align-items:center;justify-content:center;font-size:14px;color:white}
 
-.card {
-    background:white; padding:20px;
-    border-radius:22px;
-    box-shadow:0 6px 30px rgba(0,0,0,0.05);
-    margin-bottom:16px;
-    border:1px solid #f0f2f5;
-}
-.card h2 {
-    font-size:15px; font-weight:900;
-    margin-bottom:16px;
-    display:flex; align-items:center; gap:10px;
-}
-.card h2 .badge-icon {
-    width:32px; height:32px; border-radius:10px;
-    background:linear-gradient(135deg,#667eea,#764ba2);
-    display:flex; align-items:center; justify-content:center;
-    font-size:15px;
-}
+.form-group{margin-bottom:12px}
+.form-group label{display:block;margin-bottom:5px;font-size:11px;font-weight:800;color:#374151;
+text-transform:uppercase;letter-spacing:0.5px}
+.form-group input,.form-group textarea,.form-group select{width:100%;padding:11px 13px;border:2px solid #e5e7eb;
+border-radius:12px;font-size:13px;font-family:inherit;font-weight:500;background:#f9fafb;color:#1a1a2e;transition:0.25s}
+.form-group input:focus,.form-group textarea:focus,.form-group select:focus{outline:none;border-color:#667eea;
+background:white;box-shadow:0 0 0 4px rgba(102,126,234,0.1)}
+.form-group textarea{min-height:90px;resize:vertical;font-family:monospace;font-size:12px;line-height:1.5}
 
-.form-group { margin-bottom:14px; }
-.form-group label {
-    display:block; margin-bottom:6px;
-    font-size:12px; font-weight:800; color:#374151;
-    text-transform:uppercase; letter-spacing:0.5px;
-}
-.form-group input, .form-group textarea, .form-group select {
-    width:100%; padding:12px 14px;
-    border:2px solid #e5e7eb; border-radius:14px;
-    font-size:14px; font-family:inherit; font-weight:500;
-    background:#f9fafb;
-}
-.form-group input:focus, .form-group textarea:focus, .form-group select:focus {
-    outline:none; border-color:#667eea; background:white;
-    box-shadow:0 0 0 4px rgba(102,126,234,0.1);
-}
-.form-group textarea {
-    min-height:90px; resize:vertical;
-    font-family:monospace; font-size:12px;
-}
+.btn-circle{width:52px;height:52px;border-radius:50%;border:none;cursor:pointer;display:inline-flex;
+align-items:center;justify-content:center;font-size:20px;color:white;transition:all 0.3s cubic-bezier(0.16,1,0.3,1);
+box-shadow:0 10px 25px rgba(0,0,0,0.15);position:relative;overflow:hidden;margin:3px}
+.btn-circle::before{content:'';position:absolute;inset:0;
+background:linear-gradient(120deg,transparent,rgba(255,255,255,0.4),transparent);transform:translateX(-100%);transition:0.6s}
+.btn-circle:hover::before{transform:translateX(100%)}
+.btn-circle:hover{transform:translateY(-4px) scale(1.06);box-shadow:0 15px 35px rgba(0,0,0,0.25)}
+.btn-circle:active{transform:translateY(-1px) scale(0.98)}
+.btn-circle.primary{background:linear-gradient(135deg,#667eea,#764ba2)}
+.btn-circle.danger{background:linear-gradient(135deg,#ef4444,#dc2626)}
+.btn-circle.success{background:linear-gradient(135deg,#10b981,#059669)}
+.btn-circle.warning{background:linear-gradient(135deg,#f59e0b,#d97706)}
+.btn-circle.info{background:linear-gradient(135deg,#3b82f6,#2563eb)}
+.btn-circle.purple{background:linear-gradient(135deg,#8b5cf6,#7c3aed)}
+.btn-circle.pink{background:linear-gradient(135deg,#ec4899,#db2777)}
+.btn-circle.teal{background:linear-gradient(135deg,#14b8a6,#0d9488)}
+.btn-circle.small{width:38px;height:38px;font-size:15px}
+.btn-circle.big{width:70px;height:70px;font-size:26px}
 
-.btn-circle {
-    width:56px; height:56px; border-radius:50%;
-    border:none; cursor:pointer;
-    display:inline-flex; align-items:center; justify-content:center;
-    font-size:22px; color:white;
-    transition:all 0.3s cubic-bezier(0.16,1,0.3,1);
-    box-shadow:0 10px 25px rgba(0,0,0,0.15);
-    position:relative; overflow:hidden;
-    margin:4px;
-}
-.btn-circle::before {
-    content:''; position:absolute; inset:0;
-    background:linear-gradient(120deg,transparent,rgba(255,255,255,0.4),transparent);
-    transform:translateX(-100%);
-    transition:transform 0.6s;
-}
-.btn-circle:hover::before { transform:translateX(100%); }
-.btn-circle:hover { transform:translateY(-4px) scale(1.06); }
-.btn-circle:active { transform:translateY(-1px) scale(0.98); }
+.btn-rect{padding:11px 18px;border:none;border-radius:12px;cursor:pointer;font-size:12px;font-weight:800;
+font-family:inherit;color:white;transition:0.3s;box-shadow:0 8px 20px rgba(0,0,0,0.15);
+display:inline-flex;align-items:center;gap:6px}
+.btn-rect:hover{transform:translateY(-3px)}
+.btn-rect.primary{background:linear-gradient(135deg,#667eea,#764ba2)}
+.btn-rect.danger{background:linear-gradient(135deg,#ef4444,#dc2626)}
+.btn-rect.success{background:linear-gradient(135deg,#10b981,#059669)}
+.btn-rect.info{background:linear-gradient(135deg,#3b82f6,#2563eb)}
+.btn-rect.purple{background:linear-gradient(135deg,#8b5cf6,#7c3aed)}
 
-.btn-circle.primary { background:linear-gradient(135deg,#667eea,#764ba2); }
-.btn-circle.danger { background:linear-gradient(135deg,#ef4444,#dc2626); }
-.btn-circle.success { background:linear-gradient(135deg,#10b981,#059669); }
-.btn-circle.warning { background:linear-gradient(135deg,#f59e0b,#d97706); }
-.btn-circle.info { background:linear-gradient(135deg,#3b82f6,#2563eb); }
-.btn-circle.purple { background:linear-gradient(135deg,#8b5cf6,#7c3aed); }
-.btn-circle.pink { background:linear-gradient(135deg,#ec4899,#db2777); }
-.btn-circle.small { width:42px; height:42px; font-size:16px; }
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:8px;margin-bottom:14px}
+.stat{background:linear-gradient(135deg,#f9fafb,#f3f4f6);padding:12px;border-radius:14px;
+border:1px solid #e5e7eb;position:relative;overflow:hidden}
+.stat::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;
+background:linear-gradient(90deg,#667eea,#764ba2)}
+.stat .label{font-size:9px;color:#6b7280;margin-bottom:5px;text-transform:uppercase;
+letter-spacing:0.5px;font-weight:800}
+.stat .value{font-size:22px;font-weight:900;color:#1a1a2e;line-height:1}
 
-.btn-rect {
-    padding:12px 20px; border:none;
-    border-radius:14px; cursor:pointer;
-    font-size:13px; font-weight:800; font-family:inherit;
-    color:white;
-    transition:all 0.3s;
-    box-shadow:0 8px 20px rgba(0,0,0,0.15);
-    display:inline-flex; align-items:center; gap:8px;
-}
-.btn-rect:hover { transform:translateY(-3px); }
-.btn-rect.primary { background:linear-gradient(135deg,#667eea,#764ba2); }
-.btn-rect.danger { background:linear-gradient(135deg,#ef4444,#dc2626); }
-.btn-rect.success { background:linear-gradient(135deg,#10b981,#059669); }
-.btn-rect.info { background:linear-gradient(135deg,#3b82f6,#2563eb); }
-.btn-rect.purple { background:linear-gradient(135deg,#8b5cf6,#7c3aed); }
-.btn-rect.pink { background:linear-gradient(135deg,#ec4899,#db2777); }
+.table-wrap{overflow-x:auto}
+.table{width:100%;border-collapse:collapse}
+.table th,.table td{padding:9px 6px;text-align:left;font-size:11px;border-bottom:1px solid #f0f2f5;white-space:nowrap}
+.table th{background:#f9fafb;font-weight:800;color:#6b7280;text-transform:uppercase;font-size:9px;letter-spacing:0.5px}
+.table td code{background:#f3f4f6;padding:2px 6px;border-radius:5px;font-size:10px;font-family:monospace}
 
-.stat-grid {
-    display:grid; grid-template-columns:repeat(auto-fit,minmax(110px,1fr));
-    gap:10px; margin-bottom:16px;
-}
-.stat {
-    background:linear-gradient(135deg,#f9fafb,#f3f4f6);
-    padding:14px; border-radius:16px;
-    border:1px solid #e5e7eb;
-    position:relative; overflow:hidden;
-}
-.stat::before {
-    content:''; position:absolute; top:0; left:0; right:0; height:4px;
-    background:linear-gradient(90deg,#667eea,#764ba2);
-}
-.stat .label {
-    font-size:10px; color:#6b7280;
-    margin-bottom:6px; text-transform:uppercase;
-    letter-spacing:0.5px; font-weight:800;
-}
-.stat .value {
-    font-size:24px; font-weight:900;
-}
+.badge{display:inline-flex;align-items:center;gap:2px;padding:3px 7px;border-radius:20px;font-size:9px;font-weight:800}
+.badge-ok{background:#d1fae5;color:#065f46}
+.badge-err{background:#fee2e2;color:#991b1b}
+.badge-warn{background:#fef3c7;color:#92400e}
+.badge-info{background:#dbeafe;color:#1e40af}
 
-.table-wrap { overflow-x:auto; }
-.table { width:100%; border-collapse:collapse; }
-.table th, .table td {
-    padding:10px 8px; text-align:left;
-    font-size:12px;
-    border-bottom:1px solid #f0f2f5;
-    white-space:nowrap;
-}
-.table th {
-    background:#f9fafb; font-weight:800;
-    color:#6b7280; text-transform:uppercase;
-    font-size:10px;
-}
-.table td code {
-    background:#f3f4f6; padding:3px 8px;
-    border-radius:6px; font-size:11px;
-    font-family:monospace;
-}
+.box-list{max-height:340px;overflow-y:auto;border:2px solid #e5e7eb;border-radius:14px;
+padding:8px;background:#f9fafb}
+.box-item{padding:10px;border-radius:10px;background:white;margin-bottom:6px;cursor:pointer;
+border:2px solid transparent;transition:0.2s;display:flex;align-items:center;gap:10px;font-size:12px}
+.box-item:hover{border-color:#667eea}
+.box-item.selected{border-color:#10b981;background:#ecfdf5}
+.box-item .check{width:18px;height:18px;border:2px solid #d1d5db;border-radius:5px;
+display:flex;align-items:center;justify-content:center;font-size:10px;color:white;font-weight:900;flex-shrink:0}
+.box-item.selected .check{background:#10b981;border-color:#10b981}
+.box-item .info{flex:1;min-width:0}
+.box-item .name{font-weight:700;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.box-item .meta{font-size:10px;color:#6b7280;font-family:monospace;margin-top:2px}
 
-.badge {
-    display:inline-flex; align-items:center; gap:3px;
-    padding:4px 8px; border-radius:20px;
-    font-size:10px; font-weight:800;
-}
-.badge-ok { background:#d1fae5; color:#065f46; }
-.badge-err { background:#fee2e2; color:#991b1b; }
-.badge-warn { background:#fef3c7; color:#92400e; }
-.badge-info { background:#dbeafe; color:#1e40af; }
+.file-item{display:flex;align-items:center;gap:10px;padding:10px;border-radius:12px;
+background:#f9fafb;margin-bottom:8px;border:1px solid #e5e7eb}
+.file-item .info{flex:1;min-width:0}
+.file-item .name{font-weight:700;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.file-item .meta{font-size:10px;color:#6b7280;margin-top:2px}
 
-.box-list {
-    max-height:320px; overflow-y:auto;
-    border:2px solid #e5e7eb; border-radius:14px;
-    padding:8px; background:#f9fafb;
-}
-.box-item {
-    padding:10px; border-radius:10px;
-    background:white; margin-bottom:6px;
-    cursor:pointer; border:2px solid transparent;
-    transition:all 0.2s;
-    display:flex; align-items:center; gap:10px;
-    font-size:12px;
-}
-.box-item:hover { border-color:#667eea; }
-.box-item.selected { border-color:#10b981; background:#ecfdf5; }
-.box-item .check {
-    width:18px; height:18px;
-    border:2px solid #d1d5db; border-radius:5px;
-    display:flex; align-items:center; justify-content:center;
-    font-size:10px; color:white; font-weight:900;
-    flex-shrink:0;
-}
-.box-item.selected .check { background:#10b981; border-color:#10b981; }
-.box-item .info { flex:1; min-width:0; }
-.box-item .name {
-    font-weight:700; font-size:12px;
-    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
-}
-.box-item .meta {
-    font-size:10px; color:#6b7280;
-    font-family:monospace; margin-top:2px;
-}
+.chip-group{display:flex;flex-wrap:wrap;gap:5px;margin-top:5px}
+.chip{padding:7px 13px;background:#f3f4f6;color:#374151;border-radius:20px;font-size:11px;
+font-weight:800;cursor:pointer;transition:0.2s;border:2px solid transparent;user-select:none}
+.chip:hover{background:#e5e7eb}
+.chip.active{background:linear-gradient(135deg,#667eea,#764ba2);color:white;
+box-shadow:0 4px 15px rgba(102,126,234,0.4)}
 
-.file-item {
-    display:flex; align-items:center; gap:10px;
-    padding:10px; border-radius:12px;
-    background:#f9fafb; margin-bottom:8px;
-    border:1px solid #e5e7eb;
-}
-.file-item .info { flex:1; min-width:0; }
-.file-item .name {
-    font-weight:700; font-size:12px;
-    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
-}
-.file-item .meta {
-    font-size:10px; color:#6b7280; margin-top:2px;
-}
+.toggle-group{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px}
+.toggle{padding:11px;border:2px solid #e5e7eb;border-radius:12px;cursor:pointer;
+text-align:center;font-weight:800;font-size:11px;background:#f9fafb;color:#6b7280;user-select:none;transition:0.25s}
+.toggle.active{background:linear-gradient(135deg,#667eea,#764ba2);color:white;border-color:transparent;
+box-shadow:0 8px 20px rgba(102,126,234,0.4);transform:translateY(-2px)}
 
-.chip-group {
-    display:flex; flex-wrap:wrap; gap:6px;
-    margin-top:6px;
-}
-.chip {
-    padding:8px 14px;
-    background:#f3f4f6; color:#374151;
-    border-radius:20px; font-size:12px;
-    font-weight:800; cursor:pointer;
-    transition:all 0.2s;
-    border:2px solid transparent;
-}
-.chip:hover { background:#e5e7eb; }
-.chip.active {
-    background:linear-gradient(135deg,#667eea,#764ba2);
-    color:white;
-    box-shadow:0 4px 15px rgba(102,126,234,0.4);
-}
-.chip.fast {
-    background:#fef3c7; color:#92400e;
-}
-.chip.fast:hover { background:#fde68a; }
-.chip.fast.active {
-    background:linear-gradient(135deg,#f59e0b,#d97706);
-    color:white;
-}
+.alert{padding:13px 16px;border-radius:12px;margin-bottom:10px;font-size:12px;font-weight:700;display:none;
+position:fixed;top:80px;right:14px;z-index:999;box-shadow:0 15px 45px rgba(0,0,0,0.2);max-width:320px}
+.alert.show{display:flex;gap:8px;animation:sl 0.35s}
+@keyframes sl{from{opacity:0;transform:translateX(120%)}to{opacity:1;transform:translateX(0)}}
+.alert-success{background:linear-gradient(135deg,#d1fae5,#a7f3d0);color:#065f46;border-left:5px solid #10b981}
+.alert-error{background:linear-gradient(135deg,#fee2e2,#fecaca);color:#991b1b;border-left:5px solid #ef4444}
 
-.mode-group {
-    display:grid; grid-template-columns:1fr 1fr;
-    gap:8px; margin-bottom:14px;
-}
-.mode-btn {
-    padding:16px 12px;
-    border:2px solid #e5e7eb;
-    border-radius:16px; cursor:pointer;
-    text-align:center; background:#f9fafb;
-    transition:all 0.25s;
-}
-.mode-btn:hover { border-color:#667eea; }
-.mode-btn.active {
-    background:linear-gradient(135deg,#667eea,#764ba2);
-    color:white; border-color:transparent;
-    box-shadow:0 8px 25px rgba(102,126,234,0.4);
-}
-.mode-btn .icon { font-size:28px; margin-bottom:6px; }
-.mode-btn .title { font-size:14px; font-weight:900; margin-bottom:4px; }
-.mode-btn .desc {
-    font-size:10px; font-weight:600; opacity:0.7;
-    line-height:1.4;
-}
+.tag-selector{max-height:240px;overflow-y:auto;border:2px solid #e5e7eb;border-radius:12px;
+padding:8px;background:#f9fafb;display:none;margin-top:8px}
+.tag-selector.show{display:block}
+.tag-member{padding:8px;border-radius:8px;background:white;margin-bottom:4px;cursor:pointer;
+border:2px solid transparent;font-size:12px;display:flex;align-items:center;gap:8px}
+.tag-member:hover{border-color:#8b5cf6}
+.tag-member.selected{border-color:#8b5cf6;background:#f3e8ff}
+.tag-member .check{width:16px;height:16px;border:2px solid #d1d5db;border-radius:4px;
+display:flex;align-items:center;justify-content:center;font-size:9px;color:white;font-weight:900;flex-shrink:0}
+.tag-member.selected .check{background:#8b5cf6;border-color:#8b5cf6}
 
-.toggle-group {
-    display:grid; grid-template-columns:1fr 1fr;
-    gap:8px; margin-bottom:14px;
-}
-.toggle {
-    padding:12px; border:2px solid #e5e7eb;
-    border-radius:14px; cursor:pointer;
-    text-align:center; font-weight:800;
-    font-size:12px; background:#f9fafb;
-    color:#6b7280;
-    transition:all 0.25s;
-}
-.toggle.active {
-    background:linear-gradient(135deg,#667eea,#764ba2);
-    color:white; border-color:transparent;
-    box-shadow:0 8px 20px rgba(102,126,234,0.4);
-}
-
-.alert {
-    padding:14px 18px; border-radius:14px;
-    margin-bottom:12px; font-size:13px;
-    font-weight:700; display:none;
-    position:fixed; top:90px; right:16px;
-    z-index:999; box-shadow:0 15px 45px rgba(0,0,0,0.2);
-    max-width:340px;
-}
-.alert.show { display:flex; gap:10px; animation:slideIn 0.35s; }
-@keyframes slideIn {
-    from { opacity:0; transform:translateX(120%); }
-    to { opacity:1; transform:translateX(0); }
-}
-.alert-success {
-    background:linear-gradient(135deg,#d1fae5,#a7f3d0);
-    color:#065f46; border-left:5px solid #10b981;
-}
-.alert-error {
-    background:linear-gradient(135deg,#fee2e2,#fecaca);
-    color:#991b1b; border-left:5px solid #ef4444;
-}
-
-@media (max-width:640px) {
-    .container { padding:10px; }
-    .card { padding:16px; border-radius:18px; }
-    .header-info h1 { font-size:15px; }
-    .header-info p { font-size:10px; }
-    .logo-mini { width:38px; height:38px; }
-    .logout-btn { padding:8px 12px; font-size:11px; }
-    .tab { padding:10px 4px; font-size:10px; }
-    .tab-icon { font-size:16px; }
-    .stat .value { font-size:20px; }
-    .btn-circle { width:48px; height:48px; font-size:18px; }
-    .btn-circle.small { width:38px; height:38px; font-size:14px; }
-    .alert { left:12px; right:12px; max-width:none; }
+@media (max-width:640px){
+.container{padding:10px}
+.card{padding:14px;border-radius:18px}
+.header{padding:10px 12px}
+.header-info h1{font-size:14px}
+.header-info p{font-size:9px}
+.logo-mini{width:36px;height:36px}
+.logout-btn{padding:7px 10px;font-size:11px}
+.tab{padding:9px 3px;font-size:9px}
+.tab-icon{font-size:16px}
+.stat .value{font-size:18px}
+.btn-circle{width:46px;height:46px;font-size:18px}
+.btn-circle.small{width:34px;height:34px;font-size:13px}
+.btn-circle.big{width:62px;height:62px;font-size:22px}
+.alert{left:10px;right:10px;max-width:none}
 }
 </style>
 </head>
 <body>
 
 <div class="header">
-    <div class="header-inner">
-        <div class="logo-mini">""" + LOGO_SVG + """</div>
-        <div class="header-info">
-            <h1>ALB FORGE</h1>
-            <p>Bot by Anh Khôi • v26.0 PRO MAX</p>
-        </div>
-        <button class="logout-btn" onclick="location.href='/logout'">🚪 Thoát</button>
-    </div>
+<div class="header-inner">
+<div class="logo-mini">""" + LOGO_SVG + """</div>
+<div class="header-info">
+<h1>ALB FORGE</h1>
+<p>Bot by Anh Khôi • v26.0 VIP</p>
+</div>
+<button class="logout-btn" onclick="location.href='/logout'">🚪 Thoát</button>
+</div>
 </div>
 
 <div class="container">
 
 <div class="tabs">
-    <div class="tab active" data-tab="accounts">
-        <div class="tab-icon">🔐</div>
-        <div>Tài khoản</div>
-    </div>
-    <div class="tab" data-tab="boxes">
-        <div class="tab-icon">📦</div>
-        <div>Box</div>
-    </div>
-    <div class="tab" data-tab="files">
-        <div class="tab-icon">📁</div>
-        <div>File</div>
-    </div>
-    <div class="tab" data-tab="spam">
-        <div class="tab-icon">🎯</div>
-        <div>Spam</div>
-    </div>
+<div class="tab active" data-tab="accounts"><div class="tab-icon">🔐</div><div>Acc</div></div>
+<div class="tab" data-tab="boxes"><div class="tab-icon">📦</div><div>Box</div></div>
+<div class="tab" data-tab="files"><div class="tab-icon">📁</div><div>File</div></div>
+<div class="tab" data-tab="spam"><div class="tab-icon">🎯</div><div>Spam</div></div>
 </div>
 
 <div id="alert" class="alert"></div>
 
-<!-- TAB ACCOUNTS -->
+<!-- ACCOUNTS -->
 <div class="panel active" id="panel-accounts">
-    <div class="card">
-        <h2><span class="badge-icon">➕</span> Thêm tài khoản</h2>
-        <div class="form-group">
-            <label>Tên gợi nhớ</label>
-            <input id="add-label" placeholder="acc1">
-        </div>
-        <div class="form-group">
-            <label>IMEI</label>
-            <input id="add-imei" placeholder="000000000000000">
-        </div>
-        <div class="form-group">
-            <label>Cookie (JSON)</label>
-            <textarea id="add-cookies" placeholder='{"zpw_sek":"...","zpw_ver":"645","zpw_type":"30"}'></textarea>
-        </div>
-        <button class="btn-rect primary" onclick="addAccount()">💾 Thêm tài khoản</button>
-    </div>
-
-    <div class="card">
-        <h2><span class="badge-icon">📋</span> Danh sách</h2>
-        <div class="stat-grid">
-            <div class="stat"><div class="label">Tổng</div><div class="value" id="stat-total">0</div></div>
-            <div class="stat"><div class="label">Active</div><div class="value" id="stat-active">0</div></div>
-            <div class="stat"><div class="label">Đã gửi</div><div class="value" id="stat-sent">0</div></div>
-        </div>
-        <div class="table-wrap">
-            <table class="table">
-                <thead><tr>
-                    <th>ID</th><th>Tên</th><th>OK/Lỗi</th><th>Risk</th><th>Sent</th><th></th>
-                </tr></thead>
-                <tbody id="accounts-tbody"></tbody>
-            </table>
-        </div>
-    </div>
+<div class="card">
+<h2><span class="bi">➕</span> Thêm tài khoản</h2>
+<div class="form-group"><label>Tên gợi nhớ</label><input id="add-label" placeholder="acc1"></div>
+<div class="form-group"><label>IMEI</label><input id="add-imei" placeholder="000000000000000"></div>
+<div class="form-group"><label>Cookie (JSON)</label>
+<textarea id="add-cookies" placeholder='{"zpw_sek":"...","zpw_ver":"645","zpw_type":"30"}'></textarea></div>
+<button class="btn-rect primary" onclick="addAccount()">💾 Thêm tài khoản</button>
+</div>
+<div class="card">
+<h2><span class="bi">📋</span> Danh sách</h2>
+<div class="stat-grid">
+<div class="stat"><div class="label">Tổng</div><div class="value" id="stat-total">0</div></div>
+<div class="stat"><div class="label">Active</div><div class="value" id="stat-active">0</div></div>
+<div class="stat"><div class"="label">Sent</div><div class="value" onclick id="stat-sent">0</div></div>
+="</div>
+<div class="table-wrap"><table classclear="table"><thead><tr>
+<th>ID</th><th>Tên</th><th>OK/Lỗi</th><th>Risk</th><th>Sent</th><th></th>
+</tr></thead><tbody id="accounts-tbody"></tbody></table></div>
+</div>
 </div>
 
-<!-- TAB BOXES -->
+<!-- BOXES -->
 <div class="panel" id="panel-boxes">
-    <div class="card">
-        <h2><span class="badge-icon">📦</span> Load Box</h2>
-        <div class="form-group">
-            <label>Chọn tài khoản</label>
-            <select id="load-acc-select">
-                <option value="">-- Chọn --</option>
-            </select>
-        </div>
-        <div style="text-align:center;">
-            <button class="btn-circle primary" onclick="loadBoxes()" title="Load">🔄</button>
-            <button class="btn-circle success" onclick="selectAllBoxes()" title="Chọn hết">✅</button>
-            <button class="btn-circle danger" onclick="clearAllBoxes()" title="Bỏ chọn">❌</button>
-        </div>
-        <div style="margin-top:14px;">
-            <div style="margin-bottom:8px;font-size:12px;">
-                <b>Đã chọn: <span id="selected-count" style="color:#667eea;">0</span></b>
-            </div>
-            <div class="box-list" id="box-list">
-                <div style="text-align:center;padding:24px;color:#999;font-size:12px;">Chưa load box</div>
-            </div>
-        </div>
-    </div>
+<div class="card">
+<h2><span class="bi">📦</span> Load Box</h2>
+<div class="form-group">
+<label>Chọn tài khoản</label>
+<select id="load-acc-select"><option value="">-- Chọn --</option></select>
+</div>
+<div style="text-align:center;">
+<button class="btn-circle primary" onclick="loadBoxes()" title="Load">🔄</button>
+<button class="btn-circle success" onclick="selectAllBoxes()" title="Chọn tất cả">✅</button>
+<button class="btn-circle dangerAllBoxes()" title="Bỏ chọn">❌</button>
+</div>
+<div style="margin-top:12px;">
+<div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:11px;">
+<b>Đã chọn: <span id="selected-count" style="color:#667eea;">0</span></b>
+</div>
+<div class="box-list" id="box-list">
+<div style="text-align:center;padding:20px;color:#999;font-size:11px;">Chưa load</div>
+</div>
+</div>
+</div>
 </div>
 
-<!-- TAB FILES -->
+<!-- FILES -->
 <div class="panel" id="panel-files">
-    <div class="card">
-        <h2><span class="badge-icon">📤</span> Upload file</h2>
-        <div class="form-group">
-            <input type="file" id="file-input" accept=".txt" style="padding:8px;">
-        </div>
-        <button class="btn-rect primary" onclick="uploadFile()">📤 Upload</button>
-    </div>
-
-    <div class="card">
-        <h2><span class="badge-icon">📁</span> Quản lý file</h2>
-        <div id="files-list">
-            <div style="text-align:center;padding:24px;color:#999;font-size:12px;">Chưa có file</div>
-        </div>
-    </div>
+<div class="card">
+<h2><span class="bi">📤</span> Upload file</h2>
+<div class="form-group"><input type="file" id="file-input" accept=".txt" style="padding:6px;"></div>
+<button class="btn-rect primary" onclick="uploadFile()">📤 Upload</button>
+<div style="margin-top:10px;font-size:11px;color:#6b7280;line-height:1.6;">
+💡 Mỗi khối ngăn bởi **dòng trống** = 1 tin nhắn (giữ nguyên multiline)
+</div>
+</div>
+<div class="card">
+<h2><span class="bi">📁</span> File đã upload</h2>
+<div id="files-list"><div style="text-align:center;padding:20px;color:#999;font-size:11px;">Chưa có</div></div>
+</div>
 </div>
 
-<!-- TAB SPAM -->
+<!-- SPAM -->
 <div class="panel" id="panel-spam">
+<div class="card">
+<h2><span class="bi">🎯</span> Cấu hình spam</h2>
 
-    <div class="card">
-        <h2><span class="badge-icon">⚡</span> Chế độ spam</h2>
-        <div class="mode-group">
-            <div class="mode-btn active" data-mode="nhay" onclick="selectMode('nhay')">
-                <div class="icon">🌀</div>
-                <div class="title">TREO NHÂY</div>
-                <div class="desc">Gửi theo số thứ tự<br>random, không trùng</div>
-            </div>
-            <div class="mode-btn" data-mode="ngon" onclick="selectMode('ngon')">
-                <div class="icon">📢</div>
-                <div class="title">TREO NGÔN</div>
-                <div class="desc">Gửi y chang<br>không đổi nội dung</div>
-            </div>
-        </div>
-        <input type="hidden" id="spam-mode" value="nhay">
-    </div>
+<div class="form-group">
+<label>Chọn file tin nhắn</label>
+<select id="spam-file-select"><option value="">-- Chọn file --</option></select>
+</div>
 
-    <div class="card">
-        <h2><span class="badge-icon">🎯</span> Cấu hình</h2>
+<div class="form-group">
+<label>Hoặc nhập tin (mỗi khối cách nhau dấu ;)</label>
+<textarea id="spam-messages" placeholder="Tin 1 dòng 1&#10;Tin 1 dòng 2;Tin 2"></textarea>
+</div>
 
-        <div class="form-group">
-            <label>Chọn file tin nhắn</label>
-            <select id="spam-file-select">
-                <option value="">-- Chọn file --</option>
-            </select>
-        </div>
+<div class="form-group">
+<label>⏱ Delay (giây)</label>
+<div class="chip-group" id="delay-chips">
+<div class="chip" data-delay="0.3">0.3s</div>
+<div class="chip" data-delay="0.5">0.5s</div>
+<div class="chip" data-delay="1">1s</div>
+<div class="chip active" data-delay="2">2s</div>
+<div class="chip" data-delay="3">3s</div>
+<div class="chip" data-delay="5">5s</div>
+<div class="chip" data-delay="10">10s</div>
+<div class="chip" data-delay="30">30s</div>
+</div>
+<input type="hidden" id="spam-delay" value="2">
+</div>
 
-        <div class="form-group">
-            <label>Hoặc nhập tin (cách nhau dấu ;)</label>
-            <textarea id="spam-messages" placeholder="Tin 1;Tin 2;Tin 3"></textarea>
-        </div>
+<div class="form-group">
+<label>😈 Số icon cuối câu</label>
+<div class="chip-group" id="icon-chips">
+<div class="chip" data-icon="0">0</div>
+<div class="chip" data-icon="2">2</div>
+<div class="chip active" data-icon="5">5</div>
+<div class="chip" data-icon="10">10</div>
+<div class="chip" data-icon="15">15</div>
+<div class="chip" data-icon="20">20</div>
+</div>
+<input type="hidden" id="icon-count" value="5">
+</div>
 
-        <div class="form-group">
-            <label>⚡ Delay giữa các tin</label>
-            <div class="chip-group" id="delay-chips">
-                <div class="chip fast" data-delay="0.3">0.3s 🚀</div>
-                <div class="chip fast" data-delay="0.5">0.5s 🚀</div>
-                <div class="chip fast" data-delay="1">1s ⚡</div>
-                <div class="chip active" data-delay="3">3s</div>
-                <div class="chip" data-delay="5">5s</div>
-                <div class="chip" data-delay="10">10s</div>
-                <div class="chip" data-delay="30">30s</div>
-                <div class="chip" data-delay="60">60s</div>
-            </div>
-            <input type="hidden" id="spam-delay" value="3">
-        </div>
+<div class="toggle-group">
+<div class="toggle active" id="tg-color" onclick="tgFlag('color')">🎨 Đổi màu</div>
+<div class="toggle active" id="tg-emoji" onclick="tgFlag('emoji')">😈 Thêm icon</div>
+</div>
 
-        <div class="form-group">
-            <label>Số emoji cuối câu</label>
-            <div class="chip-group" id="emoji-chips">
-                <div class="chip" data-emoji="0">0</div>
-                <div class="chip" data-emoji="3">3</div>
-                <div class="chip" data-emoji="5">5</div>
-                <div class="chip active" data-emoji="10">10</div>
-                <div class="chip" data-emoji="15">15</div>
-            </div>
-            <input type="hidden" id="emoji-count" value="10">
-        </div>
+<div class="form-group">
+<label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+<input type="checkbox" id="tg-tag" onchange="tgTag()" style="width:auto;">
+Tag UID trong tin nhắn
+</label>
+<div id="tag-wrap" style="display:none;margin-top:8px;">
+<div class="form-group">
+<select id="member-acc-select"><option value="">-- Chọn acc để load members --</option></select>
+</div>
+<button class="btn-rect info" onclick="loadMembers()">🔄 Load members</button>
+<div class="tag-selector" id="tag-selector"></div>
+<input type="hidden" id="tag-selected" value="">
+</div>
+</div>
 
-        <div class="toggle-group">
-            <div class="toggle active" id="toggle-color" onclick="toggleFlag('color')">
-                🎨 Đổi màu chữ
-            </div>
-            <div class="toggle active" id="toggle-emoji" onclick="toggleFlag('emoji')">
-                😊 Thêm emoji
-            </div>
-        </div>
+<div style="text-align:center;margin-top:18px;">
+<button class="btn-circle success big" onclick="startSpam()" title="Bắt đầu">▶️</button>
+<button class="btn-circle danger big" onclick="stopAll()" title="Dừng">⏸️</button>
+</div>
+</div>
 
-        <div class="form-group">
-            <label>
-                <input type="checkbox" id="toggle-tag" onchange="toggleTag()" style="width:auto;margin-right:8px;">
-                Tag UID trong tin
-            </label>
-            <div id="tag-input-wrap" style="display:none;margin-top:8px;">
-                <input id="tag-uids" placeholder="UID1,UID2,... (cách nhau dấu phẩy)">
-            </div>
-        </div>
+<div class="card" style="background:linear-gradient(135deg,#fef3c7,#fde68a);border:2px solid #fbbf24;">
+<h2 style="color:#92400e;"><span class="bi" style="background:#92400e;">🛡️</span> Anti-Ban VIP v26</h2>
+<div style="color:#78350f;font-size:11px;line-height:1.9;font-weight:600;">
+✅ Delay min 0.3s — gửi siêu nhanh<br>
+✅ Không warmup chậm<br>
+✅ Acc + Target rotation<br>
+✅ 12 màu Zalo ngẫu nhiên<br>
+✅ Icon sát thương Zalo<br>
+✅ Risk adaptive delay<br>
+✅ Fail 50 lần → auto disable<br>
+✅ Giữ nguyên 100% text user
+</div>
+</div>
 
-        <div style="text-align:center;margin-top:20px;">
-            <button class="btn-circle success" onclick="startSpam()" title="Bắt đầu" style="width:80px;height:80px;font-size:32px;">▶️</button>
-            <button class="btn-circle danger" onclick="stopAll()" title="Dừng" style="width:80px;height:80px;font-size:32px;">⏸️</button>
-        </div>
-    </div>
-
-    <div class="card" style="background:linear-gradient(135deg,#fef3c7,#fde68a);border:2px solid #fbbf24;">
-        <h2 style="color:#92400e;"><span class="badge-icon" style="background:#92400e;">🛡️</span> Anti-Ban v26</h2>
-        <div style="color:#78350f;font-size:12px;line-height:1.9;font-weight:600;">
-            ✅ Adaptive delay theo risk<br>
-            ✅ Zero-width entropy mask (8 loại)<br>
-            ✅ 12 màu Zalo ngẫu nhiên<br>
-            ✅ 10 emoji cuối câu<br>
-            ✅ Account + Target rotation<br>
-            ✅ Warmup 2 tin đầu<br>
-            ✅ Dedup 5 tin gần nhất<br>
-            ✅ Micro-pause human-like<br>
-            ✅ Risk score + auto disable
-        </div>
-    </div>
-
-    <div class="card">
-        <h2><span class="badge-icon">📋</span> Tác vụ</h2>
-        <button class="btn-circle danger small" onclick="stopAll()">⏸️</button>
-        <div class="table-wrap" style="margin-top:12px;">
-            <table class="table">
-                <thead><tr>
-                    <th>ID</th><th>Chế độ</th><th>Trạng thái</th><th></th>
-                </tr></thead>
-                <tbody id="tasks-tbody"></tbody>
-            </table>
-        </div>
-    </div>
+<div class="card">
+<h2><span class="bi">📋</span> Tác vụ</h2>
+<button class="btn-circle danger small" onclick="stopAll()" title="Dừng hết">⏸️</button>
+<div class="table-wrap" style="margin-top:10px;">
+<table class="table"><thead><tr>
+<th>ID</th><th>Trạng thái</th><th>Bắt đầu</th><th></th>
+</tr></thead><tbody id="tasks-tbody"></tbody></table>
+</div>
+</div>
 </div>
 
 </div>
@@ -1588,7 +1275,7 @@ body { font-family:'Inter',sans-serif; background:#f8fafc; min-height:100vh; col
 <script>
 let flags = { color: true, emoji: true };
 let selectedBoxes = [];
-let currentMode = 'nhay';
+let selectedTags = [];
 
 document.querySelectorAll('.tab').forEach(t => {
     t.onclick = () => {
@@ -1600,14 +1287,6 @@ document.querySelectorAll('.tab').forEach(t => {
     };
 });
 
-function selectMode(mode) {
-    currentMode = mode;
-    document.querySelectorAll('.mode-btn').forEach(b => {
-        b.classList.toggle('active', b.dataset.mode === mode);
-    });
-    document.getElementById('spam-mode').value = mode;
-}
-
 document.querySelectorAll('#delay-chips .chip').forEach(c => {
     c.onclick = () => {
         document.querySelectorAll('#delay-chips .chip').forEach(x => x.classList.remove('active'));
@@ -1616,11 +1295,11 @@ document.querySelectorAll('#delay-chips .chip').forEach(c => {
     };
 });
 
-document.querySelectorAll('#emoji-chips .chip').forEach(c => {
+document.querySelectorAll('#icon-chips .chip').forEach(c => {
     c.onclick = () => {
-        document.querySelectorAll('#emoji-chips .chip').forEach(x => x.classList.remove('active'));
+        document.querySelectorAll('#icon-chips .chip').forEach(x => x.classList.remove('active'));
         c.classList.add('active');
-        document.getElementById('emoji-count').value = c.dataset.emoji;
+        document.getElementById('icon-count').value = c.dataset.icon;
     };
 });
 
@@ -1629,7 +1308,7 @@ function showAlert(msg, type) {
     const a = document.getElementById('alert');
     a.innerHTML = (type === 'success' ? '✅ ' : '⚠️ ') + msg;
     a.className = 'alert show alert-' + type;
-    setTimeout(() => a.classList.remove('show'), 4000);
+    setTimeout(() => a.classList.remove('show'), 3500);
 }
 
 async function api(url, opts) {
@@ -1641,48 +1320,50 @@ async function api(url, opts) {
     return r.json();
 }
 
-function toggleFlag(name) {
+function tgFlag(name) {
     flags[name] = !flags[name];
-    document.getElementById('toggle-' + name).classList.toggle('active', flags[name]);
+    document.getElementById('tg-' + name).classList.toggle('active', flags[name]);
 }
 
-function toggleTag() {
-    const checked = document.getElementById('toggle-tag').checked;
-    document.getElementById('tag-input-wrap').style.display = checked ? 'block' : 'none';
+function tgTag() {
+    const c = document.getElementById('tg-tag').checked;
+    document.getElementById('tag-wrap').style.display = c ? 'block' : 'none';
 }
 
 async function loadAccounts() {
-    const accounts = await api('/api/accounts');
-    const tbody = document.getElementById('accounts-tbody');
-    if (!accounts.length) {
-        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;padding:24px;">Chưa có</td></tr>';
+    const accs = await api('/api/accounts');
+    const tb = document.getElementById('accounts-tbody');
+    if (!accs.length) {
+        tb.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;padding:20px;">Chưa có</td></tr>';
     } else {
-        tbody.innerHTML = accounts.map(a => {
+        tb.innerHTML = accs.map(a => {
             const risk = (a.risk || 0).toFixed(2);
-            const riskCls = risk > 0.5 ? 'badge-err' : risk > 0.2 ? 'badge-warn' : 'badge-ok';
+            const rc = risk > 0.5 ? 'badge-err' : risk > 0.2 ? 'badge-warn' : 'badge-ok';
             return '<tr>' +
                 '<td>' + a.id + '</td>' +
                 '<td><b>' + a.label + '</b></td>' +
                 '<td><span class="badge badge-ok">' + a.ok_count + '</span> <span class="badge badge-err">' + a.fail_count + '</span></td>' +
-                '<td><span class="badge ' + riskCls + '">' + risk + '</span></td>' +
+                '<td><span class="badge ' + rc + '">' + risk + '</span></td>' +
                 '<td><span class="badge badge-info">' + (a.total_sent || 0) + '</span></td>' +
                 '<td>' +
-                    '<button class="btn-circle primary small" onclick="checkAcc(' + a.id + ')" title="Check">🔍</button>' +
-                    '<button class="btn-circle warning small" onclick="resetAcc(' + a.id + ')" title="Reset">🔄</button>' +
-                    '<button class="btn-circle danger small" onclick="delAcc(' + a.id + ')" title="Xóa">🗑️</button>' +
+                    '<button class="btn-circle primary small" onclick="checkAcc(' + a.id + ')">🔍</button>' +
+                    '<button class="btn-circle warning small" onclick="resetAcc(' + a.id + ')">🔄</button>' +
+                    '<button class="btn-circle danger small" onclick="delAcc(' + a.id + ')">🗑️</button>' +
                 '</td>' +
             '</tr>';
         }).join('');
     }
-    document.getElementById('stat-total').textContent = accounts.length;
-    document.getElementById('stat-active').textContent = accounts.filter(a => a.enabled).length;
-    document.getElementById('stat-sent').textContent = accounts.reduce((s, a) => s + (a.total_sent || 0), 0);
+    document.getElementById('stat-total').textContent = accs.length;
+    document.getElementById('stat-active').textContent = accs.filter(a => a.enabled).length;
+    document.getElementById('stat-sent').textContent = accs.reduce((s, a) => s + (a.total_sent || 0), 0);
 
-    const sel1 = document.getElementById('load-acc-select');
-    const v1 = sel1.value;
-    sel1.innerHTML = '<option value="">-- Chọn --</option>' +
-        accounts.map(a => '<option value="' + a.id + '">' + a.label + ' (ID: ' + a.id + ')</option>').join('');
-    sel1.value = v1;
+    const s1 = document.getElementById('load-acc-select');
+    const s2 = document.getElementById('member-acc-select');
+    const opts = '<option value="">-- Chọn --</option>' +
+        accs.map(a => '<option value="' + a.id + '">' + a.label + '</option>').join('');
+    const v1 = s1.value, v2 = s2.value;
+    s1.innerHTML = opts; s1.value = v1;
+    s2.innerHTML = opts; s2.value = v2;
 }
 
 async function addAccount() {
@@ -1703,7 +1384,7 @@ async function addAccount() {
 }
 
 async function delAcc(id) {
-    if (!confirm('Xóa tài khoản này?')) return;
+    if (!confirm('Xóa?')) return;
     await api('/api/accounts/' + id, { method: 'DELETE' });
     showAlert('Đã xóa');
     refreshAll();
@@ -1723,19 +1404,19 @@ async function checkAcc(id) {
 
 async function loadBoxes() {
     const aid = document.getElementById('load-acc-select').value;
-    if (!aid) return showAlert('Chọn tài khoản', 'error');
+    if (!aid) return showAlert('Chọn acc', 'error');
     showAlert('Đang load...');
     const r = await api('/api/accounts/' + aid + '/load_boxes', { method: 'POST' });
     if (r.error) return showAlert(r.error, 'error');
 
     const all = [...(r.groups || []), ...(r.friends || [])];
-    const boxList = document.getElementById('box-list');
+    const bl = document.getElementById('box-list');
     if (!all.length) {
-        boxList.innerHTML = '<div style="text-align:center;padding:24px;color:#999;">Không có</div>';
+        bl.innerHTML = '<div style="text-align:center;padding:20px;color:#999;">Không có</div>';
         return;
     }
-    boxList.innerHTML = all.map((b, i) =>
-        '<div class="box-item" data-idx="' + i + '" onclick="toggleBox(this, ' + i + ')">' +
+    bl.innerHTML = all.map((b, i) =>
+        '<div class="box-item" data-idx="' + i + '" onclick="tgBox(this, ' + i + ')">' +
             '<div class="check">✓</div>' +
             '<div class="info">' +
                 '<div class="name">' + b.name + '</div>' +
@@ -1743,29 +1424,27 @@ async function loadBoxes() {
             '</div>' +
         '</div>'
     ).join('');
-
-    window._allBoxes = all;
+    window._boxes = all;
     selectedBoxes = [];
     document.getElementById('selected-count').textContent = '0';
     showAlert('Đã load ' + all.length + ' box');
 }
 
-function toggleBox(el, idx) {
-    const box = window._allBoxes[idx];
-    const isSel = el.classList.contains('selected');
-    if (isSel) {
+function tgBox(el, idx) {
+    const b = window._boxes[idx];
+    if (el.classList.contains('selected')) {
         el.classList.remove('selected');
-        selectedBoxes = selectedBoxes.filter(b => b.id !== box.id);
+        selectedBoxes = selectedBoxes.filter(x => x.id !== b.id);
     } else {
         el.classList.add('selected');
-        selectedBoxes.push(box);
+        selectedBoxes.push(b);
     }
     document.getElementById('selected-count').textContent = selectedBoxes.length;
 }
 
 function selectAllBoxes() {
     document.querySelectorAll('.box-item').forEach(el => el.classList.add('selected'));
-    selectedBoxes = [...(window._allBoxes || [])];
+    selectedBoxes = [...(window._boxes || [])];
     document.getElementById('selected-count').textContent = selectedBoxes.length;
 }
 
@@ -1783,7 +1462,7 @@ async function uploadFile() {
     showAlert('Đang upload...');
     const r = await fetch('/api/files/upload', { method: 'POST', body: fd }).then(r => r.json());
     if (r.error) return showAlert(r.error, 'error');
-    showAlert('Đã upload ' + r.filename + ' (' + r.lines + ' dòng)');
+    showAlert('Đã upload ' + r.filename + ' (' + r.lines + ' khối)');
     input.value = '';
     loadFiles();
 }
@@ -1792,108 +1471,149 @@ async function loadFiles() {
     const files = await api('/api/files');
     const list = document.getElementById('files-list');
     if (!files.length) {
-        list.innerHTML = '<div style="text-align:center;padding:24px;color:#999;font-size:12px;">Chưa có file</div>';
+        list.innerHTML = '<div style="text-align:center;padding:20px;color:#999;font-size:11px;">Chưa có</div>';
     } else {
         list.innerHTML = files.map(f => {
-            const size = (f.size / 1024).toFixed(1);
+            const kb = (f.size / 1024).toFixed(1);
             return '<div class="file-item">' +
                 '<div class="info">' +
                     '<div class="name">📄 ' + f.filename + '</div>' +
-                    '<div class="meta">' + f.lines + ' dòng • ' + size + ' KB</div>' +
+                    '<div class="meta">' + f.lines + ' khối • ' + kb + ' KB</div>' +
                 '</div>' +
-                '<button class="btn-circle info small" onclick="previewFile(' + f.id + ')" title="Xem">👁️</button>' +
-                '<button class="btn-circle danger small" onclick="delFile(' + f.id + ')" title="Xóa">🗑️</button>' +
+                '<button class="btn-circle info small" onclick="previewFile(' + f.id + ')">👁️</button>' +
+                '<button class="btn-circle danger small" onclick="delFile(' + f.id + ')">🗑️</button>' +
             '</div>';
         }).join('');
     }
-    const sel = document.getElementById('spam-file-select');
-    sel.innerHTML = '<option value="">-- Chọn file --</option>' +
-        files.map(f => '<option value="' + f.id + '">' + f.filename + ' (' + f.lines + ' dòng)</option>').join('');
+    const s = document.getElementById('spam-file-select');
+    s.innerHTML = '<option value="">-- Chọn file --</option>' +
+        files.map(f => '<option value="' + f.id + '">' + f.filename + ' (' + f.lines + ')</option>').join('');
 }
 
 async function previewFile(fid) {
     const r = await api('/api/files/' + fid + '/preview');
     if (r.error) return showAlert(r.error, 'error');
-    const preview = r.preview.map((m, i) => (i + 1) + '. ' + m).join('\\n');
-    alert('File: ' + r.filename + '\\nTổng: ' + r.total + ' dòng\\n\\n' + preview);
+    const pv = r.preview.map((m, i) => '--- Khối ' + (i + 1) + ' ---\n' + m).join('\n\n');
+    alert('File: ' + r.filename + '\nTổng: ' + r.total + ' khối\n\n' + pv);
 }
 
 async function delFile(fid) {
-    if (!confirm('Xóa file này?')) return;
+    if (!confirm('Xóa file?')) return;
     await api('/api/files/' + fid, { method: 'DELETE' });
     showAlert('Đã xóa');
     loadFiles();
 }
 
+async function loadMembers() {
+    const aid = document.getElementById('member-acc-select').value;
+    if (!aid) return showAlert('Chọn acc', 'error');
+    const box = selectedBoxes.find(b => b.type === 'group');
+    if (!box) return showAlert('Cần chọn 1 nhóm trước', 'error');
+
+    showAlert('Đang load members...');
+    const r = await api('/api/accounts/' + aid + '/members/' + box.id, { method: 'POST' });
+    if (r.error) return showAlert(r.error, 'error');
+
+    const mem = r.members || [];
+    const sel = document.getElementById('tag-selector');
+    sel.classList.add('show');
+    if (!mem.length) {
+        sel.innerHTML = '<div style="padding:14px;text-align:center;color:#999;font-size:11px;">Không có members</div>';
+        return;
+    }
+    sel.innerHTML = mem.map((m, i) =>
+        '<div class="tag-member" data-idx="' + i + '" onclick="tgMember(this, ' + i + ')">' +
+            '<div class="check">✓</div>' +
+            '<div><b>' + m.name + '</b> <span style="color:#999;font-size:10px;">' + m.id + '</span></div>' +
+        '</div>'
+    ).join('');
+    window._members = mem;
+    showAlert('Đã load ' + mem.length + ' members - bấm chọn');
+}
+
+function tgMember(el, idx) {
+    const m = window._members[idx];
+    if (el.classList.contains('selected')) {
+        el.classList.remove('selected');
+        selectedTags = selectedTags.filter(t => t.id !== m.id);
+    } else {
+        el.classList.add('selected');
+        selectedTags.push({ id: m.id, name: m.name });
+    }
+    document.getElementById('tag-selected').value = JSON.stringify(selectedTags);
+}
+
 async function startSpam() {
     if (!selectedBoxes.length) return showAlert('Chưa chọn box', 'error');
 
-    const fileId = document.getElementById('spam-file-select').value;
-    const directMsgs = document.getElementById('spam-messages').value.trim();
-    let messages = [];
+    const fid = document.getElementById('spam-file-select').value;
+    const direct = document.getElementById('spam-messages').value.trim();
+    let blocks = [];
 
-    if (fileId) {
-        const r = await api('/api/files/' + fileId + '/preview');
+    if (fid) {
+        const r = await api('/api/files/' + fid + '/preview');
         if (r.error) return showAlert('Lỗi file: ' + r.error, 'error');
-        messages = r.all || r.preview || [];
-    } else if (directMsgs) {
-        messages = directMsgs.split(';').map(m => m.trim()).filter(m => m);
+        blocks = r.all || [];
+    } else if (direct) {
+        blocks = direct.split(';').map(m => m.trim()).filter(m => m);
     }
 
-    if (!messages.length) return showAlert('Chưa có tin nhắn', 'error');
+    if (!blocks.length) return showAlert('Chưa có tin', 'error');
 
-    const delay = parseFloat(document.getElementById('spam-delay').value) || 3;
-    const emojiCount = parseInt(document.getElementById('emoji-count').value) || 10;
-    const tagInput = document.getElementById('tag-uids').value.trim();
-    const tagUids = tagInput ? tagInput.split(',').map(t => t.trim()).filter(t => t) : [];
-    const mode = document.getElementById('spam-mode').value;
+    const delay = parseFloat(document.getElementById('spam-delay').value) || 2;
+    const iconCount = parseInt(document.getElementById('icon-count').value) || 5;
+
+    let tagUsers = [];
+    if (document.getElementById('tg-tag').checked) {
+        tagUsers = selectedTags;
+    }
 
     const r = await api('/api/tasks/start', {
         method: 'POST',
         body: JSON.stringify({
             targets: selectedBoxes,
-            messages: messages,
+            blocks: blocks,
             delay: delay,
             use_color: flags.color,
             use_emoji: flags.emoji,
-            emoji_count: emojiCount,
-            tag_uids: tagUids,
-            mode: mode,
+            icon_count: iconCount,
+            tag_users: tagUsers,
         }),
     });
     if (r.error) return showAlert(r.error, 'error');
-    showAlert('🚀 Đã bắt đầu [' + r.mode.toUpperCase() + ']: ' + r.task_id);
+    showAlert('🚀 Đã bắt đầu: ' + r.task_id);
     loadTasks();
 }
 
 async function stopAll() {
     await api('/api/tasks/stop_all', { method: 'POST' });
-    showAlert('Đã dừng');
+    showAlert('Đã dừng tất cả');
     loadTasks();
 }
 
 async function loadTasks() {
     const tasks = await api('/api/tasks');
-    const tbody = document.getElementById('tasks-tbody');
+    const tb = document.getElementById('tasks-tbody');
     if (!tasks.length) {
-        tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#999;padding:20px;">Chưa có</td></tr>';
+        tb.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#999;padding:16px;">Chưa có</td></tr>';
         return;
     }
-    tbody.innerHTML = tasks.map(t => {
-        const badge = t.status === 'running' ? 'badge-ok' : 'badge-err';
-        const text = t.status === 'running' ? 'Chạy' : 'Dừng';
-        const mode = t.type === 'spam_nhay' ? '🌀 Nhây' : (t.type === 'spam_ngon' ? '📢 Ngôn' : t.type);
+    tb.innerHTML = tasks.map(t => {
+        const st = new Date(t.started_at * 1000).toLocaleString('vi-VN');
+        const b = t.status === 'running' ? 'badge-ok' : 'badge-err';
+        const txt = t.status === 'running' ? 'Đang chạy' : 'Đã dừng';
         return '<tr>' +
             '<td><code>' + t.id + '</code></td>' +
-            '<td>' + mode + '</td>' +
-            '<td><span class="badge ' + badge + '">' + text + '</span></td>' +
-            '<td>' + (t.status === 'running' ? '<button class="btn-circle danger small" onclick="stopTask(\\'' + t.id + '\\')">⏸️</button>' : '') + '</td>' +
+            '<td><span class="badge ' + b + '">' + txt + '</span></td>' +
+            '<td style="font-size:10px;">' + st + '</td>' +
+            '<td>' + (t.status === 'running' ? '<button class="btn-circle danger small" onclick="stopTask(\'' + t.id + '\')">⏸️</button>' : '') + '</td>' +
         '</tr>';
     }).join('');
 }
 
 async function stopTask(tid) {
     await api('/api/tasks/' + tid + '/stop', { method: 'POST' });
+    showAlert('Đã dừng');
     loadTasks();
 }
 
@@ -1903,7 +1623,7 @@ function refreshAll() {
     loadTasks();
 }
 
-setInterval(() => { loadTasks(); }, 5000);
+setInterval(loadTasks, 5000);
 refreshAll();
 </script>
 </body>
