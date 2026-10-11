@@ -1,5 +1,6 @@
 # ============================================================
-# ALB FORGE v33.0 — True Multi-line + Real Color
+# ALB FORGE v34.0 — True Multi-line Batch
+# Bot by Anh Khôi • 4 dòng → 1 tin 4 dòng
 # ============================================================
 import os
 import json
@@ -155,35 +156,47 @@ class AntiBan:
     @staticmethod
     def compute_risk(ok, fail):
         total = ok + fail
-        if total == 0: return 0.0
+        if total == 0:
+            return 0.0
         base = fail / total
-        if fail > 20 and ok < 5: base = min(1.0, base + 0.18)
-        if ok > 100 and base < 0.05: base = max(0.0, base - 0.02)
+        if fail > 20 and ok < 5:
+            base = min(1.0, base + 0.18)
+        if ok > 100 and base < 0.05:
+            base = max(0.0, base - 0.02)
         return min(1.0, base)
 
     @staticmethod
     def compute_delay(user_delay, risk, is_warmup=False):
         d = max(AntiBan.MIN_DELAY, user_delay)
-        if risk > 0.85: d = max(d, 18.0)
-        elif risk > 0.7: d = max(d, 10.0)
-        elif risk > 0.5: d = max(d, 5.0)
-        elif risk > 0.3: d = max(d, 2.5)
-        if is_warmup: d *= AntiBan.WARMUP_MULT
+        if risk > 0.85:
+            d = max(d, 18.0)
+        elif risk > 0.7:
+            d = max(d, 10.0)
+        elif risk > 0.5:
+            d = max(d, 5.0)
+        elif risk > 0.3:
+            d = max(d, 2.5)
+        if is_warmup:
+            d *= AntiBan.WARMUP_MULT
         d = d * random.uniform(0.88, 1.12)
         return max(AntiBan.MIN_DELAY, min(AntiBan.MAX_DELAY, d))
 
     @staticmethod
     def pick_color(color_mode, fixed_color, idx=0):
-        if color_mode == 'none': return None
-        if color_mode == 'random': return random.choice(COLOR_IDS)
+        if color_mode == 'none':
+            return None
+        if color_mode == 'random':
+            return random.choice(COLOR_IDS)
         if color_mode == 'fixed':
             return fixed_color if fixed_color in COLOR_IDS else random.choice(COLOR_IDS)
-        if color_mode == 'cycle': return COLOR_IDS[idx % len(COLOR_IDS)]
+        if color_mode == 'cycle':
+            return COLOR_IDS[idx % len(COLOR_IDS)]
         return None
 
     @staticmethod
     def append_icons(text, count):
-        if count <= 0: return text
+        if count <= 0:
+            return text
         icons = [get_icon_hard() for _ in range(count)]
         return text + " " + " ".join(icons)
 
@@ -194,7 +207,7 @@ class AntiBan:
 
 
 # ============================================================
-# ZALO API v33 — TRUE MULTILINE + REAL COLOR
+# ZALO API v34
 # ============================================================
 class Zalo:
     def __init__(self, imei, cookies):
@@ -246,7 +259,8 @@ class Zalo:
             pass
 
     def _fetch_own_profile(self):
-        if not self.uid: return
+        if not self.uid:
+            return
         try:
             enc = self._enc({"friendId": self.uid})
             r = self.s.post(
@@ -337,7 +351,8 @@ class Zalo:
         mem_list = info.get("memVerList", [])
 
         uids = [m.split("_")[0] for m in mem_list]
-        if not uids: return []
+        if not uids:
+            return []
 
         members = []
         try:
@@ -370,16 +385,20 @@ class Zalo:
         return members
 
     def build_mention_payload(self, text, mentions):
-        if not mentions: return text, []
+        if not mentions:
+            return text, []
         final = text
         m_arr = []
         for m in mentions:
             name = m.get("name", "")
             uid = m.get("uid") or m.get("id")
-            if not name or not uid: continue
+            if not name or not uid:
+                continue
             tag_str = "@" + name
-            if final: final = final + " " + tag_str
-            else: final = tag_str
+            if final:
+                final = final + " " + tag_str
+            else:
+                final = tag_str
             pos = final.rfind(tag_str)
             m_arr.append({"uid": str(uid), "pos": pos,
                           "len": len(tag_str), "type": 0})
@@ -387,8 +406,7 @@ class Zalo:
 
     def send(self, msg, thread_id, color=None, is_group=True, mentions=None):
         """
-        Gửi message. GIỮ NGUYÊN \n THẬT trong message field.
-        Không escape 2 lần — dùng json.dumps với ensure_ascii=False.
+        Gửi 1 message đơn lẻ. Strip newline thành space.
         """
         url = ("https://tt-group-wpa.chat.zalo.me/api/group/sendmsg"
                if is_group
@@ -399,8 +417,8 @@ class Zalo:
         if mentions:
             final_msg, m_arr = self.build_mention_payload(msg, mentions)
 
-        # CRITICAL: đảm bảo newline là \n thật (không phải \\n)
-        final_msg = final_msg.replace("\r\n", "\n").replace("\r", "\n")
+        # Zalo strip \n — thay bằng space
+        final_msg = final_msg.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
 
         pl = {
             "message": final_msg,
@@ -420,16 +438,45 @@ class Zalo:
         return self.s.post(url, params={"zpw_ver": 645, "zpw_type": 30},
                            data={"params": enc}, timeout=20)
 
-    def send_multiline(self, lines, thread_id, color=None, is_group=True,
-                       mentions=None):
+    def send_batch(self, msg, thread_id, color=None, is_group=True, mentions=None,
+                   batch_cid=None, seq=0):
         """
-        Gửi N dòng trong 1 tin nhắn DUY NHẤT.
-        Join bằng \n → Zalo render xuống dòng.
+        Gửi 1 dòng trong batch multi-line.
+        - Cùng batch_cid prefix + seq → Zalo gộp thành 1 block N dòng.
+        - Strip \n vì mỗi request là 1 dòng.
         """
-        if not lines: return None
-        text = "\n".join(lines)
-        return self.send(text, thread_id, color=color,
-                         is_group=is_group, mentions=mentions)
+        url = ("https://tt-group-wpa.chat.zalo.me/api/group/sendmsg"
+               if is_group
+               else "https://tt-chat2-wpa.chat.zalo.me/api/message/sms")
+
+        final_msg = msg
+        m_arr = []
+        if mentions:
+            final_msg, m_arr = self.build_mention_payload(msg, mentions)
+
+        # Strip newline trong từng dòng
+        final_msg = final_msg.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+
+        # clientId: batch_cid + _ + seq
+        cid = (batch_cid or str(int(time.time() * 1000))) + "_" + str(seq)
+
+        pl = {
+            "message": final_msg,
+            "clientId": cid,
+            "imei": self.imei,
+        }
+        if m_arr:
+            pl["mentions"] = json.dumps(m_arr, ensure_ascii=False)
+        if color:
+            pl["msgColor"] = color
+        if is_group:
+            pl["visibility"] = 0
+            pl["grid"] = str(thread_id)
+        else:
+            pl["toid"] = str(thread_id)
+        enc = self._enc(pl)
+        return self.s.post(url, params={"zpw_ver": 645, "zpw_type": 30},
+                           data={"params": enc}, timeout=20)
 
     def set_typing(self, thread_id, is_group=True):
         if is_group:
@@ -471,7 +518,8 @@ def parse_blocks(filepath, max_blocks=5000):
             content = f.read()
         content = content.replace("\r\n", "\n").replace("\r", "\n")
         for line in content.split("\n"):
-            if len(blocks) >= max_blocks: break
+            if len(blocks) >= max_blocks:
+                break
             if line.strip() == "":
                 if current:
                     blocks.append("\n".join(current))
@@ -486,13 +534,14 @@ def parse_blocks(filepath, max_blocks=5000):
 
 
 # ============================================================
-# WORKER v33 — MODE TÁCH RÕ RÀNG
+# WORKER v34
 # ============================================================
 def update_stats(aid, ok):
     conn = db()
     row = conn.execute("SELECT * FROM accounts WHERE id = ?", (aid,)).fetchone()
     if not row:
-        conn.close(); return
+        conn.close()
+        return
     ok_c = row["ok_count"] + (1 if ok else 0)
     fail_c = row["fail_count"] + (0 if ok else 1)
     sent = row["total_sent"] + (1 if ok else 0)
@@ -505,7 +554,8 @@ def update_stats(aid, ok):
             total_sent = ?, enabled = ?, last_used = ?
         WHERE id = ?
     """, (ok_c, fail_c, risk, sent, enabled, time.time(), aid))
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
 
 
 def pick_account(exclude_id=None):
@@ -513,7 +563,8 @@ def pick_account(exclude_id=None):
     q = "SELECT * FROM accounts WHERE enabled = 1 AND risk < 0.85"
     params = []
     if exclude_id:
-        q += " AND id != ?"; params.append(exclude_id)
+        q += " AND id != ?"
+        params.append(exclude_id)
     q += " ORDER BY risk ASC, last_used ASC LIMIT 1"
     rows = conn.execute(q, params).fetchall()
     if not rows and exclude_id:
@@ -527,11 +578,15 @@ def pick_account(exclude_id=None):
 
 def humanize_typing(z, thread_id, is_group, msg_len, speed="fast"):
     r = AntiBan.typing_rate(speed)
-    if r <= 0: return
+    if r <= 0:
+        return
     typing_time = min(msg_len * r, 2.5)
-    try: z.set_typing(thread_id, is_group=is_group)
-    except Exception: pass
-    if typing_time > 0.05: time.sleep(typing_time)
+    try:
+        z.set_typing(thread_id, is_group=is_group)
+    except Exception:
+        pass
+    if typing_time > 0.05:
+        time.sleep(typing_time)
 
 
 def spam_worker(tid, targets, blocks, delay,
@@ -541,10 +596,9 @@ def spam_worker(tid, targets, blocks, delay,
                 real_mention=False, read_receipt=True):
     """
     Mode:
-      fast        — xoay vòng block, mỗi block 1 tin
-      treo_ngon   — dán N dòng → gửi N dòng TRONG 1 TIN DUY NHẤT
-                    (1 request, message = "d1\nd2\nd3\nd4", giữ newline thật)
-      treo_nhay   — dán N dòng → N tin riêng, đánh số 1. 2. 3.
+      fast        — block như 1 tin
+      treo_ngon   — N dòng → N request gap 30ms → Zalo gộp thành 1 block N dòng
+      treo_nhay   — N dòng → N tin riêng, đánh số 1. 2. 3.
     """
     block_idx = 0
     target_idx = 0
@@ -554,13 +608,14 @@ def spam_worker(tid, targets, blocks, delay,
     acc_session_counter = {}
     global_color_idx = 0
 
-    print("[SPAM v33] Start: " + tid)
+    print("[SPAM v34] Start: " + tid)
     print("  Mode: " + mode + " | Color: " + color_mode + " | Emoji: " + str(use_emoji))
 
     while not stop_event.is_set():
         acc = pick_account(exclude_id=last_acc_id)
         if not acc:
-            time.sleep(0.3); continue
+            time.sleep(0.3)
+            continue
 
         last_acc_id = acc["id"]
         aid_key = acc["id"]
@@ -569,10 +624,11 @@ def spam_worker(tid, targets, blocks, delay,
 
         if acc_session_counter[aid_key] >= AntiBan.SESSION_MAX:
             rest = random.uniform(AntiBan.SESSION_REST_MIN, AntiBan.SESSION_REST_MAX)
-            print("[ROTATE] " + acc["label"] + " nghỉ " + str(round(rest,1)) + "s")
+            print("[ROTATE] " + acc["label"] + " nghỉ " + str(round(rest, 1)) + "s")
             end = time.time() + rest
             while time.time() < end:
-                if stop_event.is_set(): break
+                if stop_event.is_set():
+                    break
                 time.sleep(0.05)
             acc_session_counter[aid_key] = 0
             last_acc_id = None
@@ -596,6 +652,7 @@ def spam_worker(tid, targets, blocks, delay,
                 z.mark_read(target_id, is_group=is_group)
                 time.sleep(random.uniform(0.05, 0.15))
 
+            # ============================================
             if mode == "treo_nhay":
                 # N dòng → N TIN RIÊNG, đánh số
                 lines = [ln for ln in raw.split("\n") if ln.strip()]
@@ -605,7 +662,8 @@ def spam_worker(tid, targets, blocks, delay,
                     humanize_typing(z, target_id, is_group, len(raw), typing_speed)
 
                 for mi, ln in enumerate(numbered):
-                    if stop_event.is_set(): break
+                    if stop_event.is_set():
+                        break
                     text = ln
                     if use_emoji and icon_count > 0:
                         text = AntiBan.append_icons(text, icon_count)
@@ -630,40 +688,53 @@ def spam_worker(tid, targets, blocks, delay,
                         gap = random.uniform(0.3, 0.7) if human_mode else 0.15
                         end = time.time() + gap
                         while time.time() < end:
-                            if stop_event.is_set(): break
+                            if stop_event.is_set():
+                                break
                             time.sleep(0.01)
 
             elif mode == "treo_ngon":
-                # N dòng → 1 TIN DUY NHẤT, giữ newline thật
+                # N dòng → N REQUEST GAP 30ms → Zalo gộp thành 1 block N dòng
                 lines = [ln for ln in raw.split("\n") if ln.strip()]
-
-                # Icon dòng cuối
-                if use_emoji and icon_count > 0 and lines:
-                    lines[-1] = AntiBan.append_icons(lines[-1], icon_count)
+                if not lines:
+                    continue
 
                 if human_mode:
                     humanize_typing(z, target_id, is_group, len(raw), typing_speed)
 
-                # 1 REQUEST DUY NHẤT — message chứa \n thật
-                text_full = "\n".join(lines)
-                mentions = tag_users if (real_mention and tag_users) else None
-                color = AntiBan.pick_color(color_mode, fixed_color, global_color_idx)
-                global_color_idx += 1
+                # Batch ID để Zalo nhận diện cùng nhóm
+                batch_cid = str(int(time.time() * 1000))
 
-                r = z.send(text_full, target_id, color=color,
-                           is_group=is_group, mentions=mentions)
-                ok = bool(r and r.status_code == 200)
-                update_stats(acc["id"], ok)
-                count += 1
-                acc_warmup_counter[aid_key] += 1
-                acc_session_counter[aid_key] += 1
+                for idx, ln in enumerate(lines):
+                    if stop_event.is_set():
+                        break
 
-                cs = "[" + color + "]" if color else ""
-                preview = text_full.replace("\n", " ⏎ ")[:60]
-                print("[#" + str(count) + "] " + acc["label"] + " → " +
-                      str(target_id) + cs + " [" + ("OK" if ok else "ERR") +
-                      "] [1tin-" + str(len(lines)) + "dòng]" +
-                      (" [W]" if is_warmup else "") + " " + preview)
+                    text = ln
+                    # Icon chỉ dòng cuối
+                    if use_emoji and icon_count > 0 and idx == len(lines) - 1:
+                        text = AntiBan.append_icons(text, icon_count)
+
+                    mentions = tag_users if (real_mention and tag_users and idx == 0) else None
+                    color = AntiBan.pick_color(color_mode, fixed_color, global_color_idx)
+                    global_color_idx += 1
+
+                    # Gửi với batch_cid + seq
+                    r = z.send_batch(text, target_id, color=color,
+                                     is_group=is_group, mentions=mentions,
+                                     batch_cid=batch_cid, seq=idx)
+                    ok = bool(r and r.status_code == 200)
+                    update_stats(acc["id"], ok)
+                    count += 1
+                    acc_warmup_counter[aid_key] += 1
+                    acc_session_counter[aid_key] += 1
+
+                    cs = "[" + color + "]" if color else ""
+                    print("[#" + str(count) + "] " + acc["label"] + " → " +
+                          str(target_id) + cs + " [" + ("OK" if ok else "ERR") +
+                          "]" + (" [W]" if is_warmup else "") + " " + text[:50])
+
+                    # CRITICAL: gap 30ms — Zalo gộp thành 1 block
+                    if idx < len(lines) - 1:
+                        time.sleep(0.03)
 
             else:
                 # FAST
@@ -711,15 +782,17 @@ def spam_worker(tid, targets, blocks, delay,
 
         end = time.time() + actual
         while time.time() < end:
-            if stop_event.is_set(): break
+            if stop_event.is_set():
+                break
             time.sleep(0.03)
 
     conn = db()
     conn.execute("UPDATE tasks SET status = 'stopped', stats = ? WHERE id = ?",
                  (json.dumps({"sent": count}), tid))
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
     ACTIVE_TASKS.pop(tid, None)
-    print("[SPAM v33] " + tid + " stop - total: " + str(count))
+    print("[SPAM v34] " + tid + " stop - total: " + str(count))
 
 
 # ============================================================
@@ -807,7 +880,8 @@ def api_accounts_add():
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """, (label, imei, json.dumps(ck_obj), time.time(),
           uid, dn, zn, un))
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
     return jsonify({"ok": True, "label": label, "uid": uid,
                     "display_name": dn, "zalo_name": zn, "username": un})
 
@@ -817,7 +891,8 @@ def api_accounts_add():
 def api_accounts_delete(aid):
     conn = db()
     conn.execute("DELETE FROM accounts WHERE id = ?", (aid,))
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
     return jsonify({"ok": True})
 
 
@@ -826,7 +901,8 @@ def api_accounts_delete(aid):
 def api_accounts_reset(aid):
     conn = db()
     conn.execute("UPDATE accounts SET risk = 0, enabled = 1 WHERE id = ?", (aid,))
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
     return jsonify({"ok": True})
 
 
@@ -912,7 +988,8 @@ def api_files_upload():
         INSERT INTO files (filename, filepath, lines, size, uploaded_at)
         VALUES (?, ?, ?, ?, ?)
     """, (f.filename, fp, len(blocks), size, time.time()))
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
     return jsonify({"ok": True, "filename": f.filename,
                     "lines": len(blocks), "preview": blocks[:3]})
 
@@ -923,12 +1000,16 @@ def api_files_delete(fid):
     conn = db()
     row = conn.execute("SELECT * FROM files WHERE id = ?", (fid,)).fetchone()
     if not row:
-        conn.close(); return jsonify({"error": "Không tìm thấy"}), 404
+        conn.close()
+        return jsonify({"error": "Không tìm thấy"}), 404
     try:
-        if os.path.exists(row["filepath"]): os.remove(row["filepath"])
-    except Exception: pass
+        if os.path.exists(row["filepath"]):
+            os.remove(row["filepath"])
+    except Exception:
+        pass
     conn.execute("DELETE FROM files WHERE id = ?", (fid,))
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
     return jsonify({"ok": True})
 
 
@@ -969,7 +1050,8 @@ def api_tasks_start():
 
     use_emoji = bool(d.get("use_emoji", True))
     icon_count = int(d.get("icon_count", 3))
-    if not use_emoji: icon_count = 0
+    if not use_emoji:
+        icon_count = 0
 
     tag_users = d.get("tag_users", [])
     mode = d.get("mode", "fast")
@@ -988,11 +1070,16 @@ def api_tasks_start():
         return jsonify({"error": "Delay tối thiểu " + str(AntiBan.MIN_DELAY) + "s"}), 400
     if delay > AntiBan.MAX_DELAY:
         return jsonify({"error": "Delay tối đa " + str(AntiBan.MAX_DELAY) + "s"}), 400
-    if icon_count < 0: icon_count = 0
-    if icon_count > 20: icon_count = 20
-    if mode not in ("fast", "treo_ngon", "treo_nhay"): mode = "fast"
-    if typing_speed not in ("instant", "fast", "normal", "slow"): typing_speed = "fast"
-    if color_mode not in ("none", "random", "fixed", "cycle"): color_mode = "random"
+    if icon_count < 0:
+        icon_count = 0
+    if icon_count > 20:
+        icon_count = 20
+    if mode not in ("fast", "treo_ngon", "treo_nhay"):
+        mode = "fast"
+    if typing_speed not in ("instant", "fast", "normal", "slow"):
+        typing_speed = "fast"
+    if color_mode not in ("none", "random", "fixed", "cycle"):
+        color_mode = "random"
     if color_mode == "fixed" and fixed_color not in COLOR_IDS:
         return jsonify({"error": "Màu cố định không hợp lệ"}), 400
 
@@ -1027,7 +1114,8 @@ def api_tasks_start():
                       "typing_speed": typing_speed, "human_mode": human_mode,
                       "real_mention": real_mention}),
           "running", time.time(), "{}"))
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
 
     ACTIVE_TASKS[tid] = {"stop": stop_ev, "thread": th}
     th.start()
@@ -1055,7 +1143,7 @@ def api_tasks_stop_all():
 
 @app.route("/health")
 def health():
-    return jsonify({"status": "ok", "service": "alb-forge", "version": "33.0"})
+    return jsonify({"status": "ok", "service": "alb-forge", "version": "34.0"})
 
 
 # ============================================================
@@ -1170,7 +1258,7 @@ HTML_LOGIN = """<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
-<title>ALB Forge v33</title>
+<title>ALB Forge v34</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
@@ -1208,7 +1296,7 @@ button.submit:active{transform:translateY(0) scale(.99)}
 <div class="card">
 <div class="logo-box">""" + LOGO_SVG + """</div>
 <h1>ALB FORGE</h1>
-<p class="sub">Universal • v33.0 • True Multiline</p>
+<p class="sub">Universal • v34.0 • True Multiline</p>
 {% if error %}<div class="error">⚠️ {{ error }}</div>{% endif %}
 <form method="POST" autocomplete="off">
 <div class="input-wrap">
@@ -1228,7 +1316,7 @@ function tgPw(){var p=document.getElementById('pw');p.type=p.type==='password'?'
 
 
 # ============================================================
-# HTML INDEX v33
+# HTML INDEX v34
 # ============================================================
 HTML_INDEX = """<!DOCTYPE html>
 <html lang="vi">
@@ -1236,7 +1324,7 @@ HTML_INDEX = """<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
-<title>ALB Forge v33.0</title>
+<title>ALB Forge v34.0</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@500;700&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
@@ -1460,7 +1548,7 @@ HTML_INDEX = """<!DOCTYPE html>
     <div class="logo-mini">""" + LOGO_SVG + """</div>
     <div class="header-info">
       <h1>ALB FORGE</h1>
-      <p>Universal • v33.0 • True Multiline</p>
+      <p>Universal • v34.0 • True Multiline</p>
     </div>
     <button class="logout-btn" onclick="location.href='/logout'">
       <span>Thoát</span>
@@ -1524,8 +1612,8 @@ HTML_INDEX = """<!DOCTYPE html>
     <button type="button" class="btn-rect primary full" onclick="uploadFile()">📤 Upload</button>
     <div class="hint">
       💡 Mỗi khối ngăn bởi <b>dòng trống</b> = 1 tin nhắn.<br>
-      <b>Treo ngôn</b>: N dòng → gửi trong <b>1 tin duy nhất</b> (giữ nguyên xuống dòng).<br>
-      <b>Treo nhây</b>: N dòng → N tin riêng, đánh số 1. 2. 3.
+      <b>Treo ngôn</b>: N dòng → gửi trong <b>1 tin duy nhất</b>.<br>
+      <b>Treo nhây</b>: N dòng → N tin riêng, đánh số.
     </div>
   </div>
   <div class="card">
