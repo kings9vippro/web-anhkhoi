@@ -1,5 +1,5 @@
 # ============================================================
-# ALB FORGE v33.5 — I LOVE NGỌC HÂN EDITION (BOTTOM DOCK UI)
+# ALB FORGE v33.5 — I LOVE NGỌC HÂN EDITION (FULL ROUTES)
 # ============================================================
 import os
 import json
@@ -666,7 +666,7 @@ def spam_worker(tid, targets, blocks, delay,
 
 
 # ============================================================
-# AUTH
+# AUTH DECORATOR
 # ============================================================
 def login_required(f):
     @wraps(f)
@@ -762,7 +762,7 @@ body{
   background:#090d16;
   color:var(--txt-1);
   min-height:100vh;
-  padding-bottom:100px; /* Space for the bottom floating dock */
+  padding-bottom:100px;
   overflow-x:hidden;
   background-image:
     radial-gradient(1000px 600px at 15% 10%, rgba(255,0,127,0.12), transparent 70%),
@@ -1081,9 +1081,7 @@ HTML_INDEX = """<!DOCTYPE html>
 .tag-member .tm-name{color:#fff;font-weight:700;font-size:12px}
 .tag-member .tm-sub{color:var(--txt-2);font-size:9.5px;font-family:'JetBrains Mono',monospace}
 
-/* ============================================================ */
-/* FLOATING BOTTOM DOCK NAVIGATION (DÃY TAB XUỐNG DƯỚI) */
-/* ============================================================ */
+/* FLOATING BOTTOM DOCK */
 .bottom-dock{
   position:fixed;
   bottom:14px;left:50%;transform:translateX(-50%);
@@ -1350,9 +1348,7 @@ HTML_INDEX = """<!DOCTYPE html>
 
 </div>
 
-<!-- ============================================================ -->
-<!-- FLOATING BOTTOM DOCK: DÃY TAB CHỌN Ở DƯỚI ĐÁY MÀN HÌNH -->
-<!-- ============================================================ -->
+<!-- FLOATING BOTTOM DOCK -->
 <div class="bottom-dock">
   <button type="button" class="tab active" data-tab="accounts">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
@@ -1414,7 +1410,7 @@ var Toast = (function(){
   };
 })();
 
-// TAB SWITCHING (Bottom Navigation)
+// TAB SWITCHING
 document.querySelectorAll('.bottom-dock .tab').forEach(function(t){
   t.addEventListener('click', function(){
     document.querySelectorAll('.bottom-dock .tab').forEach(function(x){ x.classList.remove('active'); });
@@ -1631,7 +1627,7 @@ function selectAllBoxes(){
   document.querySelectorAll('.box-item').forEach(function(el){el.classList.add('selected');});
   selectedBoxes = _boxes.slice();
   document.getElementById('selected-count').textContent = selectedBoxes.length;
-  Toast.info('Đã chọn ' + selectedBoxes.length + ' box');
+  Toast.info('Chọn ' + selectedBoxes.length + ' box');
 }
 function clearAllBoxes(){
   document.querySelectorAll('.box-item').forEach(function(el){el.classList.remove('selected');});
@@ -1805,6 +1801,330 @@ refreshAll();
 </body>
 </html>
 """
+
+
+# ============================================================
+# ALL FLASK WEB & API ROUTES
+# ============================================================
+@app.route("/")
+@login_required
+def index():
+    return render_template_string(HTML_INDEX)
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        pw = request.form.get("password", "")
+        if pw == APP_PASSWORD:
+            session["logged_in"] = True
+            return redirect(url_for("index"))
+        return render_template_string(HTML_LOGIN, error="Sai mật khẩu truy cập")
+    return render_template_string(HTML_LOGIN)
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+
+@app.route("/api/colors", methods=["GET"])
+@login_required
+def api_colors():
+    return jsonify(ZALO_COLORS)
+
+
+@app.route("/api/accounts", methods=["GET"])
+@login_required
+def api_accounts():
+    conn = db()
+    rows = conn.execute("""
+        SELECT id, label, imei, ok_count, fail_count, risk,
+               total_sent, enabled, uid, display_name, zalo_name, username
+        FROM accounts ORDER BY id DESC
+    """).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route("/api/accounts/add", methods=["POST"])
+@login_required
+def api_accounts_add():
+    d = request.json
+    label = d.get("label", "").strip() or "acc" + str(int(time.time()))
+    imei = d.get("imei", "").strip()
+    ck = d.get("cookies", "").strip()
+    if not imei or not ck:
+        return jsonify({"error": "Thiếu IMEI hoặc cookie"}), 400
+    try:
+        ck_obj = json.loads(ck)
+    except Exception:
+        return jsonify({"error": "Cookie không phải định dạng JSON"}), 400
+    try:
+        z = Zalo(imei, ck_obj)
+        uid = z.uid
+        dn = z.display_name or ""
+        zn = z.zalo_name or ""
+        un = z.username or ""
+    except Exception as e:
+        return jsonify({"error": "Cookie hỏng hoặc hết hạn: " + str(e)}), 400
+    conn = db()
+    conn.execute("""
+        INSERT INTO accounts (label, imei, cookies, added_at,
+                             uid, display_name, zalo_name, username)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (label, imei, json.dumps(ck_obj), time.time(),
+          uid, dn, zn, un))
+    conn.commit(); conn.close()
+    return jsonify({"ok": True, "label": label, "uid": uid,
+                    "display_name": dn, "zalo_name": zn, "username": un})
+
+
+@app.route("/api/accounts/<int:aid>", methods=["DELETE"])
+@login_required
+def api_accounts_delete(aid):
+    conn = db()
+    conn.execute("DELETE FROM accounts WHERE id = ?", (aid,))
+    conn.commit(); conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/accounts/<int:aid>/reset", methods=["POST"])
+@login_required
+def api_accounts_reset(aid):
+    conn = db()
+    conn.execute("UPDATE accounts SET risk = 0, enabled = 1 WHERE id = ?", (aid,))
+    conn.commit(); conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/accounts/<int:aid>/check", methods=["POST"])
+@login_required
+def api_accounts_check(aid):
+    conn = db()
+    row = conn.execute("SELECT * FROM accounts WHERE id = ?", (aid,)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"error": "Không tìm thấy tài khoản"}), 404
+    try:
+        z = Zalo(row["imei"], json.loads(row["cookies"]))
+        return jsonify({"ok": True, "uid": z.uid,
+                        "display_name": z.display_name or "",
+                        "zalo_name": z.zalo_name or "",
+                        "username": z.username or ""})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/accounts/<int:aid>/load_boxes", methods=["POST"])
+@login_required
+def api_load_boxes(aid):
+    conn = db()
+    row = conn.execute("SELECT * FROM accounts WHERE id = ?", (aid,)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"error": "Không tìm thấy tài khoản"}), 404
+    try:
+        z = Zalo(row["imei"], json.loads(row["cookies"]))
+        gs = z.groups()
+        fs = z.friends()
+        return jsonify({"ok": True, "groups": gs, "friends": fs,
+                        "total": len(gs) + len(fs)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/accounts/<int:aid>/members/<group_id>", methods=["POST"])
+@login_required
+def api_load_members(aid, group_id):
+    conn = db()
+    row = conn.execute("SELECT * FROM accounts WHERE id = ?", (aid,)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"error": "Không tìm thấy tài khoản"}), 404
+    try:
+        z = Zalo(row["imei"], json.loads(row["cookies"]))
+        members = z.get_members_full(group_id)
+        return jsonify({"ok": True, "members": members, "count": len(members)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/files", methods=["GET"])
+@login_required
+def api_files_list():
+    conn = db()
+    rows = conn.execute("""
+        SELECT id, filename, lines, size, uploaded_at
+        FROM files ORDER BY id DESC
+    """).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route("/api/files/upload", methods=["POST"])
+@login_required
+def api_files_upload():
+    if "file" not in request.files:
+        return jsonify({"error": "Không tìm thấy file tải lên"}), 400
+    f = request.files["file"]
+    if not f.filename:
+        return jsonify({"error": "Tên file trống"}), 400
+    safe = str(int(time.time())) + "_" + f.filename
+    fp = os.path.join(UPLOAD_DIR, safe)
+    f.save(fp)
+    blocks = parse_blocks(fp, max_blocks=5000)
+    size = os.path.getsize(fp)
+    conn = db()
+    conn.execute("""
+        INSERT INTO files (filename, filepath, lines, size, uploaded_at)
+        VALUES (?, ?, ?, ?, ?)
+    """, (f.filename, fp, len(blocks), size, time.time()))
+    conn.commit(); conn.close()
+    return jsonify({"ok": True, "filename": f.filename,
+                    "lines": len(blocks), "preview": blocks[:3]})
+
+
+@app.route("/api/files/<int:fid>", methods=["DELETE"])
+@login_required
+def api_files_delete(fid):
+    conn = db()
+    row = conn.execute("SELECT * FROM files WHERE id = ?", (fid,)).fetchone()
+    if not row:
+        conn.close(); return jsonify({"error": "Không tìm thấy file"}), 404
+    try:
+        if os.path.exists(row["filepath"]): os.remove(row["filepath"])
+    except Exception: pass
+    conn.execute("DELETE FROM files WHERE id = ?", (fid,))
+    conn.commit(); conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/files/<int:fid>/preview", methods=["GET"])
+@login_required
+def api_files_preview(fid):
+    conn = db()
+    row = conn.execute("SELECT * FROM files WHERE id = ?", (fid,)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"error": "Không tìm thấy file"}), 404
+    blocks = parse_blocks(row["filepath"], max_blocks=5000)
+    return jsonify({"filename": row["filename"], "total": len(blocks),
+                    "preview": blocks[:5], "all": blocks})
+
+
+@app.route("/api/tasks", methods=["GET"])
+@login_required
+def api_tasks():
+    conn = db()
+    rows = conn.execute(
+        "SELECT * FROM tasks ORDER BY started_at DESC LIMIT 50"
+    ).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route("/api/tasks/start", methods=["POST"])
+@login_required
+def api_tasks_start():
+    d = request.json
+    targets = d.get("targets", [])
+    blocks = d.get("blocks", [])
+    try:
+        delay = float(d.get("delay", 1))
+    except Exception:
+        return jsonify({"error": "Delay không hợp lệ"}), 400
+
+    use_emoji = bool(d.get("use_emoji", True))
+    icon_count = int(d.get("icon_count", 3))
+    if not use_emoji: icon_count = 0
+
+    tag_users = d.get("tag_users", [])
+    mode = d.get("mode", "fast")
+    color_mode = d.get("color_mode", "random")
+    fixed_color = d.get("fixed_color", None)
+    typing_speed = d.get("typing_speed", "fast")
+    human_mode = bool(d.get("human_mode", True))
+    real_mention = bool(d.get("real_mention", True))
+    read_receipt = bool(d.get("read_receipt", True))
+
+    if not targets:
+        return jsonify({"error": "Chưa chọn box chat mục tiêu"}), 400
+    if not blocks:
+        return jsonify({"error": "Chưa có nội dung tin nhắn"}), 400
+    if delay < AntiBan.MIN_DELAY:
+        return jsonify({"error": "Delay tối thiểu " + str(AntiBan.MIN_DELAY) + "s"}), 400
+    if delay > AntiBan.MAX_DELAY:
+        return jsonify({"error": "Delay tối đa " + str(AntiBan.MAX_DELAY) + "s"}), 400
+    if icon_count < 0: icon_count = 0
+    if icon_count > 20: icon_count = 20
+    if mode not in ("fast", "treo_ngon", "treo_nhay"): mode = "fast"
+    if typing_speed not in ("instant", "fast", "normal", "slow"): typing_speed = "fast"
+    if color_mode not in ("none", "random", "fixed", "cycle"): color_mode = "random"
+    if color_mode == "fixed" and fixed_color not in COLOR_IDS:
+        return jsonify({"error": "Màu cố định không hợp lệ"}), 400
+
+    conn = db()
+    cnt = conn.execute(
+        "SELECT COUNT(*) as c FROM accounts WHERE enabled = 1"
+    ).fetchone()["c"]
+    conn.close()
+    if cnt == 0:
+        return jsonify({"error": "Kho tài khoản trống hoặc chưa có acc nào bật"}), 400
+
+    tid = new_tid("spam")
+    stop_ev = threading.Event()
+    th = threading.Thread(
+        target=spam_worker,
+        args=(tid, targets, blocks, delay,
+              use_emoji, icon_count, tag_users, stop_ev,
+              mode, color_mode, fixed_color,
+              typing_speed, human_mode, real_mention, read_receipt),
+        daemon=True,
+    )
+
+    conn = db()
+    conn.execute("""
+        INSERT INTO tasks (id, type, meta, status, started_at, stats)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (tid, "spam",
+          json.dumps({"targets": len(targets), "blocks": len(blocks),
+                      "delay": delay, "tags": len(tag_users),
+                      "mode": mode, "color_mode": color_mode,
+                      "fixed_color": fixed_color,
+                      "typing_speed": typing_speed, "human_mode": human_mode,
+                      "real_mention": real_mention}),
+          "running", time.time(), "{}"))
+    conn.commit(); conn.close()
+
+    ACTIVE_TASKS[tid] = {"stop": stop_ev, "thread": th}
+    th.start()
+
+    return jsonify({"ok": True, "task_id": tid, "mode": mode,
+                    "delay": delay, "color_mode": color_mode})
+
+
+@app.route("/api/tasks/<tid>/stop", methods=["POST"])
+@login_required
+def api_tasks_stop(tid):
+    if tid in ACTIVE_TASKS:
+        ACTIVE_TASKS[tid]["stop"].set()
+        return jsonify({"ok": True})
+    return jsonify({"error": "Không tìm thấy task"}), 404
+
+
+@app.route("/api/tasks/stop_all", methods=["POST"])
+@login_required
+def api_tasks_stop_all():
+    for tid, t in list(ACTIVE_TASKS.items()):
+        t["stop"].set()
+    return jsonify({"ok": True, "count": len(ACTIVE_TASKS)})
+
+
+@app.route("/health")
+def health():
+    return jsonify({"status": "ok", "service": "alb-forge", "version": "33.5"})
 
 
 # ============================================================
