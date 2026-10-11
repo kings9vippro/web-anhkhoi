@@ -1,6 +1,6 @@
 # ============================================================
-# WEB-LENH v26.1 — Bot by Anh Khôi
-# Universal Forge UI • 2-mode freeze • Notification Stack
+# ALB FORGE v27.0 — Universal Forge
+# Bot by Anh Khôi • Anti-Ban Pro • Real Mention • Humanized Engine
 # ============================================================
 import os
 import io
@@ -12,6 +12,7 @@ import threading
 import random
 import base64
 import re
+import hashlib
 from functools import wraps
 from collections import deque
 
@@ -50,7 +51,9 @@ def init_db():
             enabled INTEGER DEFAULT 1,
             added_at REAL,
             last_used REAL DEFAULT 0,
-            total_sent INTEGER DEFAULT 0
+            total_sent INTEGER DEFAULT 0,
+            warmup INTEGER DEFAULT 0,
+            uid TEXT
         )
     """)
     c.execute("""
@@ -88,7 +91,7 @@ def new_tid(p):
 
 
 # ============================================================
-# ICON ZALO
+# ZALO ICON
 # ============================================================
 ZALO_ICON_HARD = [
     ";f", ":d", "=))", "b-)", ";-A", ":-bd",
@@ -121,55 +124,105 @@ def get_icon_hard():
 
 
 # ============================================================
-# ANTI-BAN VIP v26.1
+# ANTI-BAN PRO ENGINE
 # ============================================================
-class AntiBanVIP:
+class AntiBanPro:
+    """
+    Engine giả lập hành vi người thật tầng protocol.
+    Không hứa 'không ban' — mà giảm risk signal ở mọi layer.
+    """
     MIN_DELAY = 0.3
-    MAX_DELAY = 30.0
+    MAX_DELAY = 120.0
+    ZALO_COLORS = ["red", "orange", "yellow", "green", "ocean",
+                   "blue", "purple", "pink", "brown", "black",
+                   "gray", "white"]
 
-    @staticmethod
-    def compute_delay(user_delay, risk):
-        d = max(AntiBanVIP.MIN_DELAY, user_delay)
-        if risk > 0.85:
-            d = max(d, 15.0)
-        elif risk > 0.7:
-            d = max(d, 8.0)
-        elif risk > 0.5:
-            d = max(d, 4.0)
-        d = d * random.uniform(0.75, 1.25)
-        return max(AntiBanVIP.MIN_DELAY, min(AntiBanVIP.MAX_DELAY, d))
+    # Session pattern: mỗi session gửi 1 batch rồi nghỉ
+    SESSION_MIN_MSGS = 8
+    SESSION_MAX_MSGS = 25
+    SESSION_REST_MIN = 3.0
+    SESSION_REST_MAX = 12.0
 
     @staticmethod
     def compute_risk(ok, fail):
         total = ok + fail
         if total == 0:
             return 0.0
-        return min(1.0, fail / total)
+        base = fail / total
+        # Phạt nặng nếu fail liên tiếp cao
+        if fail > 20 and ok < 5:
+            base = min(1.0, base + 0.15)
+        return min(1.0, base)
 
-    ZALO_COLORS = ["red", "orange", "yellow", "green", "ocean",
-                   "blue", "purple", "pink", "brown", "black",
-                   "gray", "white"]
+    @staticmethod
+    def compute_delay(user_delay, risk):
+        d = max(AntiBanPro.MIN_DELAY, user_delay)
+        if risk > 0.85:
+            d = max(d, 20.0)
+        elif risk > 0.7:
+            d = max(d, 12.0)
+        elif risk > 0.5:
+            d = max(d, 6.0)
+        elif risk > 0.3:
+            d = max(d, 3.0)
+        d = d * random.uniform(0.8, 1.3)
+        return max(AntiBanPro.MIN_DELAY, min(AntiBanPro.MAX_DELAY, d))
 
     @staticmethod
     def random_color():
-        return random.choice(AntiBanVIP.ZALO_COLORS)
+        return random.choice(AntiBanPro.ZALO_COLORS)
 
     @staticmethod
     def append_icons(text, count):
+        if count <= 0:
+            return text
         icons = [get_icon_hard() for _ in range(count)]
         return text + " " + " ".join(icons)
 
+    @staticmethod
+    def human_typing_rate(speed):
+        """Trả về ms/ký tự theo speed."""
+        return {"fast": 0.014, "normal": 0.032, "slow": 0.055,
+                "instant": 0.0}.get(speed, 0.014)
+
+    @staticmethod
+    def session_size():
+        return random.randint(AntiBanPro.SESSION_MIN_MSGS,
+                              AntiBanPro.SESSION_MAX_MSGS)
+
+    @staticmethod
+    def session_rest():
+        return random.uniform(AntiBanPro.SESSION_REST_MIN,
+                              AntiBanPro.SESSION_REST_MAX)
+
+    @staticmethod
+    def should_micro_pause():
+        """5% xác suất nghỉ tay như người thật."""
+        return random.random() < 0.05
+
+    @staticmethod
+    def micro_pause_duration():
+        return random.uniform(1.5, 5.0)
+
+    @staticmethod
+    def should_typo_recover():
+        """3% xác suất: gõ nhầm rồi xoá (giả typing 2 lần)."""
+        return random.random() < 0.03
+
 
 # ============================================================
-# ZALO API
+# ZALO API v27 — Real Mention
 # ============================================================
 class Zalo:
     def __init__(self, imei, cookies):
         self.imei = imei
         self.s = requests.Session()
         self.s.headers.update({
-            "User-Agent": "Mozilla/5.0",
+            "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                           "AppleWebKit/537.36 (KHTML, like Gecko) "
+                           "Chrome/122.0.0.0 Safari/537.36"),
             "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "vi-VN,vi;q=0.9,en;q=0.8",
             "Origin": "https://chat.zalo.me",
             "Referer": "https://chat.zalo.me/",
             "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
@@ -258,6 +311,7 @@ class Zalo:
             return []
 
     def get_members(self, gid):
+        """Lấy members với TÊN THẬT đầy đủ."""
         enc = self._enc({"gridVerMap": json.dumps({str(gid): 0})})
         r = self.s.post(
             "https://tt-group-wpa.chat.zalo.me/api/group/getmg-v2",
@@ -268,11 +322,12 @@ class Zalo:
         info = json.loads(dec).get("data", {}).get("gridInfoMap", {}).get(str(gid), {})
         mem_list = info.get("memVerList", [])
 
-        members = []
         uids = [m.split("_")[0] for m in mem_list]
         if not uids:
             return []
 
+        members = []
+        # Zalo cho phép query batch
         try:
             payload = {"friendId": uids}
             enc2 = self._enc(payload)
@@ -285,24 +340,81 @@ class Zalo:
             profiles = json.loads(dec2).get("data", {}).get("profiles", {})
             for uid in uids:
                 p = profiles.get(uid, {})
-                members.append({
-                    "id": uid,
-                    "name": p.get("displayName") or p.get("zaloName") or "User_" + uid[:6],
-                })
-        except Exception:
+                # Ưu tiên displayName > zaloName > "User_xxx"
+                name = (p.get("displayName") or p.get("zaloName")
+                        or p.get("username") or "User_" + uid[:8])
+                members.append({"id": uid, "name": name})
+        except Exception as e:
+            print("[MEMBERS] batch fail: " + str(e))
+            # Fallback gọi từng người
             for uid in uids:
-                members.append({"id": uid, "name": "User_" + uid[:6]})
+                try:
+                    enc3 = self._enc({"friendId": uid})
+                    r3 = self.s.post(
+                        "https://tt-group-wpa.chat.zalo.me/api/group/getuserinfo",
+                        params={"zpw_ver": 645, "zpw_type": 30},
+                        data={"params": enc3}, timeout=10,
+                    )
+                    dec3 = self._dec(r3.json()["data"])
+                    p = json.loads(dec3).get("data", {}).get("profiles", {}).get(uid, {})
+                    name = (p.get("displayName") or p.get("zaloName")
+                            or "User_" + uid[:8])
+                    members.append({"id": uid, "name": name})
+                except Exception:
+                    members.append({"id": uid, "name": "User_" + uid[:8]})
         return members
 
-    def send(self, msg, thread_id, color=None, is_group=True):
+    def build_mention_payload(self, text, mentions):
+        """
+        Build text + mentions array đúng chuẩn Zalo.
+        mentions = [{"uid": ..., "name": ...}, ...]
+        Trả về (final_text, mentions_array)
+        """
+        if not mentions:
+            return text, []
+
+        final = text
+        m_arr = []
+        # Mỗi mention chèn @Name vào đầu text, tính pos/len
+        for m in mentions:
+            name = m.get("name", "")
+            uid = m.get("uid") or m.get("id")
+            if not name or not uid:
+                continue
+            tag_str = "@" + name
+            # Luôn chèn vào đầu (đơn giản, an toàn offset)
+            pos = len(final) if final else 0
+            if final:
+                final = final + " " + tag_str
+            else:
+                final = tag_str
+            pos = final.rfind(tag_str)
+            m_arr.append({
+                "uid": str(uid),
+                "pos": pos,
+                "len": len(tag_str),
+                "type": 0,
+            })
+        # Đảo ngược để tag đúng thứ tự user chọn
+        return final, m_arr
+
+    def send(self, msg, thread_id, color=None, is_group=True, mentions=None):
         url = ("https://tt-group-wpa.chat.zalo.me/api/group/sendmsg"
                if is_group
                else "https://tt-chat2-wpa.chat.zalo.me/api/message/sms")
+
+        final_msg = msg
+        m_arr = []
+        if mentions:
+            final_msg, m_arr = self.build_mention_payload(msg, mentions)
+
         pl = {
-            "message": msg,
+            "message": final_msg,
             "clientId": str(int(time.time() * 1000)),
             "imei": self.imei,
         }
+        if m_arr:
+            pl["mentions"] = json.dumps(m_arr)
         if color:
             pl["msgColor"] = color
         if is_group:
@@ -328,11 +440,26 @@ class Zalo:
         except Exception:
             pass
 
+    def mark_read(self, thread_id, is_group=True):
+        """Đánh dấu đã đọc — giả người thật online."""
+        try:
+            if is_group:
+                url = "https://tt-group-wpa.chat.zalo.me/api/group/seentmsg"
+                pl = {"grid": str(thread_id), "imei": self.imei}
+            else:
+                url = "https://tt-chat1-wpa.chat.zalo.me/api/message/seentmsg"
+                pl = {"toid": str(thread_id), "imei": self.imei}
+            enc = self._enc(pl)
+            self.s.post(url, params={"zpw_ver": 645, "zpw_type": 30},
+                        data={"params": enc}, timeout=8)
+        except Exception:
+            pass
+
 
 # ============================================================
 # PARSE FILE
 # ============================================================
-def parse_blocks(filepath, max_blocks=2000):
+def parse_blocks(filepath, max_blocks=5000):
     blocks = []
     current = []
     try:
@@ -354,12 +481,8 @@ def parse_blocks(filepath, max_blocks=2000):
     return blocks
 
 
-def count_blocks(filepath):
-    return len(parse_blocks(filepath))
-
-
 # ============================================================
-# WORKER — 2-mode freeze: TREO NGÔN + TREO NHÂY
+# WORKER v27
 # ============================================================
 def update_stats(aid, ok):
     conn = db()
@@ -370,7 +493,7 @@ def update_stats(aid, ok):
     ok_c = row["ok_count"] + (1 if ok else 0)
     fail_c = row["fail_count"] + (0 if ok else 1)
     sent = row["total_sent"] + (1 if ok else 0)
-    risk = AntiBanVIP.compute_risk(ok_c, fail_c)
+    risk = AntiBanPro.compute_risk(ok_c, fail_c)
     enabled = row["enabled"]
     if fail_c >= 50 and ok_c / max(fail_c, 1) < 0.05:
         enabled = 0
@@ -384,126 +507,188 @@ def update_stats(aid, ok):
     conn.close()
 
 
-def pick_account():
+def pick_account(exclude_id=None):
     conn = db()
-    rows = conn.execute("""
-        SELECT * FROM accounts
-        WHERE enabled = 1 AND risk < 0.85
-        ORDER BY risk ASC, last_used ASC
-        LIMIT 1
-    """).fetchall()
+    q = "SELECT * FROM accounts WHERE enabled = 1 AND risk < 0.85"
+    params = []
+    if exclude_id:
+        q += " AND id != ?"
+        params.append(exclude_id)
+    q += " ORDER BY risk ASC, last_used ASC LIMIT 1"
+    rows = conn.execute(q, params).fetchall()
+    if not rows and exclude_id:
+        rows = conn.execute(
+            "SELECT * FROM accounts WHERE enabled = 1 AND risk < 0.85 "
+            "ORDER BY risk ASC LIMIT 1"
+        ).fetchall()
     conn.close()
     return rows[0] if rows else None
 
 
+def humanize_typing(z, thread_id, is_group, msg_len, speed="fast"):
+    """Giả lập gõ phím."""
+    r = AntiBanPro.human_typing_rate(speed)
+    if r <= 0:
+        return
+    typing_time = min(msg_len * r, 3.0)
+    try:
+        z.set_typing(thread_id, is_group=is_group)
+    except Exception:
+        pass
+    if typing_time > 0.05:
+        time.sleep(typing_time)
+
+
 def spam_worker(tid, targets, blocks, delay, use_color, use_emoji,
-                icon_count, tag_uids_names, stop_event,
-                freeze_text=False, freeze_delay=False,
-                freeze_text_after=0, freeze_delay_after=0):
+                icon_count, tag_users, stop_event,
+                mode="fast", multi_color=False,
+                typing_speed="fast", human_mode=True,
+                real_mention=False, read_receipt=True,
+                session_mode=True):
     """
-    freeze_text: TREO NGÔN — sau N tin thì gửi đúng 1 tin cố định lặp mãi
-    freeze_delay: TREO NHÂY — sau N tin thì delay giữ nguyên 1 giá trị (không jitter)
+    mode:
+      fast        — gửi xoay vòng block nhanh
+      treo_ngon   — NGUYÊN KHỐI, không cắt dòng
+      treo_nhay   — tách từng DÒNG, mỗi dòng 1 message, đa màu
+    real_mention  — tag tên thật qua mentions array
+    session_mode  — batch + nghỉ giữa session (giả người thật)
     """
     block_idx = 0
     target_idx = 0
     count = 0
     last_acc_id = None
-    frozen_text = None
-    frozen_delay = None
+    session_remaining = AntiBanPro.session_size() if session_mode else 10**9
 
-    print("[SPAM] Bắt đầu: " + tid)
-    print("  Targets: " + str(len(targets)))
-    print("  Blocks: " + str(len(blocks)))
-    print("  Delay: " + str(delay) + "s")
-    print("  Tags: " + str(len(tag_uids_names)))
-    print("  FreezeText: " + str(freeze_text) + " after " + str(freeze_text_after))
-    print("  FreezeDelay: " + str(freeze_delay) + " after " + str(freeze_delay_after))
+    print("[SPAM v27] Start: " + tid)
+    print("  Mode: " + mode + " | Multi: " + str(multi_color))
+    print("  Real mention: " + str(real_mention))
+    print("  Human: " + str(human_mode) + " | Speed: " + typing_speed)
+    print("  Session: " + str(session_mode))
 
     while not stop_event.is_set():
-        acc = pick_account()
-        if not acc:
-            time.sleep(0.5)
+        # Session break
+        if session_mode and session_remaining <= 0:
+            rest = AntiBanPro.session_rest()
+            print("[SESSION] Nghỉ " + str(round(rest, 1)) + "s")
+            end = time.time() + rest
+            while time.time() < end:
+                if stop_event.is_set():
+                    break
+                time.sleep(0.1)
+            session_remaining = AntiBanPro.session_size()
             continue
 
-        if acc["id"] == last_acc_id:
-            conn = db()
-            cnt = conn.execute(
-                "SELECT COUNT(*) as c FROM accounts WHERE enabled = 1"
-            ).fetchone()["c"]
-            conn.close()
-            if cnt > 1:
-                time.sleep(0.15)
-                continue
+        acc = pick_account(exclude_id=last_acc_id)
+        if not acc:
+            time.sleep(0.3)
+            continue
+
         last_acc_id = acc["id"]
 
         target = targets[target_idx % len(targets)]
         target_idx += 1
-
-        # -------- TREO NGÔN --------
-        if freeze_text and count >= freeze_text_after:
-            if frozen_text is None:
-                frozen_text = blocks[block_idx % len(blocks)]
-            raw = frozen_text
-        else:
-            raw = blocks[block_idx % len(blocks)]
-            block_idx += 1
-
-        # Tag
-        if tag_uids_names:
-            tags = " ".join(["@" + t["name"] for t in tag_uids_names])
-            msg = tags + " " + raw
-        else:
-            msg = raw
-
-        # Icon
-        if use_emoji and icon_count > 0:
-            msg = AntiBanVIP.append_icons(msg, icon_count)
-
-        # Color
-        color = AntiBanVIP.random_color() if use_color else None
-
         is_group = target.get("type") == "group"
         target_id = target.get("id")
+
+        raw = blocks[block_idx % len(blocks)]
+        block_idx += 1
+
+        # Build messages theo mode
+        if mode == "treo_nhay":
+            lines = [ln for ln in raw.split("\n") if ln.strip()]
+            messages = []
+            for ln in lines:
+                messages.append({
+                    "text": ln,
+                    "color": AntiBanPro.random_color() if use_color else None,
+                    "raw": ln,
+                })
+        else:
+            messages = [{
+                "text": raw,
+                "color": AntiBanPro.random_color() if use_color else None,
+                "raw": raw,
+            }]
 
         try:
             cookies = json.loads(acc["cookies"])
             z = Zalo(acc["imei"], cookies)
 
-            z.set_typing(target_id, is_group=is_group)
-            time.sleep(random.uniform(0.3, 1.0))
+            # Read receipt giả người online
+            if read_receipt and human_mode:
+                z.mark_read(target_id, is_group=is_group)
+                time.sleep(random.uniform(0.1, 0.4))
 
-            r = z.send(msg, target_id, color=color, is_group=is_group)
-            ok = bool(r and r.status_code == 200)
+            for mi, item in enumerate(messages):
+                if stop_event.is_set():
+                    break
 
-            update_stats(acc["id"], ok)
-            count += 1
-            status = "OK" if ok else "ERR"
-            cs = "[" + color + "]" if color else ""
-            preview = msg.replace("\n", " ⏎ ")[:60]
-            tag_frz = ""
-            if freeze_text and count > freeze_text_after:
-                tag_frz = " ❄️TREO-NGÔN"
-            print("[#" + str(count) + "] " + acc["label"] + " → " +
-                  str(target_id) + cs + " [" + status + "]" + tag_frz + " " + preview)
+                text = item["text"]
+
+                # Icons (chỉ thêm sau khi đã split dòng — không phá multiline)
+                if use_emoji and icon_count > 0:
+                    text = AntiBanPro.append_icons(text, icon_count)
+
+                # Mentions
+                mentions = None
+                if real_mention and tag_users:
+                    mentions = tag_users
+
+                # Human typing
+                if human_mode:
+                    humanize_typing(z, target_id, is_group,
+                                    len(text), typing_speed)
+                    # Typo-recover: 3% gõ thêm 1 nhịp typing nữa
+                    if AntiBanPro.should_typo_recover():
+                        time.sleep(random.uniform(0.3, 0.8))
+                        try:
+                            z.set_typing(target_id, is_group=is_group)
+                        except Exception:
+                            pass
+                        time.sleep(random.uniform(0.2, 0.5))
+
+                r = z.send(text, target_id, color=item["color"],
+                           is_group=is_group, mentions=mentions)
+                ok = bool(r and r.status_code == 200)
+                update_stats(acc["id"], ok)
+                count += 1
+                session_remaining -= 1
+
+                cs = "[" + item["color"] + "]" if item["color"] else ""
+                preview = text.replace("\n", " ⏎ ")[:60]
+                print("[#" + str(count) + "] " + acc["label"] + " → " +
+                      str(target_id) + cs + " [" + ("OK" if ok else "ERR") +
+                      "] " + preview)
+
+                # Gap giữa các message trong batch (treo nhây)
+                if mode == "treo_nhay" and mi < len(messages) - 1:
+                    gap = random.uniform(0.2, 0.55) if human_mode else 0.05
+                    end = time.time() + gap
+                    while time.time() < end:
+                        if stop_event.is_set():
+                            break
+                        time.sleep(0.02)
 
         except Exception as e:
             update_stats(acc["id"], False)
             print("[SPAM] Error " + acc["label"] + ": " + str(e))
 
-        # -------- TREO NHÂY --------
+        # Delay giữa batch
         risk = acc["risk"] if acc["risk"] else 0.0
-        if freeze_delay and count >= freeze_delay_after:
-            if frozen_delay is None:
-                frozen_delay = AntiBanVIP.compute_delay(delay, risk)
-            actual = frozen_delay
+        base = AntiBanPro.compute_delay(delay, risk)
+
+        if human_mode:
+            actual = base * random.uniform(0.85, 1.4)
+            if AntiBanPro.should_micro_pause():
+                actual += AntiBanPro.micro_pause_duration()
         else:
-            actual = AntiBanVIP.compute_delay(delay, risk)
+            actual = base
 
         end = time.time() + actual
         while time.time() < end:
             if stop_event.is_set():
                 break
-            time.sleep(0.05)
+            time.sleep(0.03)
 
     conn = db()
     conn.execute(
@@ -513,7 +698,7 @@ def spam_worker(tid, targets, blocks, delay, use_color, use_emoji,
     conn.commit()
     conn.close()
     ACTIVE_TASKS.pop(tid, None)
-    print("[SPAM] Task " + tid + " stop - total: " + str(count))
+    print("[SPAM v27] " + tid + " stop - total: " + str(count))
 
 
 # ============================================================
@@ -554,13 +739,14 @@ def logout():
     return redirect(url_for("login"))
 
 
+# ---- ACCOUNTS ----
 @app.route("/api/accounts", methods=["GET"])
 @login_required
 def api_accounts():
     conn = db()
     rows = conn.execute("""
         SELECT id, label, imei, ok_count, fail_count, risk,
-               total_sent, enabled
+               total_sent, enabled, uid
         FROM accounts ORDER BY id DESC
     """).fetchall()
     conn.close()
@@ -580,14 +766,22 @@ def api_accounts_add():
         ck_obj = json.loads(ck)
     except Exception:
         return jsonify({"error": "Cookie không phải JSON"}), 400
+
+    # Verify cookie sống
+    try:
+        z = Zalo(imei, ck_obj)
+        uid = z.uid
+    except Exception as e:
+        return jsonify({"error": "Cookie chết: " + str(e)}), 400
+
     conn = db()
     conn.execute("""
-        INSERT INTO accounts (label, imei, cookies, added_at)
-        VALUES (?, ?, ?, ?)
-    """, (label, imei, json.dumps(ck_obj), time.time()))
+        INSERT INTO accounts (label, imei, cookies, added_at, uid)
+        VALUES (?, ?, ?, ?, ?)
+    """, (label, imei, json.dumps(ck_obj), time.time(), uid))
     conn.commit()
     conn.close()
-    return jsonify({"ok": True, "label": label})
+    return jsonify({"ok": True, "label": label, "uid": uid})
 
 
 @app.route("/api/accounts/<int:aid>", methods=["DELETE"])
@@ -654,11 +848,13 @@ def api_load_members(aid, group_id):
     try:
         z = Zalo(row["imei"], json.loads(row["cookies"]))
         members = z.get_members(group_id)
-        return jsonify({"ok": True, "members": members})
+        return jsonify({"ok": True, "members": members,
+                        "count": len(members)})
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
 
+# ---- FILES ----
 @app.route("/api/files", methods=["GET"])
 @login_required
 def api_files_list():
@@ -682,7 +878,7 @@ def api_files_upload():
     safe = str(int(time.time())) + "_" + f.filename
     fp = os.path.join(UPLOAD_DIR, safe)
     f.save(fp)
-    blocks = parse_blocks(fp, max_blocks=2000)
+    blocks = parse_blocks(fp, max_blocks=5000)
     size = os.path.getsize(fp)
     conn = db()
     conn.execute("""
@@ -722,13 +918,14 @@ def api_files_preview(fid):
     conn.close()
     if not row:
         return jsonify({"error": "Không tìm thấy"}), 404
-    blocks = parse_blocks(row["filepath"], max_blocks=2000)
+    blocks = parse_blocks(row["filepath"], max_blocks=5000)
     return jsonify({"filename": row["filename"],
                     "total": len(blocks),
                     "preview": blocks[:5],
                     "all": blocks})
 
 
+# ---- TASKS ----
 @app.route("/api/tasks", methods=["GET"])
 @login_required
 def api_tasks():
@@ -746,31 +943,39 @@ def api_tasks_start():
     d = request.json
     targets = d.get("targets", [])
     blocks = d.get("blocks", [])
-    delay = float(d.get("delay", 3))
+    # Delay BẮT BUỘC từ server: validate chặt
+    try:
+        delay = float(d.get("delay", 1))
+    except Exception:
+        return jsonify({"error": "Delay không hợp lệ"}), 400
+
     use_color = bool(d.get("use_color", True))
     use_emoji = bool(d.get("use_emoji", True))
     icon_count = int(d.get("icon_count", 3))
-    tag_uids_names = d.get("tag_users", [])
+    tag_users = d.get("tag_users", [])
 
-    freeze_text = bool(d.get("freeze_text", False))
-    freeze_delay = bool(d.get("freeze_delay", False))
-    freeze_text_after = int(d.get("freeze_text_after", 10))
-    freeze_delay_after = int(d.get("freeze_delay_after", 10))
+    mode = d.get("mode", "fast")
+    multi_color = bool(d.get("multi_color", True))
+    typing_speed = d.get("typing_speed", "fast")
+    human_mode = bool(d.get("human_mode", True))
+    real_mention = bool(d.get("real_mention", True))
+    read_receipt = bool(d.get("read_receipt", True))
+    session_mode = bool(d.get("session_mode", True))
 
     if not targets:
         return jsonify({"error": "Chưa chọn target"}), 400
     if not blocks:
         return jsonify({"error": "Chưa có tin nhắn"}), 400
-    if delay < AntiBanVIP.MIN_DELAY:
-        delay = AntiBanVIP.MIN_DELAY
-    if icon_count < 0:
-        icon_count = 0
-    if icon_count > 20:
-        icon_count = 20
-    if freeze_text_after < 0:
-        freeze_text_after = 0
-    if freeze_delay_after < 0:
-        freeze_delay_after = 0
+    if delay < AntiBanPro.MIN_DELAY:
+        return jsonify({"error": "Delay tối thiểu " + str(AntiBanPro.MIN_DELAY) + "s"}), 400
+    if delay > AntiBanPro.MAX_DELAY:
+        return jsonify({"error": "Delay tối đa " + str(AntiBanPro.MAX_DELAY) + "s"}), 400
+    if icon_count < 0: icon_count = 0
+    if icon_count > 20: icon_count = 20
+    if mode not in ("fast", "treo_ngon", "treo_nhay"):
+        mode = "fast"
+    if typing_speed not in ("instant", "fast", "normal", "slow"):
+        typing_speed = "fast"
 
     conn = db()
     cnt = conn.execute(
@@ -785,9 +990,9 @@ def api_tasks_start():
     th = threading.Thread(
         target=spam_worker,
         args=(tid, targets, blocks, delay, use_color, use_emoji,
-              icon_count, tag_uids_names, stop_ev,
-              freeze_text, freeze_delay,
-              freeze_text_after, freeze_delay_after),
+              icon_count, tag_users, stop_ev,
+              mode, multi_color, typing_speed, human_mode,
+              real_mention, read_receipt, session_mode),
         daemon=True,
     )
 
@@ -797,9 +1002,11 @@ def api_tasks_start():
         VALUES (?, ?, ?, ?, ?, ?)
     """, (tid, "spam",
           json.dumps({"targets": len(targets), "blocks": len(blocks),
-                      "delay": delay, "tags": len(tag_uids_names),
-                      "freeze_text": freeze_text,
-                      "freeze_delay": freeze_delay}),
+                      "delay": delay, "tags": len(tag_users),
+                      "mode": mode, "multi_color": multi_color,
+                      "typing_speed": typing_speed, "human_mode": human_mode,
+                      "real_mention": real_mention,
+                      "session_mode": session_mode}),
           "running", time.time(), "{}"))
     conn.commit()
     conn.close()
@@ -807,7 +1014,8 @@ def api_tasks_start():
     ACTIVE_TASKS[tid] = {"stop": stop_ev, "thread": th}
     th.start()
 
-    return jsonify({"ok": True, "task_id": tid})
+    return jsonify({"ok": True, "task_id": tid, "mode": mode,
+                    "delay": delay})
 
 
 @app.route("/api/tasks/<tid>/stop", methods=["POST"])
@@ -829,113 +1037,119 @@ def api_tasks_stop_all():
 
 @app.route("/health")
 def health():
-    return jsonify({"status": "ok", "service": "web-lenh", "version": "26.1"})
+    return jsonify({"status": "ok", "service": "alb-forge", "version": "27.0"})
 
 
 # ============================================================
-# LOGO SVG — tinh xảo
+# LOGO SVG v27 — ALB hex-forge
 # ============================================================
-LOGO_SVG = """<svg viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg" fill="none">
+LOGO_SVG = """<svg viewBox="0 0 140 140" xmlns="http://www.w3.org/2000/svg" fill="none">
 <defs>
-<linearGradient id="gA" x1="0" y1="0" x2="1" y2="1">
-<stop offset="0%" stop-color="#f093fb"/>
-<stop offset="50%" stop-color="#f5576c"/>
-<stop offset="100%" stop-color="#764ba2"/>
+<linearGradient id="lg1" x1="0" y1="0" x2="1" y2="1">
+<stop offset="0%" stop-color="#00d4ff"/>
+<stop offset="50%" stop-color="#7b2ff7"/>
+<stop offset="100%" stop-color="#f107a3"/>
 </linearGradient>
-<linearGradient id="gB" x1="0" y1="1" x2="1" y2="0">
-<stop offset="0%" stop-color="#667eea"/>
-<stop offset="50%" stop-color="#764ba2"/>
-<stop offset="100%" stop-color="#f093fb"/>
+<linearGradient id="lg2" x1="0" y1="1" x2="1" y2="0">
+<stop offset="0%" stop-color="#ffd700"/>
+<stop offset="50%" stop-color="#ff6b35"/>
+<stop offset="100%" stop-color="#f107a3"/>
 </linearGradient>
-<linearGradient id="gStroke" x1="0" y1="0" x2="1" y2="1">
-<stop offset="0%" stop-color="#ffffff" stop-opacity="0.95"/>
-<stop offset="100%" stop-color="#ffffff" stop-opacity="0.4"/>
+<linearGradient id="lg3" x1="0" y1="0" x2="0" y2="1">
+<stop offset="0%" stop-color="#ffffff" stop-opacity="0.9"/>
+<stop offset="100%" stop-color="#ffffff" stop-opacity="0.1"/>
 </linearGradient>
-<radialGradient id="gC" cx="0.5" cy="0.5" r="0.6">
-<stop offset="0%" stop-color="#ffffff" stop-opacity="0.85"/>
-<stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+<radialGradient id="core" cx="0.5" cy="0.5" r="0.5">
+<stop offset="0%" stop-color="#ffffff"/>
+<stop offset="40%" stop-color="#00d4ff"/>
+<stop offset="100%" stop-color="#7b2ff7" stop-opacity="0"/>
 </radialGradient>
-<radialGradient id="gGlow" cx="0.5" cy="0.5" r="0.5">
-<stop offset="0%" stop-color="#f5576c" stop-opacity="0.8"/>
-<stop offset="100%" stop-color="#f5576c" stop-opacity="0"/>
-</radialGradient>
-<filter id="fg" x="-50%" y="-50%" width="200%" height="200%">
-<feGaussianBlur stdDeviation="2.5" result="b"/>
-<feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+<filter id="glow1" x="-50%" y="-50%" width="200%" height="200%">
+<feGaussianBlur stdDeviation="3"/>
 </filter>
-<filter id="softGlow"><feGaussianBlur stdDeviation="6"/></filter>
+<filter id="glow2" x="-50%" y="-50%" width="200%" height="200%">
+<feGaussianBlur stdDeviation="6"/>
+</filter>
 </defs>
-<circle cx="60" cy="60" r="56" fill="url(#gGlow)" filter="url(#softGlow)"/>
-<circle cx="60" cy="60" r="54" fill="none" stroke="url(#gB)" stroke-width="0.8"
- stroke-dasharray="3 6" opacity="0.55">
+
+<!-- Outer glow -->
+<circle cx="70" cy="70" r="62" fill="url(#core)" opacity="0.35" filter="url(#glow2)"/>
+
+<!-- Rotating hex ring -->
+<g transform="translate(70,70)">
+<g>
 <animateTransform attributeName="transform" type="rotate"
- from="0 60 60" to="360 60 60" dur="30s" repeatCount="indefinite"/>
+ from="0" to="360" dur="24s" repeatCount="indefinite"/>
+<polygon points="0,-56 48.5,-28 48.5,28 0,56 -48.5,28 -48.5,-28"
+ fill="none" stroke="url(#lg1)" stroke-width="1.4"
+ stroke-dasharray="4 7" opacity="0.7"/>
+</g>
+<g>
+<animateTransform attributeName="transform" type="rotate"
+ from="360" to="0" dur="16s" repeatCount="indefinite"/>
+<polygon points="0,-46 40,-23 40,23 0,46 -40,23 -40,-23"
+ fill="none" stroke="url(#lg2)" stroke-width="1" opacity="0.55"
+ stroke-dasharray="2 5"/>
+</g>
+</g>
+
+<!-- Core hex -->
+<g transform="translate(70,70)">
+<polygon points="0,-38 33,-19 33,19 0,38 -33,19 -33,-19"
+ fill="url(#lg1)" filter="url(#glow1)"/>
+<polygon points="0,-38 33,-19 33,19 0,38 -33,19 -33,-19"
+ fill="none" stroke="url(#lg3)" stroke-width="1.4"/>
+<!-- Inner hex cut -->
+<polygon points="0,-22 19,-11 19,11 0,22 -19,11 -19,-11"
+ fill="#0a0a1a" opacity="0.9"/>
+<!-- Lightning bolt A -->
+<path d="M-6,-16 L2,-6 L-2,-6 L6,6 L0,-2 L4,-2 Z"
+ fill="url(#lg2)" filter="url(#glow1)"/>
+</g>
+
+<!-- Orbiting particles -->
+<g transform="translate(70,70)">
+<circle r="62" fill="none"/>
+<circle cx="62" cy="0" r="2.4" fill="#00d4ff" filter="url(#glow1)">
+<animateTransform attributeName="transform" type="rotate"
+ from="0" to="360" dur="8s" repeatCount="indefinite"/>
 </circle>
-<circle cx="60" cy="60" r="48" fill="none" stroke="url(#gA)" stroke-width="0.6"
- opacity="0.35" stroke-dasharray="2 4">
+<circle cx="0" cy="-62" r="2" fill="#f107a3" filter="url(#glow1)">
 <animateTransform attributeName="transform" type="rotate"
- from="360 60 60" to="0 60 60" dur="20s" repeatCount="indefinite"/>
+ from="0" to="360" dur="11s" repeatCount="indefinite"/>
 </circle>
-<circle cx="60" cy="60" r="44" fill="url(#gC)" opacity="0.25"/>
-<path d="M60 14 C32 14, 14 32, 14 56 C14 78, 32 96, 60 96 C67 96, 74 94, 80 91
- L104 102 L98 80 C107 73, 112 65, 112 56 C112 32, 88 14, 60 14 Z"
- fill="url(#gA)" filter="url(#fg)"/>
-<path d="M60 14 C32 14, 14 32, 14 56 C14 60, 15 64, 16 68
- C22 50, 40 30, 60 26 C76 22, 92 30, 100 46
- C104 50, 107 53, 110 56 C112 32, 88 14, 60 14 Z"
- fill="white" opacity="0.18"/>
-<path d="M60 14 C32 14, 14 32, 14 56 C14 78, 32 96, 60 96 C67 96, 74 94, 80 91
- L104 102 L98 80 C107 73, 112 65, 112 56 C112 32, 88 14, 60 14 Z"
- fill="none" stroke="url(#gStroke)" stroke-width="1.2"/>
-<g>
-<circle cx="42" cy="52" r="6" fill="white"/>
-<circle cx="42" cy="53" r="3.2" fill="#1a1a2e"/>
-<circle cx="43.2" cy="51.4" r="1.1" fill="white"/>
-</g>
-<g>
-<circle cx="62" cy="52" r="6" fill="white"/>
-<circle cx="62" cy="53" r="3.2" fill="#1a1a2e"/>
-<circle cx="63.2" cy="51.4" r="1.1" fill="white"/>
-</g>
-<g>
-<circle cx="82" cy="52" r="6" fill="white"/>
-<circle cx="82" cy="53" r="3.2" fill="#1a1a2e"/>
-<circle cx="83.2" cy="51.4" r="1.1" fill="white"/>
-</g>
-<path d="M36 72 Q60 86 84 72" stroke="white" stroke-width="2.6"
- stroke-linecap="round" fill="none" opacity="0.95"/>
-<path d="M94 18 L97 27 L106 30 L97 33 L94 42 L91 33 L82 30 L91 27 Z"
- fill="url(#gB)" filter="url(#fg)">
+<circle cx="-62" cy="0" r="1.8" fill="#ffd700" filter="url(#glow1)">
 <animateTransform attributeName="transform" type="rotate"
- from="0 94 30" to="360 94 30" dur="12s" repeatCount="indefinite"/>
-</path>
-<path d="M18 88 L20 94 L26 96 L20 98 L18 104 L16 98 L10 96 L16 94 Z"
- fill="url(#gB)" filter="url(#fg)" opacity="0.9">
+ from="360" to="0" dur="14s" repeatCount="indefinite"/>
+</circle>
+</g>
+
+<!-- Corner sparks -->
+<path d="M116 22 L119 30 L127 33 L119 36 L116 44 L113 36 L105 33 L113 30 Z"
+ fill="url(#lg2)" filter="url(#glow1)">
 <animateTransform attributeName="transform" type="scale"
- values="1;1.25;1" dur="2.4s" repeatCount="indefinite" additive="sum"/>
+ values="1;1.3;1" dur="2.6s" repeatCount="indefinite" additive="sum"/>
 </path>
-<circle cx="88" cy="76" r="1.4" fill="white" opacity="0.9">
-<animate attributeName="opacity" values="0.3;1;0.3" dur="2s" repeatCount="indefinite"/>
-</circle>
-<circle cx="30" cy="34" r="1.2" fill="white" opacity="0.7">
-<animate attributeName="opacity" values="1;0.3;1" dur="1.8s" repeatCount="indefinite"/>
-</circle>
+<path d="M24 116 L26 121 L31 123 L26 125 L24 130 L22 125 L17 123 L22 121 Z"
+ fill="url(#lg1)" filter="url(#glow1)" opacity="0.85"/>
 </svg>"""
 
 
 # ============================================================
-# CSS ROOT — shared design tokens
+# CSS ROOT
 # ============================================================
 CSS_ROOT = """
 :root{
-  --bg-0:#f8fafc; --bg-1:#ffffff; --bg-2:#f1f5f9;
-  --line:#e5e7eb; --line-2:#eef2f7;
-  --txt-0:#0f172a; --txt-1:#1a1a2e; --txt-2:#64748b; --txt-3:#94a3b8;
-  --brand-a:#667eea; --brand-b:#764ba2; --brand-c:#f5576c; --brand-d:#f093fb;
+  --bg-0:#0a0a1a; --bg-1:#12122a; --bg-2:#1a1a35;
+  --bg-3:#232346; --bg-glass:rgba(18,18,42,.72);
+  --line:rgba(255,255,255,.08); --line-2:rgba(255,255,255,.14);
+  --line-3:rgba(255,255,255,.22);
+  --txt-0:#ffffff; --txt-1:#e8eaf6; --txt-2:#a0a4c0; --txt-3:#6b6f8c;
+  --brand-a:#00d4ff; --brand-b:#7b2ff7; --brand-c:#f107a3; --brand-d:#ffd700;
   --ok:#10b981; --err:#ef4444; --warn:#f59e0b; --info:#3b82f6;
   --purple:#8b5cf6; --pink:#ec4899; --teal:#14b8a6;
-  --grad-brand:linear-gradient(135deg,#667eea 0%,#764ba2 100%);
-  --grad-hot:linear-gradient(135deg,#f093fb 0%,#f5576c 100%);
+  --grad-brand:linear-gradient(135deg,#00d4ff 0%,#7b2ff7 60%,#f107a3 100%);
+  --grad-hot:linear-gradient(135deg,#ffd700 0%,#ff6b35 50%,#f107a3 100%);
   --grad-ok:linear-gradient(135deg,#10b981,#059669);
   --grad-err:linear-gradient(135deg,#ef4444,#dc2626);
   --grad-warn:linear-gradient(135deg,#f59e0b,#d97706);
@@ -944,10 +1158,6 @@ CSS_ROOT = """
   --grad-pink:linear-gradient(135deg,#ec4899,#db2777);
   --grad-teal:linear-gradient(135deg,#14b8a6,#0d9488);
   --r-xs:8px; --r-sm:10px; --r-md:14px; --r-lg:18px; --r-xl:22px; --r-2xl:28px;
-  --sh-0:0 1px 2px rgba(15,23,42,.04);
-  --sh-1:0 4px 14px rgba(15,23,42,.06);
-  --sh-2:0 10px 30px rgba(15,23,42,.08);
-  --sh-3:0 20px 50px rgba(102,126,234,.28);
   --ease:cubic-bezier(.16,1,.3,1);
   --ease-2:cubic-bezier(.34,1.56,.64,1);
 }
@@ -958,123 +1168,123 @@ body{
   background:var(--bg-0); color:var(--txt-1);
   min-height:100vh;
   -webkit-font-smoothing:antialiased;
-  text-rendering:optimizeLegibility;
   overflow-x:hidden;
+  background-image:
+    radial-gradient(900px 500px at 0% 0%,rgba(0,212,255,.08),transparent 60%),
+    radial-gradient(900px 500px at 100% 100%,rgba(241,7,163,.08),transparent 60%);
+  background-attachment:fixed;
 }
 button,input,textarea,select{font-family:inherit;font-feature-settings:'ss01','cv11'}
-::selection{background:rgba(102,126,234,.25)}
+::selection{background:rgba(0,212,255,.3)}
 *::-webkit-scrollbar{width:8px;height:8px}
 *::-webkit-scrollbar-track{background:transparent}
-*::-webkit-scrollbar-thumb{background:rgba(100,116,139,.25);border-radius:99px}
-*::-webkit-scrollbar-thumb:hover{background:rgba(100,116,139,.45)}
+*::-webkit-scrollbar-thumb{background:rgba(0,212,255,.25);border-radius:99px}
+*::-webkit-scrollbar-thumb:hover{background:rgba(0,212,255,.5)}
 :focus-visible{outline:2px solid var(--brand-a);outline-offset:2px;border-radius:6px}
 """
 
 
 # ============================================================
-# HTML — LOGIN
+# HTML — LOGIN v27
 # ============================================================
 HTML_LOGIN = """<!DOCTYPE html>
 <html lang="vi">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<meta name="theme-color" content="#667eea">
-<title>Đăng nhập — ALB Forge</title>
+<meta name="theme-color" content="#0a0a1a">
+<title>Đăng nhập — ALB Forge v27</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@500;700&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
 <style>
 """ + CSS_ROOT + """
 body{
   display:flex;align-items:center;justify-content:center;
   min-height:100vh;min-height:100dvh;
   padding:20px;
-  background:
-    radial-gradient(1200px 800px at 10% 0%,rgba(240,147,251,.35),transparent 60%),
-    radial-gradient(1000px 700px at 90% 100%,rgba(245,87,108,.35),transparent 60%),
-    linear-gradient(-45deg,#667eea,#764ba2,#f093fb,#f5576c);
-  background-size:200% 200%,200% 200%,400% 400%;
-  animation:bgShift 18s ease infinite;
-}
-@keyframes bgShift{
-  0%{background-position:0% 0%,100% 100%,0% 50%}
-  50%{background-position:100% 0%,0% 100%,100% 50%}
-  100%{background-position:0% 0%,100% 100%,0% 50%}
-}
-.card{
-  background:rgba(255,255,255,.98);
-  backdrop-filter:blur(20px) saturate(180%);
-  -webkit-backdrop-filter:blur(20px) saturate(180%);
-  padding:46px 34px 38px;
-  border-radius:var(--r-2xl);
-  border:1px solid rgba(255,255,255,.6);
-  box-shadow:
-    0 40px 100px rgba(15,23,42,.28),
-    0 1px 0 rgba(255,255,255,.9) inset,
-    0 -1px 0 rgba(15,23,42,.05) inset;
-  width:100%;max-width:420px;text-align:center;
-  animation:cardIn .9s var(--ease) both;
   position:relative;overflow:hidden;
 }
+body::before{
+  content:'';position:absolute;inset:0;
+  background-image:
+    linear-gradient(rgba(0,212,255,.06) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(0,212,255,.06) 1px,transparent 1px);
+  background-size:44px 44px;
+  animation:gridMove 30s linear infinite;
+  pointer-events:none;
+}
+@keyframes gridMove{from{background-position:0 0}to{background-position:44px 44px}}
+.card{
+  position:relative;
+  background:linear-gradient(180deg,rgba(18,18,42,.92),rgba(10,10,26,.96));
+  backdrop-filter:blur(24px) saturate(160%);
+  -webkit-backdrop-filter:blur(24px) saturate(160%);
+  padding:44px 34px 36px;
+  border-radius:var(--r-2xl);
+  border:1px solid var(--line-2);
+  box-shadow:
+    0 30px 80px rgba(0,0,0,.6),
+    0 0 60px rgba(0,212,255,.15),
+    inset 0 1px 0 rgba(255,255,255,.1);
+  width:100%;max-width:420px;text-align:center;
+  animation:cardIn .9s var(--ease) both;
+  overflow:hidden;
+}
 .card::before{
-  content:'';position:absolute;inset:0;border-radius:inherit;pointer-events:none;
-  background:linear-gradient(135deg,rgba(255,255,255,.6),transparent 40%);
-  mix-blend-mode:overlay;
+  content:'';position:absolute;top:0;left:0;right:0;height:2px;
+  background:var(--grad-brand);
+  box-shadow:0 0 20px rgba(0,212,255,.8);
 }
 @keyframes cardIn{
-  from{opacity:0;transform:translateY(60px) scale(.94)}
+  from{opacity:0;transform:translateY(40px) scale(.95)}
   to{opacity:1;transform:translateY(0) scale(1)}
 }
 .logo-box{
-  width:124px;height:124px;margin:0 auto 18px;position:relative;
-  animation:float 4s ease-in-out infinite;
-  filter:drop-shadow(0 20px 40px rgba(102,126,234,.35));
+  width:130px;height:130px;margin:0 auto 18px;position:relative;
+  filter:drop-shadow(0 0 30px rgba(123,47,247,.5));
+  animation:logoFloat 4s ease-in-out infinite;
 }
-.logo-box::before{
-  content:'';position:absolute;inset:-14px;border-radius:50%;
-  background:radial-gradient(circle,rgba(245,87,108,.45),transparent 70%);
-  filter:blur(24px);animation:glowPulse 3.2s ease-in-out infinite;
-  z-index:-1;
-}
-@keyframes float{0%,100%{transform:translateY(0) rotate(0)}50%{transform:translateY(-9px) rotate(-2.5deg)}}
-@keyframes glowPulse{0%,100%{opacity:.55;transform:scale(1)}50%{opacity:.95;transform:scale(1.15)}}
-.logo-box svg{width:100%;height:100%;position:relative;z-index:1}
+@keyframes logoFloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
+.logo-box svg{width:100%;height:100%}
 h1{
-  color:var(--txt-0);
-  font-size:26px;font-weight:900;letter-spacing:-.8px;
-  background:linear-gradient(135deg,#1a1a2e,#667eea 60%,#764ba2);
+  font-family:'Orbitron',sans-serif;
+  font-size:28px;font-weight:900;letter-spacing:2px;
+  background:linear-gradient(135deg,#00d4ff,#7b2ff7 50%,#f107a3);
   -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;
   margin-bottom:6px;
+  text-transform:uppercase;
 }
-p.sub{color:var(--txt-2);margin-bottom:26px;font-size:12.5px;font-weight:600;letter-spacing:.2px}
+p.sub{color:var(--txt-2);margin-bottom:26px;font-size:11.5px;font-weight:600;letter-spacing:1.2px;text-transform:uppercase}
 .input-wrap{position:relative;margin-bottom:6px}
 input[type=password]{
   width:100%;padding:16px 48px 16px 18px;
-  border:2px solid var(--line);border-radius:var(--r-md);
-  font-size:15px;font-weight:600;background:#f9fafb;color:var(--txt-0);
-  letter-spacing:1px;text-align:left;
-  transition:border-color .25s var(--ease),background .25s var(--ease),box-shadow .25s var(--ease);
+  border:2px solid var(--line-2);border-radius:var(--r-md);
+  font-size:15px;font-weight:600;
+  background:rgba(255,255,255,.03);color:var(--txt-0);
+  letter-spacing:2px;text-align:left;
+  transition:all .25s var(--ease);
 }
 input[type=password]::placeholder{color:var(--txt-3);letter-spacing:normal;font-weight:500}
 input[type=password]:focus{
-  outline:none;border-color:var(--brand-a);background:#fff;
-  box-shadow:0 0 0 4px rgba(102,126,234,.14);
+  outline:none;border-color:var(--brand-a);background:rgba(0,212,255,.04);
+  box-shadow:0 0 0 4px rgba(0,212,255,.15),0 0 30px rgba(0,212,255,.15);
 }
 .pw-toggle{
   position:absolute;right:6px;top:50%;transform:translateY(-50%);
   width:38px;height:38px;border-radius:10px;border:none;background:transparent;
   color:var(--txt-2);cursor:pointer;font-size:16px;
   display:flex;align-items:center;justify-content:center;
-  transition:background .2s var(--ease),color .2s var(--ease);
+  transition:all .2s var(--ease);
 }
-.pw-toggle:hover{background:var(--bg-2);color:var(--txt-0)}
+.pw-toggle:hover{background:rgba(255,255,255,.08);color:var(--brand-a)}
 button.submit{
   width:100%;padding:16px;margin-top:16px;
   background:var(--grad-brand);color:#fff;border:none;border-radius:var(--r-md);
-  font-size:15px;font-weight:800;letter-spacing:.3px;cursor:pointer;
-  box-shadow:0 14px 34px rgba(102,126,234,.4);
-  transition:transform .3s var(--ease),box-shadow .3s var(--ease);
+  font-size:14px;font-weight:900;letter-spacing:1.5px;cursor:pointer;
+  text-transform:uppercase;
+  box-shadow:0 14px 34px rgba(123,47,247,.5),0 0 40px rgba(0,212,255,.3);
+  transition:all .3s var(--ease);
   position:relative;overflow:hidden;
   display:flex;align-items:center;justify-content:center;gap:8px;
 }
@@ -1084,12 +1294,12 @@ button.submit::before{
   transform:translateX(-100%);transition:transform .8s var(--ease);
 }
 button.submit:hover::before{transform:translateX(100%)}
-button.submit:hover{transform:translateY(-2px);box-shadow:0 20px 44px rgba(102,126,234,.5)}
+button.submit:hover{transform:translateY(-2px);box-shadow:0 20px 50px rgba(123,47,247,.6),0 0 60px rgba(0,212,255,.5)}
 button.submit:active{transform:translateY(0) scale(.99)}
 .error{
-  background:linear-gradient(135deg,#fef2f2,#fee2e2);color:#b91c1c;
+  background:rgba(239,68,68,.12);color:#fca5a5;
   padding:12px 16px;border-radius:var(--r-md);margin-bottom:16px;
-  font-size:12.5px;font-weight:700;
+  font-size:12px;font-weight:700;letter-spacing:.5px;
   border-left:4px solid var(--err);
   animation:shake .5s var(--ease);text-align:left;
 }
@@ -1098,15 +1308,15 @@ button.submit:active{transform:translateY(0) scale(.99)}
   20%,60%{transform:translateX(-6px)}
   40%,80%{transform:translateX(6px)}
 }
-.foot{margin-top:22px;font-size:10.5px;color:var(--txt-3);font-weight:600;letter-spacing:.4px}
-.foot b{color:var(--brand-a);font-weight:800}
+.foot{margin-top:22px;font-size:10px;color:var(--txt-3);font-weight:700;letter-spacing:2px;text-transform:uppercase}
+.foot b{background:var(--grad-brand);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;font-weight:900}
 </style>
 </head>
 <body>
 <div class="card">
 <div class="logo-box">""" + LOGO_SVG + """</div>
 <h1>ALB FORGE</h1>
-<p class="sub">Bot by Anh Khôi • v26.1 VIP</p>
+<p class="sub">Universal • v27.0 • Anti-Pro</p>
 {% if error %}<div class="error">⚠️ {{ error }}</div>{% endif %}
 <form method="POST" autocomplete="off">
 <div class="input-wrap">
@@ -1115,7 +1325,7 @@ button.submit:active{transform:translateY(0) scale(.99)}
 </div>
 <button type="submit" class="submit">🚀 Đăng nhập</button>
 </form>
-<div class="foot">Secured by <b>ALB</b> • Anti-Ban VIP v26.1</div>
+<div class="foot">Secured by <b>ALB FORGE</b></div>
 </div>
 <script>
 function tgPw(){
@@ -1129,91 +1339,110 @@ function tgPw(){
 
 
 # ============================================================
-# HTML — INDEX (FULL REWRITE)
+# HTML — INDEX v27 (FULL)
 # ============================================================
 HTML_INDEX = """<!DOCTYPE html>
 <html lang="vi">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<meta name="theme-color" content="#667eea">
-<title>ALB Forge v26.1</title>
+<meta name="theme-color" content="#0a0a1a">
+<title>ALB Forge v27.0</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@500;700&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
 <style>
 """ + CSS_ROOT + """
 
+/* ---------- BACKGROUND GRID ---------- */
+body::before{
+  content:'';position:fixed;inset:0;z-index:-1;
+  background-image:
+    linear-gradient(rgba(0,212,255,.04) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(0,212,255,.04) 1px,transparent 1px);
+  background-size:48px 48px;
+  animation:gridMove 40s linear infinite;
+  pointer-events:none;
+}
+@keyframes gridMove{from{background-position:0 0}to{background-position:48px 48px}}
+
 /* ---------- HEADER ---------- */
 .header{
-  background:
-    radial-gradient(600px 200px at 0% 0%,rgba(240,147,251,.35),transparent 60%),
-    radial-gradient(500px 220px at 100% 100%,rgba(245,87,108,.4),transparent 60%),
-    linear-gradient(135deg,#667eea 0%,#764ba2 100%);
+  background:linear-gradient(180deg,rgba(18,18,42,.94),rgba(10,10,26,.88));
+  backdrop-filter:blur(24px) saturate(160%);
+  -webkit-backdrop-filter:blur(24px) saturate(160%);
   color:#fff;padding:14px 18px;
   padding-top:calc(14px + env(safe-area-inset-top,0px));
-  box-shadow:0 6px 30px rgba(102,126,234,.35);
+  border-bottom:1px solid var(--line-2);
+  box-shadow:0 6px 30px rgba(0,0,0,.5),0 0 40px rgba(0,212,255,.08);
   position:sticky;top:0;z-index:100;
-  border-bottom:1px solid rgba(255,255,255,.15);
+}
+.header::after{
+  content:'';position:absolute;left:0;right:0;bottom:0;height:2px;
+  background:var(--grad-brand);opacity:.9;
+  box-shadow:0 0 20px rgba(0,212,255,.6);
 }
 .header-inner{max-width:1200px;margin:0 auto;display:flex;align-items:center;gap:12px}
 .logo-mini{
-  width:42px;height:42px;flex-shrink:0;
+  width:44px;height:44px;flex-shrink:0;
   display:flex;align-items:center;justify-content:center;
-  background:rgba(255,255,255,.14);border-radius:12px;
-  border:1px solid rgba(255,255,255,.28);
-  padding:6px;backdrop-filter:blur(10px);
+  background:rgba(0,212,255,.08);border-radius:12px;
+  border:1px solid rgba(0,212,255,.25);
+  padding:5px;
+  box-shadow:0 0 20px rgba(0,212,255,.3),inset 0 1px 0 rgba(255,255,255,.15);
   animation:logoFl 4s ease-in-out infinite;
-  box-shadow:0 8px 22px rgba(0,0,0,.18),inset 0 1px 0 rgba(255,255,255,.3);
 }
-@keyframes logoFl{0%,100%{transform:translateY(0)}50%{transform:translateY(-4px)}}
+@keyframes logoFl{0%,100%{transform:translateY(0)}50%{transform:translateY(-3px)}}
 .logo-mini svg{width:100%;height:100%}
 .header-info{flex:1;min-width:0}
-.header-info h1{font-size:16px;font-weight:900;letter-spacing:-.4px;line-height:1.1}
-.header-info p{font-size:10px;opacity:.9;font-weight:600;margin-top:3px;letter-spacing:.4px}
+.header-info h1{
+  font-family:'Orbitron',sans-serif;
+  font-size:15px;font-weight:900;letter-spacing:1.5px;
+  background:linear-gradient(135deg,#00d4ff,#7b2ff7 60%,#f107a3);
+  -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;
+}
+.header-info p{font-size:9px;color:var(--txt-2);font-weight:700;margin-top:3px;letter-spacing:1.5px;text-transform:uppercase}
 .logout-btn{
   display:inline-flex;align-items:center;gap:6px;
-  background:rgba(255,255,255,.14);color:#fff;
-  border:1px solid rgba(255,255,255,.28);
+  background:rgba(255,255,255,.05);color:var(--txt-1);
+  border:1px solid var(--line-2);
   padding:8px 12px;border-radius:11px;
-  font-size:11.5px;font-weight:800;cursor:pointer;
-  transition:background .25s var(--ease),transform .25s var(--ease);
-  backdrop-filter:blur(10px);
+  font-size:11px;font-weight:800;cursor:pointer;letter-spacing:.5px;
+  transition:all .25s var(--ease);
 }
-.logout-btn:hover{background:rgba(255,255,255,.26);transform:translateY(-1px)}
-.logout-btn:active{transform:translateY(0) scale(.97)}
+.logout-btn:hover{background:rgba(241,7,163,.15);border-color:rgba(241,7,163,.5);color:#fff;transform:translateY(-1px)}
 
 /* ---------- CONTAINER / TABS ---------- */
 .container{max-width:1200px;margin:0 auto;padding:14px}
 .tabs{
   display:grid;grid-template-columns:repeat(4,1fr);gap:6px;
   margin-bottom:14px;padding:6px;
-  background:rgba(255,255,255,.9);
-  backdrop-filter:blur(14px);
+  background:var(--bg-glass);
+  backdrop-filter:blur(20px);
   border-radius:var(--r-lg);
-  box-shadow:0 6px 26px rgba(15,23,42,.06),0 1px 0 rgba(255,255,255,.9) inset;
   border:1px solid var(--line-2);
+  box-shadow:0 8px 30px rgba(0,0,0,.4),inset 0 1px 0 rgba(255,255,255,.05);
 }
 .tab{
   position:relative;padding:11px 4px;border-radius:12px;cursor:pointer;
-  font-size:10px;font-weight:800;letter-spacing:.3px;
+  font-size:10px;font-weight:800;letter-spacing:.6px;
   text-align:center;color:var(--txt-2);
   display:flex;flex-direction:column;align-items:center;gap:4px;
   user-select:none;background:transparent;border:none;
-  transition:color .3s var(--ease),transform .3s var(--ease);
-  isolation:isolate;
+  transition:all .3s var(--ease);
+  isolation:isolate;text-transform:uppercase;
 }
 .tab::before{
   content:'';position:absolute;inset:0;border-radius:inherit;
   background:var(--grad-brand);opacity:0;transform:scale(.92);
-  transition:opacity .3s var(--ease),transform .3s var(--ease);
-  z-index:-1;box-shadow:0 10px 24px rgba(102,126,234,.42);
+  transition:all .3s var(--ease);
+  z-index:-1;
+  box-shadow:0 10px 24px rgba(123,47,247,.5),0 0 30px rgba(0,212,255,.3);
 }
 .tab.active{color:#fff;transform:translateY(-2px)}
 .tab.active::before{opacity:1;transform:scale(1)}
 .tab .tab-icon{font-size:18px;line-height:1;transition:transform .3s var(--ease-2)}
 .tab:hover .tab-icon{transform:scale(1.18) rotate(-4deg)}
-.tab.active .tab-icon{transform:scale(1.1)}
 
 .panel{display:none;animation:fadeUp .35s var(--ease)}
 .panel.active{display:block}
@@ -1222,50 +1451,54 @@ HTML_INDEX = """<!DOCTYPE html>
 /* ---------- CARD ---------- */
 .card{
   position:relative;
-  background:linear-gradient(180deg,#fff 0%,#fcfcfe 100%);
+  background:linear-gradient(180deg,rgba(18,18,42,.85),rgba(10,10,26,.92));
+  backdrop-filter:blur(20px);
+  -webkit-backdrop-filter:blur(20px);
   padding:18px;border-radius:var(--r-xl);
-  box-shadow:
-    0 1px 0 rgba(255,255,255,.9) inset,
-    0 -1px 0 rgba(15,23,42,.03) inset,
-    0 8px 30px rgba(15,23,42,.06);
-  margin-bottom:14px;
   border:1px solid var(--line-2);
-  transition:box-shadow .35s var(--ease);
+  box-shadow:
+    0 8px 30px rgba(0,0,0,.4),
+    inset 0 1px 0 rgba(255,255,255,.05);
+  margin-bottom:14px;
+  transition:all .35s var(--ease);
 }
-.card:hover{box-shadow:0 12px 40px rgba(15,23,42,.08),0 1px 0 rgba(255,255,255,.9) inset}
+.card:hover{border-color:var(--line-3);box-shadow:0 12px 40px rgba(0,0,0,.5),0 0 40px rgba(0,212,255,.08),inset 0 1px 0 rgba(255,255,255,.08)}
 .card h2{
-  font-size:13.5px;font-weight:900;letter-spacing:-.3px;
+  font-size:12.5px;font-weight:900;letter-spacing:.5px;
   margin-bottom:14px;display:flex;align-items:center;gap:9px;
+  color:var(--txt-0);text-transform:uppercase;
 }
 .card h2 .bi{
   width:30px;height:30px;border-radius:10px;
   background:var(--grad-brand);
   display:flex;align-items:center;justify-content:center;
   font-size:13px;color:#fff;
-  box-shadow:0 6px 16px rgba(102,126,234,.35),inset 0 1px 0 rgba(255,255,255,.4);
+  box-shadow:0 6px 16px rgba(123,47,247,.5),inset 0 1px 0 rgba(255,255,255,.3);
 }
 
 /* ---------- FORM ---------- */
 .form-group{margin-bottom:13px}
 .form-group label{
   display:block;margin-bottom:6px;
-  font-size:10.5px;font-weight:800;color:#374151;
-  text-transform:uppercase;letter-spacing:.6px;
+  font-size:10px;font-weight:800;color:var(--txt-2);
+  text-transform:uppercase;letter-spacing:1px;
 }
 .form-group input,
 .form-group textarea,
 .form-group select{
   width:100%;padding:12px 14px;
-  border:2px solid var(--line);border-radius:12px;
+  border:2px solid var(--line-2);border-radius:12px;
   font-size:13px;font-weight:500;
-  background:#f9fafb;color:var(--txt-0);
-  transition:border-color .25s var(--ease),background .25s var(--ease),box-shadow .25s var(--ease);
+  background:rgba(255,255,255,.03);color:var(--txt-0);
+  transition:all .25s var(--ease);
 }
+.form-group input::placeholder,
+.form-group textarea::placeholder{color:var(--txt-3)}
 .form-group input:focus,
 .form-group textarea:focus,
 .form-group select:focus{
-  outline:none;border-color:var(--brand-a);background:#fff;
-  box-shadow:0 0 0 4px rgba(102,126,234,.12);
+  outline:none;border-color:var(--brand-a);background:rgba(0,212,255,.04);
+  box-shadow:0 0 0 4px rgba(0,212,255,.12),0 0 25px rgba(0,212,255,.15);
 }
 .form-group textarea{
   min-height:96px;resize:vertical;
@@ -1274,18 +1507,18 @@ HTML_INDEX = """<!DOCTYPE html>
 }
 .form-group select{
   appearance:none;-webkit-appearance:none;
-  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2300d4ff' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
   background-repeat:no-repeat;background-position:right 14px center;
   padding-right:38px;cursor:pointer;
 }
+.form-group select option{background:#12122a;color:var(--txt-0)}
 
 /* ---------- BUTTONS ---------- */
 .btn-circle{
   width:52px;height:52px;border-radius:50%;border:none;cursor:pointer;
   display:inline-flex;align-items:center;justify-content:center;
   font-size:20px;color:#fff;
-  transition:transform .3s var(--ease-2),box-shadow .3s var(--ease),filter .3s var(--ease);
-  box-shadow:0 10px 24px rgba(15,23,42,.16),inset 0 1px 0 rgba(255,255,255,.35);
+  transition:all .3s var(--ease-2);
   position:relative;overflow:hidden;margin:3px;
   isolation:isolate;
 }
@@ -1295,29 +1528,30 @@ HTML_INDEX = """<!DOCTYPE html>
   transform:translateX(-120%);
   transition:transform .7s var(--ease);
 }
-.btn-circle:hover{transform:translateY(-4px) scale(1.06);filter:brightness(1.06)}
+.btn-circle:hover{transform:translateY(-4px) scale(1.06);filter:brightness(1.1)}
 .btn-circle:hover::before{transform:translateX(120%)}
 .btn-circle:active{transform:translateY(-1px) scale(.98)}
-.btn-circle:disabled{opacity:.5;cursor:not-allowed;filter:grayscale(.4)}
-.btn-circle.primary{background:var(--grad-brand);box-shadow:0 12px 28px rgba(102,126,234,.45),inset 0 1px 0 rgba(255,255,255,.35)}
-.btn-circle.danger{background:var(--grad-err);box-shadow:0 12px 28px rgba(239,68,68,.42),inset 0 1px 0 rgba(255,255,255,.35)}
-.btn-circle.success{background:var(--grad-ok);box-shadow:0 12px 28px rgba(16,185,129,.42),inset 0 1px 0 rgba(255,255,255,.35)}
-.btn-circle.warning{background:var(--grad-warn);box-shadow:0 12px 28px rgba(245,158,11,.42),inset 0 1px 0 rgba(255,255,255,.35)}
-.btn-circle.info{background:var(--grad-info);box-shadow:0 12px 28px rgba(59,130,246,.42),inset 0 1px 0 rgba(255,255,255,.35)}
-.btn-circle.purple{background:var(--grad-purple);box-shadow:0 12px 28px rgba(139,92,246,.42),inset 0 1px 0 rgba(255,255,255,.35)}
-.btn-circle.pink{background:var(--grad-pink);box-shadow:0 12px 28px rgba(236,72,153,.42),inset 0 1px 0 rgba(255,255,255,.35)}
-.btn-circle.teal{background:var(--grad-teal);box-shadow:0 12px 28px rgba(20,184,166,.42),inset 0 1px 0 rgba(255,255,255,.35)}
+.btn-circle:disabled{opacity:.4;cursor:not-allowed;filter:grayscale(.6)}
+.btn-circle.primary{background:var(--grad-brand);box-shadow:0 10px 28px rgba(123,47,247,.5),0 0 30px rgba(0,212,255,.3),inset 0 1px 0 rgba(255,255,255,.3)}
+.btn-circle.danger{background:var(--grad-err);box-shadow:0 10px 28px rgba(239,68,68,.5),inset 0 1px 0 rgba(255,255,255,.3)}
+.btn-circle.success{background:var(--grad-ok);box-shadow:0 10px 28px rgba(16,185,129,.5),inset 0 1px 0 rgba(255,255,255,.3)}
+.btn-circle.warning{background:var(--grad-warn);box-shadow:0 10px 28px rgba(245,158,11,.5),inset 0 1px 0 rgba(255,255,255,.3)}
+.btn-circle.info{background:var(--grad-info);box-shadow:0 10px 28px rgba(59,130,246,.5),inset 0 1px 0 rgba(255,255,255,.3)}
+.btn-circle.purple{background:var(--grad-purple);box-shadow:0 10px 28px rgba(139,92,246,.5),inset 0 1px 0 rgba(255,255,255,.3)}
+.btn-circle.pink{background:var(--grad-pink);box-shadow:0 10px 28px rgba(236,72,153,.5),inset 0 1px 0 rgba(255,255,255,.3)}
+.btn-circle.teal{background:var(--grad-teal);box-shadow:0 10px 28px rgba(20,184,166,.5),inset 0 1px 0 rgba(255,255,255,.3)}
 .btn-circle.small{width:38px;height:38px;font-size:15px}
-.btn-circle.big{width:72px;height:72px;font-size:26px}
+.btn-circle.big{width:74px;height:74px;font-size:28px}
 
 .btn-rect{
-  padding:11px 18px;border:none;border-radius:12px;cursor:pointer;
-  font-size:12px;font-weight:800;letter-spacing:.2px;color:#fff;
+  padding:12px 20px;border:none;border-radius:12px;cursor:pointer;
+  font-size:11.5px;font-weight:900;letter-spacing:.6px;color:#fff;
+  text-transform:uppercase;
   display:inline-flex;align-items:center;gap:7px;
-  box-shadow:0 10px 22px rgba(15,23,42,.16),inset 0 1px 0 rgba(255,255,255,.3);
-  transition:transform .3s var(--ease-2),box-shadow .3s var(--ease),filter .3s var(--ease);
+  box-shadow:0 10px 22px rgba(0,0,0,.4),inset 0 1px 0 rgba(255,255,255,.25);
+  transition:all .3s var(--ease-2);
 }
-.btn-rect:hover{transform:translateY(-3px);filter:brightness(1.06)}
+.btn-rect:hover{transform:translateY(-3px);filter:brightness(1.1)}
 .btn-rect:active{transform:translateY(-1px) scale(.98)}
 .btn-rect.primary{background:var(--grad-brand)}
 .btn-rect.danger{background:var(--grad-err)}
@@ -1330,172 +1564,201 @@ HTML_INDEX = """<!DOCTYPE html>
 .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:8px;margin-bottom:14px}
 .stat{
   position:relative;overflow:hidden;
-  background:linear-gradient(180deg,#f9fafb,#f3f4f6);
+  background:linear-gradient(180deg,rgba(35,35,70,.6),rgba(18,18,42,.8));
   padding:13px 12px;border-radius:var(--r-md);
-  border:1px solid var(--line);
-  box-shadow:0 1px 0 rgba(255,255,255,.9) inset;
+  border:1px solid var(--line-2);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.05);
 }
 .stat::before{
-  content:'';position:absolute;top:0;left:0;right:0;height:3px;
+  content:'';position:absolute;top:0;left:0;right:0;height:2px;
   background:var(--grad-brand);
+  box-shadow:0 0 15px rgba(0,212,255,.6);
 }
 .stat::after{
   content:'';position:absolute;inset:0;pointer-events:none;
-  background:linear-gradient(120deg,transparent 40%,rgba(255,255,255,.6) 50%,transparent 60%);
+  background:linear-gradient(120deg,transparent 40%,rgba(0,212,255,.15) 50%,transparent 60%);
   transform:translateX(-100%);
-  animation:statShimmer 3.5s ease-in-out infinite;
+  animation:statShimmer 4s ease-in-out infinite;
 }
 @keyframes statShimmer{0%,60%{transform:translateX(-100%)}80%,100%{transform:translateX(100%)}}
-.stat .label{font-size:9px;color:var(--txt-2);margin-bottom:6px;text-transform:uppercase;letter-spacing:.6px;font-weight:800}
-.stat .value{font-size:22px;font-weight:900;color:var(--txt-0);line-height:1;font-variant-numeric:tabular-nums}
+.stat .label{font-size:9px;color:var(--txt-2);margin-bottom:6px;text-transform:uppercase;letter-spacing:1px;font-weight:800}
+.stat .value{font-size:22px;font-weight:900;color:var(--txt-0);line-height:1;font-variant-numeric:tabular-nums;font-family:'Orbitron',sans-serif}
 
 /* ---------- TABLE ---------- */
 .table-wrap{
   overflow-x:auto;border-radius:var(--r-md);
-  border:1px solid var(--line-2);background:#fff;
+  border:1px solid var(--line-2);
+  background:rgba(10,10,26,.5);
 }
 .table{width:100%;border-collapse:collapse}
 .table th,.table td{
   padding:10px 8px;text-align:left;font-size:11px;
-  border-bottom:1px solid var(--line-2);white-space:nowrap;
+  border-bottom:1px solid var(--line);white-space:nowrap;
 }
 .table th{
-  background:#f8fafc;font-weight:800;color:var(--txt-2);
-  text-transform:uppercase;font-size:9px;letter-spacing:.6px;
+  background:rgba(35,35,70,.7);font-weight:800;color:var(--brand-a);
+  text-transform:uppercase;font-size:9px;letter-spacing:1px;
   position:sticky;top:0;z-index:1;
 }
 .table tbody tr{transition:background .2s var(--ease)}
-.table tbody tr:hover{background:#f8fafc}
+.table tbody tr:hover{background:rgba(0,212,255,.05)}
 .table tbody tr:last-child td{border-bottom:none}
 .table td code{
-  background:#f3f4f6;padding:2px 7px;border-radius:6px;
-  font-size:10px;font-family:'JetBrains Mono',ui-monospace,monospace;
-  color:#475569;font-weight:600;
+  background:rgba(0,212,255,.08);padding:2px 7px;border-radius:6px;
+  font-size:10px;font-family:'JetBrains Mono',monospace;
+  color:var(--brand-a);font-weight:700;
+  border:1px solid rgba(0,212,255,.15);
 }
 
 /* ---------- BADGE ---------- */
 .badge{
   display:inline-flex;align-items:center;gap:4px;
   padding:3px 8px;border-radius:20px;
-  font-size:9.5px;font-weight:800;letter-spacing:.2px;
+  font-size:9.5px;font-weight:800;letter-spacing:.4px;
 }
-.badge::before{content:'';width:5px;height:5px;border-radius:50%;background:currentColor;opacity:.7}
-.badge-ok{background:#d1fae5;color:#065f46}
-.badge-err{background:#fee2e2;color:#991b1b}
-.badge-warn{background:#fef3c7;color:#92400e}
-.badge-info{background:#dbeafe;color:#1e40af}
-.badge-frz{background:linear-gradient(135deg,#dbeafe,#bfdbfe);color:#1e40af}
+.badge::before{content:'';width:5px;height:5px;border-radius:50%;background:currentColor;box-shadow:0 0 8px currentColor}
+.badge-ok{background:rgba(16,185,129,.15);color:#34d399;border:1px solid rgba(16,185,129,.3)}
+.badge-err{background:rgba(239,68,68,.15);color:#f87171;border:1px solid rgba(239,68,68,.3)}
+.badge-warn{background:rgba(245,158,11,.15);color:#fbbf24;border:1px solid rgba(245,158,11,.3)}
+.badge-info{background:rgba(59,130,246,.15);color:#60a5fa;border:1px solid rgba(59,130,246,.3)}
+.badge-mode-fast{background:rgba(255,215,0,.12);color:#ffd700;border:1px solid rgba(255,215,0,.3)}
+.badge-mode-ngon{background:rgba(0,212,255,.12);color:#00d4ff;border:1px solid rgba(0,212,255,.3)}
+.badge-mode-nhay{background:rgba(241,7,163,.12);color:#f472b6;border:1px solid rgba(241,7,163,.3)}
 
 /* ---------- BOX LIST ---------- */
 .box-list{
   max-height:340px;overflow-y:auto;
-  border:2px solid var(--line);border-radius:var(--r-md);
-  padding:8px;background:#f9fafb;
-  box-shadow:inset 0 1px 3px rgba(15,23,42,.04);
+  border:1px solid var(--line-2);border-radius:var(--r-md);
+  padding:8px;background:rgba(10,10,26,.5);
 }
 .box-item{
-  padding:11px;border-radius:11px;background:#fff;
+  padding:11px;border-radius:11px;
+  background:rgba(35,35,70,.5);
   margin-bottom:6px;cursor:pointer;
-  border:2px solid transparent;
+  border:1px solid var(--line-2);
   display:flex;align-items:center;gap:10px;font-size:12px;
-  box-shadow:0 1px 3px rgba(15,23,42,.05);
-  transition:border-color .25s var(--ease),transform .25s var(--ease),box-shadow .25s var(--ease);
+  transition:all .25s var(--ease);
 }
-.box-item:hover{border-color:var(--brand-a);transform:translateX(2px);box-shadow:0 6px 18px rgba(102,126,234,.14)}
+.box-item:hover{border-color:var(--brand-a);background:rgba(0,212,255,.05);transform:translateX(2px)}
 .box-item.selected{
-  border-color:var(--ok);background:linear-gradient(180deg,#ecfdf5,#d1fae5);
-  box-shadow:0 6px 18px rgba(16,185,129,.2);
+  border-color:var(--ok);background:rgba(16,185,129,.1);
+  box-shadow:0 0 20px rgba(16,185,129,.2);
 }
 .box-item .check{
-  width:19px;height:19px;border:2px solid #d1d5db;border-radius:6px;
+  width:19px;height:19px;border:2px solid var(--line-3);border-radius:6px;
   display:flex;align-items:center;justify-content:center;
   font-size:10px;color:transparent;font-weight:900;flex-shrink:0;
-  transition:background .25s var(--ease),border-color .25s var(--ease),color .25s var(--ease),transform .25s var(--ease-2);
+  transition:all .25s var(--ease);
 }
-.box-item.selected .check{
-  background:var(--ok);border-color:var(--ok);color:#fff;transform:scale(1.05);
-}
+.box-item.selected .check{background:var(--ok);border-color:var(--ok);color:#fff;box-shadow:0 0 12px var(--ok)}
 .box-item .info{flex:1;min-width:0}
-.box-item .name{font-weight:700;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.box-item .meta{font-size:10px;color:var(--txt-2);font-family:'JetBrains Mono',monospace;margin-top:2px}
+.box-item .name{font-weight:700;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--txt-0)}
+.box-item .meta{font-size:10px;color:var(--txt-3);font-family:'JetBrains Mono',monospace;margin-top:2px}
 
 /* ---------- FILE ---------- */
 .file-item{
   display:flex;align-items:center;gap:10px;
   padding:11px;border-radius:12px;
-  background:#fff;margin-bottom:8px;
-  border:1px solid var(--line);
-  box-shadow:0 1px 3px rgba(15,23,42,.05);
-  transition:border-color .25s var(--ease),transform .25s var(--ease),box-shadow .25s var(--ease);
+  background:rgba(35,35,70,.5);margin-bottom:8px;
+  border:1px solid var(--line-2);
+  transition:all .25s var(--ease);
 }
-.file-item:hover{border-color:var(--brand-a);transform:translateY(-2px);box-shadow:0 10px 24px rgba(102,126,234,.12)}
+.file-item:hover{border-color:var(--brand-a);transform:translateY(-2px);box-shadow:0 10px 24px rgba(0,212,255,.1)}
 .file-item .info{flex:1;min-width:0}
-.file-item .name{font-weight:700;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.file-item .meta{font-size:10px;color:var(--txt-2);margin-top:2px}
+.file-item .name{font-weight:700;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--txt-0)}
+.file-item .meta{font-size:10px;color:var(--txt-3);margin-top:2px}
 
 /* ---------- CHIP ---------- */
 .chip-group{display:flex;flex-wrap:wrap;gap:5px;margin-top:5px}
 .chip{
   position:relative;
-  padding:8px 14px;background:#f3f4f6;color:#374151;
-  border-radius:20px;font-size:11px;font-weight:800;letter-spacing:.2px;
+  padding:8px 14px;background:rgba(35,35,70,.6);color:var(--txt-2);
+  border-radius:20px;font-size:11px;font-weight:800;letter-spacing:.4px;
   cursor:pointer;user-select:none;
-  border:2px solid transparent;
-  transition:background .25s var(--ease),color .25s var(--ease),transform .25s var(--ease-2),box-shadow .25s var(--ease);
+  border:1px solid var(--line-2);
+  transition:all .25s var(--ease-2);
 }
-.chip:hover{background:#e5e7eb;transform:translateY(-1px)}
+.chip:hover{background:rgba(0,212,255,.1);color:var(--brand-a);transform:translateY(-1px)}
 .chip.active{
-  background:var(--grad-brand);color:#fff;
-  box-shadow:0 8px 22px rgba(102,126,234,.45),inset 0 1px 0 rgba(255,255,255,.35);
+  background:var(--grad-brand);color:#fff;border-color:transparent;
+  box-shadow:0 8px 22px rgba(123,47,247,.5),0 0 20px rgba(0,212,255,.3);
   transform:translateY(-2px);
-}
-.chip.freeze.active{
-  background:linear-gradient(135deg,#3b82f6,#1d4ed8);
-  box-shadow:0 8px 22px rgba(59,130,246,.5),inset 0 1px 0 rgba(255,255,255,.35);
 }
 
 /* ---------- TOGGLE ---------- */
 .toggle-group{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px}
 .toggle{
   position:relative;padding:12px 10px;
-  border:2px solid var(--line);border-radius:var(--r-md);
+  border:1px solid var(--line-2);border-radius:var(--r-md);
   cursor:pointer;text-align:center;
-  font-weight:800;font-size:11px;letter-spacing:.2px;
-  background:#f9fafb;color:var(--txt-2);
-  user-select:none;isolation:isolate;
-  transition:color .3s var(--ease),transform .3s var(--ease-2),box-shadow .3s var(--ease);
+  font-weight:800;font-size:10.5px;letter-spacing:.5px;
+  background:rgba(35,35,70,.4);color:var(--txt-2);
+  user-select:none;isolation:isolate;text-transform:uppercase;
+  transition:all .3s var(--ease-2);
 }
 .toggle::before{
-  content:'';position:absolute;inset:-2px;border-radius:inherit;
+  content:'';position:absolute;inset:-1px;border-radius:inherit;
   background:var(--grad-brand);opacity:0;transform:scale(.94);
-  transition:opacity .3s var(--ease),transform .3s var(--ease);
-  z-index:-1;box-shadow:0 10px 24px rgba(102,126,234,.4);
+  transition:all .3s var(--ease);
+  z-index:-1;
+  box-shadow:0 10px 24px rgba(123,47,247,.5),0 0 30px rgba(0,212,255,.3);
 }
 .toggle.active{color:#fff;border-color:transparent;transform:translateY(-2px)}
 .toggle.active::before{opacity:1;transform:scale(1)}
 
+/* ---------- MODE GRID ---------- */
+.mode-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:6px}
+.mode-card{
+  position:relative;padding:14px 8px;border-radius:14px;cursor:pointer;
+  background:rgba(35,35,70,.4);
+  border:1px solid var(--line-2);
+  text-align:center;
+  transition:all .3s var(--ease-2);
+  isolation:isolate;overflow:hidden;
+}
+.mode-card::before{
+  content:'';position:absolute;inset:0;border-radius:inherit;
+  background:var(--grad-brand);opacity:0;
+  transition:opacity .3s var(--ease);
+  z-index:-1;
+}
+.mode-card:hover{transform:translateY(-3px);border-color:var(--brand-a)}
+.mode-card.active{
+  border-color:transparent;color:#fff;
+  box-shadow:0 12px 30px rgba(123,47,247,.5),0 0 30px rgba(0,212,255,.3);
+  transform:translateY(-3px);
+}
+.mode-card.active::before{opacity:1}
+.mode-card .mc-icon{font-size:24px;margin-bottom:6px;line-height:1}
+.mode-card .mc-title{font-size:11px;font-weight:900;letter-spacing:.6px;color:var(--txt-0);margin-bottom:3px;text-transform:uppercase}
+.mode-card .mc-desc{font-size:9px;font-weight:600;color:var(--txt-3);line-height:1.4}
+.mode-card.active .mc-title{color:#fff}
+.mode-card.active .mc-desc{color:rgba(255,255,255,.9)}
+
 /* ---------- TAG SELECTOR ---------- */
 .tag-selector{
   max-height:240px;overflow-y:auto;
-  border:2px solid var(--line);border-radius:12px;
-  padding:8px;background:#f9fafb;display:none;margin-top:8px;
+  border:1px solid var(--line-2);border-radius:12px;
+  padding:8px;background:rgba(10,10,26,.5);display:none;margin-top:8px;
 }
 .tag-selector.show{display:block}
 .tag-member{
-  padding:8px;border-radius:8px;background:#fff;margin-bottom:4px;cursor:pointer;
-  border:2px solid transparent;font-size:12px;
+  padding:8px;border-radius:8px;background:rgba(35,35,70,.5);margin-bottom:4px;cursor:pointer;
+  border:1px solid var(--line-2);font-size:12px;
   display:flex;align-items:center;gap:8px;
-  transition:border-color .2s var(--ease),background .2s var(--ease);
+  transition:all .2s var(--ease);
 }
-.tag-member:hover{border-color:var(--purple)}
-.tag-member.selected{border-color:var(--purple);background:#f3e8ff}
+.tag-member:hover{border-color:var(--purple);background:rgba(139,92,246,.08)}
+.tag-member.selected{border-color:var(--purple);background:rgba(139,92,246,.15)}
 .tag-member .check{
-  width:16px;height:16px;border:2px solid #d1d5db;border-radius:4px;
+  width:16px;height:16px;border:2px solid var(--line-3);border-radius:4px;
   display:flex;align-items:center;justify-content:center;
   font-size:9px;color:transparent;font-weight:900;flex-shrink:0;
-  transition:background .2s var(--ease),border-color .2s var(--ease),color .2s var(--ease);
+  transition:all .2s var(--ease);
 }
 .tag-member.selected .check{background:var(--purple);border-color:var(--purple);color:#fff}
+.tag-member .tm-name{color:var(--txt-0);font-weight:700}
+.tag-member .tm-uid{color:var(--txt-3);font-size:10px;font-family:'JetBrains Mono',monospace}
 
 /* ---------- NOTIFICATION STACK ---------- */
 #toast-stack{
@@ -1504,18 +1767,17 @@ HTML_INDEX = """<!DOCTYPE html>
   max-width:380px;width:calc(100% - 32px);pointer-events:none;
 }
 .toast{
-  pointer-events:auto;
-  position:relative;overflow:hidden;
+  pointer-events:auto;position:relative;overflow:hidden;
   padding:14px 16px 14px 58px;
   border-radius:16px;
-  background:rgba(255,255,255,.98);
-  backdrop-filter:blur(16px) saturate(180%);
-  -webkit-backdrop-filter:blur(16px) saturate(180%);
+  background:linear-gradient(180deg,rgba(18,18,42,.97),rgba(10,10,26,.99));
+  backdrop-filter:blur(20px) saturate(180%);
+  -webkit-backdrop-filter:blur(20px) saturate(180%);
   box-shadow:
-    0 20px 50px rgba(15,23,42,.22),
-    0 1px 0 rgba(255,255,255,.9) inset,
-    0 -1px 0 rgba(15,23,42,.04) inset;
-  border:1px solid rgba(255,255,255,.6);
+    0 20px 50px rgba(0,0,0,.6),
+    0 0 40px rgba(0,212,255,.15),
+    inset 0 1px 0 rgba(255,255,255,.1);
+  border:1px solid var(--line-2);
   display:flex;flex-direction:column;gap:3px;
   animation:toastIn .5s var(--ease-2) both;
 }
@@ -1540,23 +1802,23 @@ HTML_INDEX = """<!DOCTYPE html>
   position:absolute;left:14px;top:50%;transform:translateY(-50%);
   width:32px;height:32px;border-radius:10px;
   display:flex;align-items:center;justify-content:center;
-  font-size:16px;color:#fff;
-  box-shadow:0 6px 16px rgba(15,23,42,.2),inset 0 1px 0 rgba(255,255,255,.4);
+  font-size:15px;color:#fff;font-weight:900;
+  box-shadow:0 6px 16px rgba(0,0,0,.4),inset 0 1px 0 rgba(255,255,255,.3);
 }
 .toast.success .t-icon{background:var(--grad-ok)}
 .toast.error .t-icon{background:var(--grad-err)}
 .toast.warning .t-icon{background:var(--grad-warn)}
 .toast.info .t-icon{background:var(--grad-info)}
-.toast .t-title{font-size:12.5px;font-weight:900;color:var(--txt-0);letter-spacing:-.2px}
-.toast .t-msg{font-size:11.5px;font-weight:600;color:var(--txt-2);line-height:1.45}
+.toast .t-title{font-size:12px;font-weight:900;color:var(--txt-0);letter-spacing:.4px;text-transform:uppercase}
+.toast .t-msg{font-size:11.5px;font-weight:600;color:var(--txt-2);line-height:1.5}
+.toast .t-msg code{background:rgba(0,212,255,.12);color:var(--brand-a);padding:1px 6px;border-radius:5px;font-size:10.5px;font-family:'JetBrains Mono',monospace}
 .toast .t-progress{
   position:absolute;left:0;right:0;bottom:0;height:2px;
-  background:rgba(15,23,42,.06);
-  overflow:hidden;
+  background:rgba(255,255,255,.05);overflow:hidden;
 }
 .toast .t-progress::after{
   content:'';display:block;height:100%;width:100%;
-  background:currentColor;opacity:.4;
+  background:currentColor;opacity:.8;
   transform-origin:left;
   animation:toastBar linear forwards;
 }
@@ -1570,68 +1832,56 @@ HTML_INDEX = """<!DOCTYPE html>
   width:22px;height:22px;border-radius:6px;border:none;
   background:transparent;color:var(--txt-3);cursor:pointer;
   font-size:12px;display:flex;align-items:center;justify-content:center;
-  transition:background .2s var(--ease),color .2s var(--ease);
+  transition:all .2s var(--ease);
 }
-.toast .t-close:hover{background:var(--bg-2);color:var(--txt-0)}
+.toast .t-close:hover{background:rgba(255,255,255,.08);color:var(--txt-0)}
 
-/* ---------- FREEZE PANEL ---------- */
-.freeze-panel{
-  margin-top:12px;padding:14px;
-  border-radius:var(--r-md);
-  background:linear-gradient(135deg,#eff6ff,#dbeafe);
-  border:1px solid #bfdbfe;
-  display:none;
+/* ---------- HUMAN PULSE ---------- */
+.human-pulse{
+  display:inline-flex;align-items:center;gap:5px;
+  font-size:10px;font-weight:800;color:var(--ok);
+  padding:3px 8px;border-radius:20px;
+  background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.3);
+  margin-left:6px;letter-spacing:.4px;
 }
-.freeze-panel.show{display:block;animation:fadeUp .35s var(--ease)}
-.freeze-panel .fp-title{
-  font-size:11px;font-weight:900;color:#1e40af;
-  text-transform:uppercase;letter-spacing:.6px;
-  display:flex;align-items:center;gap:6px;margin-bottom:8px;
+.human-pulse::before{
+  content:'';width:6px;height:6px;border-radius:50%;
+  background:var(--ok);
+  animation:humanPulse 1.6s ease-in-out infinite;
+  box-shadow:0 0 10px var(--ok);
 }
-.freeze-panel .fp-desc{
-  font-size:10.5px;color:#1e3a8a;font-weight:600;line-height:1.55;
-  margin-bottom:10px;
-}
-.freeze-panel input[type=number]{
-  width:100%;padding:9px 12px;border:2px solid #bfdbfe;border-radius:10px;
-  background:#fff;font-size:12px;font-weight:700;color:#1e3a8a;
-  transition:border-color .2s var(--ease),box-shadow .2s var(--ease);
-}
-.freeze-panel input[type=number]:focus{
-  outline:none;border-color:var(--info);
-  box-shadow:0 0 0 4px rgba(59,130,246,.15);
+@keyframes humanPulse{
+  0%,100%{transform:scale(1);opacity:1}
+  50%{transform:scale(1.4);opacity:.6}
 }
 
-/* ---------- ANTI-BAN INFO ---------- */
-.anti-ban-card{
-  background:linear-gradient(135deg,#fef3c7,#fde68a);
-  border:2px solid #fbbf24;
+/* ---------- HINT BOX ---------- */
+.hint{
+  font-size:10.5px;color:var(--txt-2);line-height:1.6;
+  padding:10px 12px;background:rgba(0,212,255,.05);
+  border-radius:10px;border-left:3px solid var(--brand-a);
+  margin-top:10px;
 }
-.anti-ban-card h2{color:#92400e}
-.anti-ban-card h2 .bi{background:#92400e;box-shadow:none}
-.anti-ban-list{
-  color:#78350f;font-size:11px;line-height:1.95;font-weight:600;
-}
-.anti-ban-list div{display:flex;align-items:flex-start;gap:6px}
-.anti-ban-list .dot{flex-shrink:0;margin-top:3px}
+.hint b{color:var(--brand-a);font-weight:800}
 
 /* ---------- RESPONSIVE ---------- */
 @media (max-width:640px){
   .container{padding:10px}
   .card{padding:14px;border-radius:var(--r-lg)}
   .header{padding:10px 12px;padding-top:calc(10px + env(safe-area-inset-top,0px))}
-  .header-info h1{font-size:14px}
-  .header-info p{font-size:9px}
-  .logo-mini{width:36px;height:36px}
-  .logout-btn{padding:7px 10px;font-size:10.5px}
+  .header-info h1{font-size:13px}
+  .header-info p{font-size:8px}
+  .logo-mini{width:38px;height:38px}
+  .logout-btn{padding:7px 10px;font-size:10px}
   .logout-btn span{display:none}
-  .tab{padding:9px 3px;font-size:9px}
+  .tab{padding:9px 3px;font-size:8.5px}
   .tab .tab-icon{font-size:16px}
   .stat .value{font-size:18px}
   .btn-circle{width:46px;height:46px;font-size:18px}
   .btn-circle.small{width:34px;height:34px;font-size:13px}
   .btn-circle.big{width:62px;height:62px;font-size:22px}
   #toast-stack{left:12px;right:12px;max-width:none;width:auto}
+  .mode-card .mc-desc{font-size:8px}
 }
 
 @media (prefers-reduced-motion:reduce){
@@ -1650,7 +1900,7 @@ HTML_INDEX = """<!DOCTYPE html>
     <div class="logo-mini">""" + LOGO_SVG + """</div>
     <div class="header-info">
       <h1>ALB FORGE</h1>
-      <p>Bot by Anh Khôi • v26.1 VIP</p>
+      <p>Universal • v27.0 • Anti-Pro</p>
     </div>
     <button class="logout-btn" onclick="location.href='/logout'">
       <span>Thoát</span>
@@ -1676,7 +1926,7 @@ HTML_INDEX = """<!DOCTYPE html>
   <button type="button" class="tab" data-tab="spam"><div class="tab-icon">🎯</div><div>Spam</div></button>
 </div>
 
-<!-- ============ ACCOUNTS ============ -->
+<!-- ACCOUNTS -->
 <div class="panel active" id="panel-accounts">
   <div class="card">
     <h2><span class="bi">➕</span> Thêm tài khoản</h2>
@@ -1697,7 +1947,7 @@ HTML_INDEX = """<!DOCTYPE html>
     <div class="table-wrap">
       <table class="table">
         <thead><tr>
-          <th>ID</th><th>Tên</th><th>OK/Lỗi</th><th>Risk</th><th>Sent</th><th></th>
+          <th>ID</th><th>Tên</th><th>UID</th><th>OK/Lỗi</th><th>Risk</th><th>Sent</th><th></th>
         </tr></thead>
         <tbody id="accounts-tbody"></tbody>
       </table>
@@ -1705,7 +1955,7 @@ HTML_INDEX = """<!DOCTYPE html>
   </div>
 </div>
 
-<!-- ============ BOXES ============ -->
+<!-- BOXES -->
 <div class="panel" id="panel-boxes">
   <div class="card">
     <h2><span class="bi">📦</span> Load Box</h2>
@@ -1720,35 +1970,59 @@ HTML_INDEX = """<!DOCTYPE html>
     </div>
     <div style="margin-top:12px;">
       <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:11px;">
-        <b>Đã chọn: <span id="selected-count" style="color:#667eea;">0</span></b>
+        <b style="color:var(--txt-2);text-transform:uppercase;letter-spacing:1px;font-size:10px;">Đã chọn: <span id="selected-count" style="color:var(--brand-a);font-weight:900;">0</span></b>
       </div>
       <div class="box-list" id="box-list">
-        <div style="text-align:center;padding:20px;color:#999;font-size:11px;">Chưa load</div>
+        <div style="text-align:center;padding:20px;color:var(--txt-3);font-size:11px;">Chưa load</div>
       </div>
     </div>
   </div>
 </div>
 
-<!-- ============ FILES ============ -->
+<!-- FILES -->
 <div class="panel" id="panel-files">
   <div class="card">
     <h2><span class="bi">📤</span> Upload file</h2>
     <div class="form-group"><input type="file" id="file-input" accept=".txt" style="padding:6px;"></div>
     <button type="button" class="btn-rect primary full" onclick="uploadFile()">📤 Upload</button>
-    <div style="margin-top:10px;font-size:11px;color:#6b7280;line-height:1.6;">
-      💡 Mỗi khối ngăn bởi <b>dòng trống</b> = 1 tin nhắn (giữ nguyên multiline)
+    <div class="hint">
+      💡 Mỗi khối ngăn bởi <b>dòng trống</b> = 1 tin nhắn.<br>
+      Mode <b>Treo ngôn</b> gửi nguyên khối.<br>
+      Mode <b>Treo nhây</b> tách từng dòng thành 1 tin riêng.
     </div>
   </div>
   <div class="card">
     <h2><span class="bi">📁</span> File đã upload</h2>
-    <div id="files-list"><div style="text-align:center;padding:20px;color:#999;font-size:11px;">Chưa có</div></div>
+    <div id="files-list"><div style="text-align:center;padding:20px;color:var(--txt-3);font-size:11px;">Chưa có</div></div>
   </div>
 </div>
 
-<!-- ============ SPAM ============ -->
+<!-- SPAM -->
 <div class="panel" id="panel-spam">
   <div class="card">
     <h2><span class="bi">🎯</span> Cấu hình spam</h2>
+
+    <div class="form-group">
+      <label>⚙️ Chế độ gửi</label>
+      <div class="mode-grid" id="mode-grid">
+        <div class="mode-card active" data-mode="fast">
+          <div class="mc-icon">⚡</div>
+          <div class="mc-title">Siêu nhanh</div>
+          <div class="mc-desc">Xoay vòng block, tốc độ tối đa</div>
+        </div>
+        <div class="mode-card" data-mode="treo_ngon">
+          <div class="mc-icon">❄️</div>
+          <div class="mc-title">Treo ngôn</div>
+          <div class="mc-desc">Nguyên khối 1 lần, không cắt</div>
+        </div>
+        <div class="mode-card" data-mode="treo_nhay">
+          <div class="mc-icon">🌀</div>
+          <div class="mc-title">Treo nhây</div>
+          <div class="mc-desc">Tách từng dòng, đa màu</div>
+        </div>
+      </div>
+      <input type="hidden" id="spam-mode" value="fast">
+    </div>
 
     <div class="form-group">
       <label>Chọn file tin nhắn</label>
@@ -1761,18 +2035,18 @@ HTML_INDEX = """<!DOCTYPE html>
     </div>
 
     <div class="form-group">
-      <label>⏱ Delay (giây)</label>
+      <label>⏱ Delay (giây) — BẮT BUỘC gửi lên server</label>
       <div class="chip-group" id="delay-chips">
         <div class="chip" data-delay="0.3">0.3s</div>
         <div class="chip" data-delay="0.5">0.5s</div>
-        <div class="chip" data-delay="1">1s</div>
-        <div class="chip active" data-delay="2">2s</div>
+        <div class="chip active" data-delay="1">1s</div>
+        <div class="chip" data-delay="2">2s</div>
         <div class="chip" data-delay="3">3s</div>
         <div class="chip" data-delay="5">5s</div>
         <div class="chip" data-delay="10">10s</div>
         <div class="chip" data-delay="30">30s</div>
       </div>
-      <input type="hidden" id="spam-delay" value="2">
+      <input type="hidden" id="spam-delay" value="1">
     </div>
 
     <div class="form-group">
@@ -1780,23 +2054,37 @@ HTML_INDEX = """<!DOCTYPE html>
       <div class="chip-group" id="icon-chips">
         <div class="chip" data-icon="0">0</div>
         <div class="chip" data-icon="2">2</div>
-        <div class="chip active" data-icon="5">5</div>
+        <div class="chip active" data-icon="3">3</div>
+        <div class="chip" data-icon="5">5</div>
         <div class="chip" data-icon="10">10</div>
-        <div class="chip" data-icon="15">15</div>
-        <div class="chip" data-icon="20">20</div>
       </div>
-      <input type="hidden" id="icon-count" value="5">
+      <input type="hidden" id="icon-count" value="3">
     </div>
 
     <div class="toggle-group">
       <div class="toggle active" id="tg-color" onclick="tgFlag('color')">🎨 Đổi màu</div>
       <div class="toggle active" id="tg-emoji" onclick="tgFlag('emoji')">😈 Thêm icon</div>
+      <div class="toggle active" id="tg-multi" onclick="tgFlag('multi')">🌈 Đa màu dòng</div>
+      <div class="toggle active" id="tg-human" onclick="tgFlag('human')">🧑 Giả người</div>
+      <div class="toggle active" id="tg-mention" onclick="tgFlag('mention')">📢 Tag tên thật</div>
+      <div class="toggle active" id="tg-session" onclick="tgFlag('session')">💤 Nghỉ session</div>
+    </div>
+
+    <div class="form-group" id="speed-wrap">
+      <label>⌨️ Tốc độ gõ (giả người)</label>
+      <div class="chip-group" id="speed-chips">
+        <div class="chip" data-speed="instant">Tức thì</div>
+        <div class="chip active" data-speed="fast">Nhanh</div>
+        <div class="chip" data-speed="normal">Vừa</div>
+        <div class="chip" data-speed="slow">Chậm</div>
+      </div>
+      <input type="hidden" id="typing-speed" value="fast">
     </div>
 
     <div class="form-group">
-      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;text-transform:none;letter-spacing:0;font-size:11px;color:var(--txt-1);">
         <input type="checkbox" id="tg-tag" onchange="tgTag()" style="width:auto;">
-        Tag UID trong tin nhắn
+        Bật chọn members để tag
       </label>
       <div id="tag-wrap" style="display:none;margin-top:8px;">
         <div class="form-group">
@@ -1805,50 +2093,11 @@ HTML_INDEX = """<!DOCTYPE html>
         <button type="button" class="btn-rect info" onclick="loadMembers()">🔄 Load members</button>
         <div class="tag-selector" id="tag-selector"></div>
         <input type="hidden" id="tag-selected" value="">
+        <div class="hint" style="margin-top:8px;">
+          📢 <b>Tag tên thật</b>: Bot gửi kèm mentions array đúng chuẩn Zalo.<br>
+          Tên phải khớp UID. Nhóm tắt mention → không tag được.
+        </div>
       </div>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2><span class="bi">❄️</span> Chế độ treo nâng cao</h2>
-
-    <div class="toggle-group" style="grid-template-columns:1fr 1fr;">
-      <div class="toggle" id="tg-freeze-text" onclick="tgFlag('freeze_text')">
-        🧊 TREO NGÔN
-      </div>
-      <div class="toggle" id="tg-freeze-delay" onclick="tgFlag('freeze_delay')">
-        🌀 TREO NHÂY
-      </div>
-    </div>
-
-    <div class="freeze-panel" id="fp-text">
-      <div class="fp-title">🧊 TREO NGÔN — Freeze Text Mode</div>
-      <div class="fp-desc">
-        Sau <b>N</b> tin đầu (xoay vòng bình thường), bot <b>khoá cứng 1 tin duy nhất</b>
-        và lặp mãi mãi cho tới khi dừng.<br>
-        👉 Dùng khi muốn spam 1 câu cố định với tần suất cao, không đổi nội dung.
-      </div>
-      <label style="font-size:10.5px;font-weight:800;color:#1e40af;letter-spacing:.5px;text-transform:uppercase;">
-        Khoá sau bao nhiêu tin?
-      </label>
-      <input type="number" id="freeze-text-after" value="10" min="0" max="10000" style="margin-top:6px;">
-    </div>
-
-    <div class="freeze-panel" id="fp-delay">
-      <div class="fp-title">🌀 TREO NHÂY — Freeze Delay Mode</div>
-      <div class="fp-desc">
-        Sau <b>N</b> tin đầu (delay có jitter ngẫu nhiên), bot <b>khoá cứng 1 giá trị delay duy nhất</b>
-        và dùng nó lặp mãi mãi — không jitter, không dao động.<br>
-        👉 Dùng khi muốn nhịp gửi đều tăm tắp, chính xác đến từng ms.
-      </div>
-      <label style="font-size:10.5px;font-weight:800;color:#1e40af;letter-spacing:.5px;text-transform:uppercase;">
-        Khoá delay sau bao nhiêu tin?
-      </label>
-      <input type="number" id="freeze-delay-after" value="10" min="0" max="10000" style="margin-top:6px;">
-    </div>
-
-    <div style="margin-top:12px;font-size:10.5px;color:var(--txt-2);line-height:1.6;padding:10px;background:#f8fafc;border-radius:10px;border-left:3px solid var(--info);">
-      💡 <b>2 mode độc lập</b> — bật cùng lúc được. Ví dụ: 10 tin đầu đa dạng → treo cứng 1 câu + nhịp 3s đều.
     </div>
   </div>
 
@@ -1857,26 +2106,12 @@ HTML_INDEX = """<!DOCTYPE html>
     <button type="button" class="btn-circle danger big" onclick="stopAll()" title="Dừng">⏸️</button>
   </div>
 
-  <div class="card anti-ban-card">
-    <h2><span class="bi">🛡️</span> Anti-Ban VIP v26.1</h2>
-    <div class="anti-ban-list">
-      <div><span class="dot">✅</span><span>Delay min 0.3s — gửi siêu nhanh</span></div>
-      <div><span class="dot">✅</span><span>Acc + Target rotation thông minh</span></div>
-      <div><span class="dot">✅</span><span>12 màu Zalo ngẫu nhiên</span></div>
-      <div><span class="dot">✅</span><span>Icon sát thương Zalo</span></div>
-      <div><span class="dot">✅</span><span>Risk adaptive delay</span></div>
-      <div><span class="dot">✅</span><span>Fail 50 lần → auto disable</span></div>
-      <div><span class="dot">✅</span><span>Giữ nguyên 100% text user</span></div>
-      <div><span class="dot">❄️</span><span>2 chế độ treo: ngôn + nhây</span></div>
-    </div>
-  </div>
-
   <div class="card">
     <h2><span class="bi">📋</span> Tác vụ</h2>
     <button type="button" class="btn-circle danger small" onclick="stopAll()" title="Dừng hết">⏸️</button>
     <div class="table-wrap" style="margin-top:10px;">
       <table class="table"><thead><tr>
-        <th>ID</th><th>Trạng thái</th><th>Bắt đầu</th><th></th>
+        <th>ID</th><th>Mode</th><th>Delay</th><th>Trạng thái</th><th></th>
       </tr></thead><tbody id="tasks-tbody"></tbody></table>
     </div>
   </div>
@@ -1888,29 +2123,29 @@ HTML_INDEX = """<!DOCTYPE html>
 /* ============================================================
    STATE
 ============================================================ */
-var flags = { color: true, emoji: true, freeze_text: false, freeze_delay: false };
+var flags = {
+  color: true, emoji: true, multi: true,
+  human: true, mention: true, session: true
+};
 var selectedBoxes = [];
 var selectedTags = [];
 var _boxes = [];
 var _members = [];
+var currentMode = "fast";
 
 
 /* ============================================================
-   TOAST NOTIFICATION SYSTEM
+   TOAST
 ============================================================ */
 var Toast = (function(){
   var stack = null;
   function ensure(){ if(!stack) stack = document.getElementById('toast-stack'); return stack; }
-
   var ICONS = { success:'✓', error:'✕', warning:'!', info:'i' };
   var TITLES = { success:'Thành công', error:'Lỗi', warning:'Cảnh báo', info:'Thông tin' };
 
   function show(msg, type, title, duration){
-    type = type || 'success';
-    duration = duration || 3500;
-    var s = ensure();
-    if(!s) return;
-
+    type = type || 'success'; duration = duration || 3500;
+    var s = ensure(); if(!s) return;
     var el = document.createElement('div');
     el.className = 'toast ' + type;
     el.innerHTML =
@@ -1919,9 +2154,7 @@ var Toast = (function(){
       '<div class="t-title">' + (title || TITLES[type] || '') + '</div>' +
       '<div class="t-msg">' + msg + '</div>' +
       '<div class="t-progress" style="animation-duration:' + duration + 'ms;"></div>';
-
     s.appendChild(el);
-
     var timer = setTimeout(remove, duration);
     function remove(){
       clearTimeout(timer);
@@ -1931,21 +2164,15 @@ var Toast = (function(){
     el.querySelector('.t-close').addEventListener('click', remove);
     return el;
   }
-
   return {
-    success: function(m,t,d){ return show(m,'success',t,d); },
-    error:   function(m,t,d){ return show(m,'error',t,d); },
-    warning: function(m,t,d){ return show(m,'warning',t,d); },
-    info:    function(m,t,d){ return show(m,'info',t,d); },
-    show: show
+    success:function(m,t,d){return show(m,'success',t,d);},
+    error:function(m,t,d){return show(m,'error',t,d);},
+    warning:function(m,t,d){return show(m,'warning',t,d);},
+    info:function(m,t,d){return show(m,'info',t,d);},
+    show:show
   };
 })();
-
-/* legacy alias */
-function showAlert(msg, type){
-  type = (type === 'error') ? 'error' : (type === 'warning' ? 'warning' : 'success');
-  Toast.show(msg, type);
-}
+function showAlert(m,t){ Toast.show(m, t==='error'?'error':'success'); }
 
 
 /* ============================================================
@@ -1964,7 +2191,31 @@ document.querySelectorAll('.tab').forEach(function(t){
 
 
 /* ============================================================
-   CHIP SELECTORS
+   MODE SELECTOR
+============================================================ */
+document.querySelectorAll('.mode-card').forEach(function(c){
+  c.addEventListener('click', function(){
+    document.querySelectorAll('.mode-card').forEach(function(x){ x.classList.remove('active'); });
+    c.classList.add('active');
+    currentMode = c.dataset.mode;
+    document.getElementById('spam-mode').value = currentMode;
+    var multiToggle = document.getElementById('tg-multi');
+    if(currentMode === 'treo_nhay'){
+      multiToggle.style.opacity = '1';
+      multiToggle.style.pointerEvents = 'auto';
+    } else if(currentMode === 'treo_ngon'){
+      multiToggle.style.opacity = '.4';
+      multiToggle.style.pointerEvents = 'none';
+    } else {
+      multiToggle.style.opacity = '1';
+      multiToggle.style.pointerEvents = 'auto';
+    }
+  });
+});
+
+
+/* ============================================================
+   CHIPS
 ============================================================ */
 document.querySelectorAll('#delay-chips .chip').forEach(function(c){
   c.addEventListener('click', function(){
@@ -1973,12 +2224,18 @@ document.querySelectorAll('#delay-chips .chip').forEach(function(c){
     document.getElementById('spam-delay').value = c.dataset.delay;
   });
 });
-
 document.querySelectorAll('#icon-chips .chip').forEach(function(c){
   c.addEventListener('click', function(){
     document.querySelectorAll('#icon-chips .chip').forEach(function(x){ x.classList.remove('active'); });
     c.classList.add('active');
     document.getElementById('icon-count').value = c.dataset.icon;
+  });
+});
+document.querySelectorAll('#speed-chips .chip').forEach(function(c){
+  c.addEventListener('click', function(){
+    document.querySelectorAll('#speed-chips .chip').forEach(function(x){ x.classList.remove('active'); });
+    c.classList.add('active');
+    document.getElementById('typing-speed').value = c.dataset.speed;
   });
 });
 
@@ -1988,19 +2245,27 @@ document.querySelectorAll('#icon-chips .chip').forEach(function(c){
 ============================================================ */
 function tgFlag(name){
   flags[name] = !flags[name];
-  var el = document.getElementById('tg-' + name.replace('_','-'));
+  var map = {
+    'color':'tg-color','emoji':'tg-emoji','multi':'tg-multi',
+    'human':'tg-human','mention':'tg-mention','session':'tg-session'
+  };
+  var el = document.getElementById(map[name] || ('tg-'+name));
   if(el) el.classList.toggle('active', flags[name]);
 
-  if(name === 'freeze_text'){
-    var p = document.getElementById('fp-text');
-    if(p) p.classList.toggle('show', flags.freeze_text);
+  if(name === 'human'){
+    var sw = document.getElementById('speed-wrap');
+    if(sw){
+      sw.style.opacity = flags.human ? '1' : '.4';
+      sw.style.pointerEvents = flags.human ? 'auto' : 'none';
+    }
   }
-  if(name === 'freeze_delay'){
-    var p2 = document.getElementById('fp-delay');
-    if(p2) p2.classList.toggle('show', flags.freeze_delay);
+  if(name === 'mention'){
+    var tw = document.getElementById('tag-wrap');
+    if(tw && !flags.mention){
+      // không tắt UI tag, chỉ disable gửi mentions
+    }
   }
 }
-
 function tgTag(){
   var c = document.getElementById('tg-tag');
   var wrap = document.getElementById('tag-wrap');
@@ -2009,12 +2274,12 @@ function tgTag(){
 
 
 /* ============================================================
-   API HELPER (with timeout + error handling)
+   API
 ============================================================ */
 async function api(url, opts){
   opts = opts || {};
   var ctrl = new AbortController();
-  var to = setTimeout(function(){ ctrl.abort(); }, 60000);
+  var to = setTimeout(function(){ ctrl.abort(); }, 90000);
   try {
     var r = await fetch(url, Object.assign({ signal: ctrl.signal }, opts, {
       headers: Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {})
@@ -2036,14 +2301,16 @@ async function loadAccounts(){
   if(!Array.isArray(accs)) accs = [];
   var tb = document.getElementById('accounts-tbody');
   if(!accs.length){
-    tb.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;padding:20px;">Chưa có</td></tr>';
+    tb.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--txt-3);padding:20px;">Chưa có</td></tr>';
   } else {
     tb.innerHTML = accs.map(function(a){
       var risk = (a.risk || 0).toFixed(2);
       var rc = risk > 0.5 ? 'badge-err' : risk > 0.2 ? 'badge-warn' : 'badge-ok';
+      var uidShort = a.uid ? String(a.uid).slice(-6) : '?';
       return '<tr>' +
         '<td>' + a.id + '</td>' +
-        '<td><b>' + a.label + '</b></td>' +
+        '<td><b style="color:var(--txt-0)">' + a.label + '</b></td>' +
+        '<td><code>…' + uidShort + '</code></td>' +
         '<td><span class="badge badge-ok">' + a.ok_count + '</span> <span class="badge badge-err">' + a.fail_count + '</span></td>' +
         '<td><span class="badge ' + rc + '">' + risk + '</span></td>' +
         '<td><span class="badge badge-info">' + (a.total_sent || 0) + '</span></td>' +
@@ -2056,13 +2323,13 @@ async function loadAccounts(){
     }).join('');
   }
   document.getElementById('stat-total').textContent = accs.length;
-  document.getElementById('stat-active').textContent = accs.filter(function(a){ return a.enabled; }).length;
-  document.getElementById('stat-sent').textContent = accs.reduce(function(s,a){ return s + (a.total_sent || 0); }, 0);
+  document.getElementById('stat-active').textContent = accs.filter(function(a){return a.enabled;}).length;
+  document.getElementById('stat-sent').textContent = accs.reduce(function(s,a){return s+(a.total_sent||0);},0);
 
   var s1 = document.getElementById('load-acc-select');
   var s2 = document.getElementById('member-acc-select');
   var opts = '<option value="">-- Chọn --</option>' +
-    accs.map(function(a){ return '<option value="' + a.id + '">' + a.label + '</option>'; }).join('');
+    accs.map(function(a){return '<option value="'+a.id+'">'+a.label+'</option>';}).join('');
   var v1 = s1.value, v2 = s2.value;
   s1.innerHTML = opts; s1.value = v1;
   s2.innerHTML = opts; s2.value = v2;
@@ -2073,12 +2340,13 @@ async function addAccount(){
   var imei = document.getElementById('add-imei').value.trim();
   var cookies = document.getElementById('add-cookies').value.trim();
   if(!imei || !cookies){ return Toast.error('Điền IMEI và cookie'); }
+  var t = Toast.info('Đang verify cookie...', 'Vui lòng đợi', 30000);
   var r = await api('/api/accounts/add', {
-    method: 'POST',
-    body: JSON.stringify({ label: label, imei: imei, cookies: cookies })
+    method:'POST',
+    body: JSON.stringify({ label:label, imei:imei, cookies:cookies })
   });
-  if(r.error){ return Toast.error(r.error); }
-  Toast.success('Đã thêm tài khoản <b>' + r.label + '</b>');
+  if(r.error){ return Toast.error(r.error, 'Thêm thất bại'); }
+  Toast.success('Đã thêm <b>' + r.label + '</b><br>UID: <code>' + r.uid + '</code>', 'Cookie sống');
   document.getElementById('add-label').value = '';
   document.getElementById('add-imei').value = '';
   document.getElementById('add-cookies').value = '';
@@ -2087,22 +2355,18 @@ async function addAccount(){
 
 async function delAcc(id){
   if(!confirm('Xóa tài khoản #' + id + '?')) return;
-  await api('/api/accounts/' + id, { method: 'DELETE' });
-  Toast.success('Đã xóa #' + id);
-  refreshAll();
+  await api('/api/accounts/' + id, { method:'DELETE' });
+  Toast.success('Đã xóa #' + id); refreshAll();
 }
-
 async function resetAcc(id){
-  await api('/api/accounts/' + id + '/reset', { method: 'POST' });
-  Toast.info('Đã reset risk #' + id);
-  refreshAll();
+  await api('/api/accounts/' + id + '/reset', { method:'POST' });
+  Toast.info('Đã reset risk #' + id); refreshAll();
 }
-
 async function checkAcc(id){
-  var t = Toast.info('Đang check cookie #' + id + '...', 'Kiểm tra', 20000);
-  var r = await api('/api/accounts/' + id + '/check', { method: 'POST' });
+  Toast.info('Đang check cookie #' + id + '...', 'Kiểm tra', 20000);
+  var r = await api('/api/accounts/' + id + '/check', { method:'POST' });
   if(r.error){ return Toast.error(r.error, 'Check thất bại'); }
-  Toast.success('Cookie sống • UID: <code>' + r.uid + '</code>', 'Check OK');
+  Toast.success('Cookie sống<br>UID: <code>' + r.uid + '</code>', 'Check OK');
 }
 
 
@@ -2112,22 +2376,21 @@ async function checkAcc(id){
 async function loadBoxes(){
   var aid = document.getElementById('load-acc-select').value;
   if(!aid) return Toast.error('Chọn tài khoản trước');
-  Toast.info('Đang load box...', 'Vui lòng đợi', 60000);
-  var r = await api('/api/accounts/' + aid + '/load_boxes', { method: 'POST' });
+  Toast.info('Đang load box...', 'Vui lòng đợi', 90000);
+  var r = await api('/api/accounts/' + aid + '/load_boxes', { method:'POST' });
   if(r.error) return Toast.error(r.error, 'Load thất bại');
-
-  var all = (r.groups || []).concat(r.friends || []);
+  var all = (r.groups||[]).concat(r.friends||[]);
   var bl = document.getElementById('box-list');
   if(!all.length){
-    bl.innerHTML = '<div style="text-align:center;padding:20px;color:#999;">Không có box nào</div>';
+    bl.innerHTML = '<div style="text-align:center;padding:20px;color:var(--txt-3);">Không có box nào</div>';
     return;
   }
-  bl.innerHTML = all.map(function(b, i){
-    return '<div class="box-item" data-idx="' + i + '" onclick="tgBox(this, ' + i + ')">' +
+  bl.innerHTML = all.map(function(b,i){
+    return '<div class="box-item" data-idx="'+i+'" onclick="tgBox(this, '+i+')">' +
       '<div class="check">✓</div>' +
       '<div class="info">' +
         '<div class="name">' + b.name + '</div>' +
-        '<div class="meta">' + b.id + ' | ' + b.type + '</div>' +
+        '<div class="meta">' + b.id + ' | ' + b.type + (b.members?(' | '+b.members+' mem'):'') + '</div>' +
       '</div>' +
     '</div>';
   }).join('');
@@ -2136,29 +2399,25 @@ async function loadBoxes(){
   document.getElementById('selected-count').textContent = '0';
   Toast.success('Đã load <b>' + all.length + '</b> box', 'Load OK');
 }
-
 function tgBox(el, idx){
-  var b = _boxes[idx];
-  if(!b) return;
+  var b = _boxes[idx]; if(!b) return;
   if(el.classList.contains('selected')){
     el.classList.remove('selected');
-    selectedBoxes = selectedBoxes.filter(function(x){ return x.id !== b.id; });
+    selectedBoxes = selectedBoxes.filter(function(x){return x.id !== b.id;});
   } else {
     el.classList.add('selected');
     selectedBoxes.push(b);
   }
   document.getElementById('selected-count').textContent = selectedBoxes.length;
 }
-
 function selectAllBoxes(){
-  document.querySelectorAll('.box-item').forEach(function(el){ el.classList.add('selected'); });
+  document.querySelectorAll('.box-item').forEach(function(el){el.classList.add('selected');});
   selectedBoxes = _boxes.slice();
   document.getElementById('selected-count').textContent = selectedBoxes.length;
   Toast.info('Đã chọn ' + selectedBoxes.length + ' box');
 }
-
 function clearAllBoxes(){
-  document.querySelectorAll('.box-item').forEach(function(el){ el.classList.remove('selected'); });
+  document.querySelectorAll('.box-item').forEach(function(el){el.classList.remove('selected');});
   selectedBoxes = [];
   document.getElementById('selected-count').textContent = '0';
   Toast.info('Đã bỏ chọn tất cả');
@@ -2175,97 +2434,87 @@ async function uploadFile(){
   fd.append('file', input.files[0]);
   Toast.info('Đang upload...', 'Vui lòng đợi', 60000);
   try {
-    var r = await fetch('/api/files/upload', { method: 'POST', body: fd }).then(function(x){ return x.json(); });
+    var r = await fetch('/api/files/upload', { method:'POST', body: fd }).then(function(x){return x.json();});
     if(r.error) return Toast.error(r.error);
-    Toast.success('Đã upload <b>' + r.filename + '</b><br>' + r.lines + ' khối tin nhắn', 'Upload OK');
+    Toast.success('Đã upload <b>' + r.filename + '</b><br>' + r.lines + ' khối', 'Upload OK');
     input.value = '';
     loadFiles();
-  } catch(e){
-    Toast.error('Upload lỗi: ' + e.message);
-  }
+  } catch(e){ Toast.error('Upload lỗi: ' + e.message); }
 }
-
 async function loadFiles(){
   var files = await api('/api/files');
   if(!Array.isArray(files)) files = [];
   var list = document.getElementById('files-list');
   if(!files.length){
-    list.innerHTML = '<div style="text-align:center;padding:20px;color:#999;font-size:11px;">Chưa có</div>';
+    list.innerHTML = '<div style="text-align:center;padding:20px;color:var(--txt-3);font-size:11px;">Chưa có</div>';
   } else {
     list.innerHTML = files.map(function(f){
-      var kb = (f.size / 1024).toFixed(1);
+      var kb = (f.size/1024).toFixed(1);
       return '<div class="file-item">' +
         '<div class="info">' +
           '<div class="name">📄 ' + f.filename + '</div>' +
           '<div class="meta">' + f.lines + ' khối • ' + kb + ' KB</div>' +
         '</div>' +
-        '<button type="button" class="btn-circle info small" onclick="previewFile(' + f.id + ')" title="Xem">👁️</button>' +
-        '<button type="button" class="btn-circle danger small" onclick="delFile(' + f.id + ')" title="Xoá">🗑️</button>' +
+        '<button type="button" class="btn-circle info small" onclick="previewFile('+f.id+')" title="Xem">👁️</button>' +
+        '<button type="button" class="btn-circle danger small" onclick="delFile('+f.id+')" title="Xoá">🗑️</button>' +
       '</div>';
     }).join('');
   }
   var s = document.getElementById('spam-file-select');
   var cur = s.value;
   s.innerHTML = '<option value="">-- Chọn file --</option>' +
-    files.map(function(f){ return '<option value="' + f.id + '">' + f.filename + ' (' + f.lines + ')</option>'; }).join('');
+    files.map(function(f){return '<option value="'+f.id+'">'+f.filename+' ('+f.lines+')</option>';}).join('');
   s.value = cur;
 }
-
 async function previewFile(fid){
   var r = await api('/api/files/' + fid + '/preview');
   if(r.error) return Toast.error(r.error);
-  var pv = (r.preview || []).map(function(m, i){ return '--- Khối ' + (i+1) + ' ---\\n' + m; }).join('\\n\\n');
-  alert('File: ' + r.filename + '\\nTổng: ' + r.total + ' khối\\n\\n' + pv);
+  var pv = (r.preview||[]).map(function(m,i){return '--- Khối '+(i+1)+' ---\\n'+m;}).join('\\n\\n');
+  alert('File: '+r.filename+'\\nTổng: '+r.total+' khối\\n\\n'+pv);
 }
-
 async function delFile(fid){
   if(!confirm('Xóa file?')) return;
-  await api('/api/files/' + fid, { method: 'DELETE' });
-  Toast.success('Đã xóa file');
-  loadFiles();
+  await api('/api/files/' + fid, { method:'DELETE' });
+  Toast.success('Đã xóa file'); loadFiles();
 }
 
 
 /* ============================================================
-   TAG MEMBERS
+   MEMBERS
 ============================================================ */
 async function loadMembers(){
   var aid = document.getElementById('member-acc-select').value;
   if(!aid) return Toast.error('Chọn acc để load members');
-  var box = selectedBoxes.find(function(b){ return b.type === 'group'; });
+  var box = selectedBoxes.find(function(b){return b.type === 'group';});
   if(!box) return Toast.error('Cần chọn 1 NHÓM trong tab Box trước');
-
-  Toast.info('Đang load members...', 'Vui lòng đợi', 60000);
-  var r = await api('/api/accounts/' + aid + '/members/' + box.id, { method: 'POST' });
+  Toast.info('Đang load members...', 'Vui lòng đợi', 90000);
+  var r = await api('/api/accounts/' + aid + '/members/' + box.id, { method:'POST' });
   if(r.error) return Toast.error(r.error);
-
   var mem = r.members || [];
   var sel = document.getElementById('tag-selector');
   sel.classList.add('show');
   if(!mem.length){
-    sel.innerHTML = '<div style="padding:14px;text-align:center;color:#999;font-size:11px;">Không có members</div>';
+    sel.innerHTML = '<div style="padding:14px;text-align:center;color:var(--txt-3);font-size:11px;">Không có members</div>';
     return;
   }
-  sel.innerHTML = mem.map(function(m, i){
-    return '<div class="tag-member" data-idx="' + i + '" onclick="tgMember(this, ' + i + ')">' +
+  sel.innerHTML = mem.map(function(m,i){
+    return '<div class="tag-member" data-idx="'+i+'" onclick="tgMember(this, '+i+')">' +
       '<div class="check">✓</div>' +
-      '<div><b>' + m.name + '</b> <span style="color:#999;font-size:10px;">' + m.id + '</span></div>' +
+      '<div><span class="tm-name">' + m.name + '</span> <span class="tm-uid">' + m.id + '</span></div>' +
     '</div>';
   }).join('');
   _members = mem;
   selectedTags = [];
   Toast.success('Đã load <b>' + mem.length + '</b> members — bấm chọn', 'Load OK');
 }
-
 function tgMember(el, idx){
-  var m = _members[idx];
-  if(!m) return;
+  var m = _members[idx]; if(!m) return;
   if(el.classList.contains('selected')){
     el.classList.remove('selected');
-    selectedTags = selectedTags.filter(function(t){ return t.id !== m.id; });
+    selectedTags = selectedTags.filter(function(t){return t.id !== m.id;});
   } else {
     el.classList.add('selected');
-    selectedTags.push({ id: m.id, name: m.name });
+    selectedTags.push({ id:m.id, name:m.name });
   }
   document.getElementById('tag-selected').value = JSON.stringify(selectedTags);
 }
@@ -2276,29 +2525,23 @@ function tgMember(el, idx){
 ============================================================ */
 async function startSpam(){
   if(!selectedBoxes.length) return Toast.error('Chưa chọn box — vào tab Box chọn target trước');
-
   var fid = document.getElementById('spam-file-select').value;
   var direct = document.getElementById('spam-messages').value.trim();
   var blocks = [];
-
   if(fid){
     var r = await api('/api/files/' + fid + '/preview');
     if(r.error) return Toast.error('Lỗi file: ' + r.error);
     blocks = r.all || [];
   } else if(direct){
-    blocks = direct.split(';').map(function(m){ return m.trim(); }).filter(function(m){ return m; });
+    blocks = direct.split(';').map(function(m){return m.trim();}).filter(function(m){return m;});
   }
-
   if(!blocks.length) return Toast.error('Chưa có tin nhắn — chọn file hoặc nhập tay');
-
-  var delay = parseFloat(document.getElementById('spam-delay').value) || 2;
-  var iconCount = parseInt(document.getElementById('icon-count').value) || 5;
-
+  var delay = parseFloat(document.getElementById('spam-delay').value) || 1;
+  if(delay < 0.3) return Toast.error('Delay tối thiểu 0.3s');
+  var iconCount = parseInt(document.getElementById('icon-count').value) || 3;
+  var typingSpeed = document.getElementById('typing-speed').value || 'fast';
   var tagUsers = [];
   if(document.getElementById('tg-tag').checked) tagUsers = selectedTags;
-
-  var freezeTextAfter = parseInt(document.getElementById('freeze-text-after').value) || 0;
-  var freezeDelayAfter = parseInt(document.getElementById('freeze-delay-after').value) || 0;
 
   var payload = {
     targets: selectedBoxes,
@@ -2308,75 +2551,71 @@ async function startSpam(){
     use_emoji: flags.emoji,
     icon_count: iconCount,
     tag_users: tagUsers,
-    freeze_text: flags.freeze_text,
-    freeze_delay: flags.freeze_delay,
-    freeze_text_after: freezeTextAfter,
-    freeze_delay_after: freezeDelayAfter
+    mode: currentMode,
+    multi_color: flags.multi,
+    typing_speed: typingSpeed,
+    human_mode: flags.human,
+    real_mention: flags.mention,
+    read_receipt: flags.human,
+    session_mode: flags.session
   };
-
-  var r = await api('/api/tasks/start', {
-    method: 'POST',
-    body: JSON.stringify(payload)
-  });
+  var r = await api('/api/tasks/start', { method:'POST', body: JSON.stringify(payload) });
   if(r.error) return Toast.error(r.error);
-
-  var frz = [];
-  if(flags.freeze_text) frz.push('❄️ Treo ngôn');
-  if(flags.freeze_delay) frz.push('🌀 Treo nhây');
-  var suffix = frz.length ? '<br><small>' + frz.join(' • ') + '</small>' : '';
-  Toast.success('🚀 Đã bắt đầu: <code>' + r.task_id + '</code>' + suffix, 'Task running', 5000);
+  var modeName = {'fast':'⚡ Siêu nhanh','treo_ngon':'❄️ Treo ngôn','treo_nhay':'🌀 Treo nhây'}[currentMode] || currentMode;
+  var extras = [];
+  if(flags.multi) extras.push('🌈 đa màu');
+  if(flags.human) extras.push('🧑 giả người');
+  if(flags.mention && tagUsers.length) extras.push('📢 tag thật');
+  if(flags.session) extras.push('💤 session');
+  var suffix = extras.length ? '<br><small style="color:var(--txt-3)">' + extras.join(' • ') + '</small>' : '';
+  Toast.success('🚀 ' + modeName + ': <code>' + r.task_id + '</code><br>Delay <b>' + delay + 's</b>' + suffix, 'Task running', 5000);
   loadTasks();
 }
-
 async function stopAll(){
-  await api('/api/tasks/stop_all', { method: 'POST' });
-  Toast.warning('Đã ra lệnh dừng tất cả task');
-  loadTasks();
+  await api('/api/tasks/stop_all', { method:'POST' });
+  Toast.warning('Đã ra lệnh dừng tất cả task'); loadTasks();
 }
-
 async function loadTasks(){
   var tasks = await api('/api/tasks');
   if(!Array.isArray(tasks)) tasks = [];
   var tb = document.getElementById('tasks-tbody');
   if(!tasks.length){
-    tb.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#999;padding:16px;">Chưa có</td></tr>';
+    tb.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--txt-3);padding:16px;">Chưa có</td></tr>';
     return;
   }
   tb.innerHTML = tasks.map(function(t){
-    var st = new Date(t.started_at * 1000).toLocaleString('vi-VN');
     var running = t.status === 'running';
     var b = running ? 'badge-ok' : 'badge-err';
     var txt = running ? 'Đang chạy' : 'Đã dừng';
     var meta = {};
     try { meta = JSON.parse(t.meta || '{}'); } catch(e){}
-    var frzTags = '';
-    if(meta.freeze_text) frzTags += ' <span class="badge badge-frz">❄️Ngôn</span>';
-    if(meta.freeze_delay) frzTags += ' <span class="badge badge-frz">🌀Nhây</span>';
+    var mode = meta.mode || 'fast';
+    var modeLabels = {
+      'fast':['⚡ Nhanh','badge-mode-fast'],
+      'treo_ngon':['❄️ Ngôn','badge-mode-ngon'],
+      'treo_nhay':['🌀 Nhây','badge-mode-nhay']
+    };
+    var ml = modeLabels[mode] || modeLabels['fast'];
+    var d = meta.delay ? (meta.delay + 's') : '—';
     return '<tr>' +
       '<td><code>' + t.id + '</code></td>' +
-      '<td><span class="badge ' + b + '">' + txt + '</span>' + frzTags + '</td>' +
-      '<td style="font-size:10px;">' + st + '</td>' +
+      '<td><span class="badge ' + ml[1] + '">' + ml[0] + '</span></td>' +
+      '<td><b style="color:var(--brand-a)">' + d + '</b></td>' +
+      '<td><span class="badge ' + b + '">' + txt + '</span></td>' +
       '<td>' + (running ? '<button type="button" class="btn-circle danger small" onclick="stopTask(\\'' + t.id + '\\')" title="Dừng">⏸️</button>' : '') + '</td>' +
     '</tr>';
   }).join('');
 }
-
 async function stopTask(tid){
-  await api('/api/tasks/' + tid + '/stop', { method: 'POST' });
-  Toast.warning('Đã dừng task <code>' + tid + '</code>');
-  loadTasks();
+  await api('/api/tasks/' + tid + '/stop', { method:'POST' });
+  Toast.warning('Đã dừng task <code>' + tid + '</code>'); loadTasks();
 }
 
 
 /* ============================================================
    BOOT
 ============================================================ */
-function refreshAll(){
-  loadAccounts();
-  loadFiles();
-  loadTasks();
-}
-
+function refreshAll(){ loadAccounts(); loadFiles(); loadTasks(); }
 setInterval(loadTasks, 5000);
 refreshAll();
 </script>
