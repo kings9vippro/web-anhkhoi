@@ -1,6 +1,5 @@
 # ============================================================
-# ALB FORGE v32.0 — Universal Forge • Multi-line Master
-# Bot by Anh Khôi • True multiline • Ghost anti • White UI
+# ALB FORGE v33.0 — True Multi-line + Real Color
 # ============================================================
 import os
 import json
@@ -142,9 +141,9 @@ COLOR_IDS = [c["id"] for c in ZALO_COLORS]
 
 
 # ============================================================
-# ANTI-BAN GHOST v32
+# ANTI-BAN
 # ============================================================
-class AntiBanGhost:
+class AntiBan:
     MIN_DELAY = 0.3
     MAX_DELAY = 120.0
     WARMUP_MSGS = 10
@@ -156,58 +155,46 @@ class AntiBanGhost:
     @staticmethod
     def compute_risk(ok, fail):
         total = ok + fail
-        if total == 0:
-            return 0.0
+        if total == 0: return 0.0
         base = fail / total
-        if fail > 20 and ok < 5:
-            base = min(1.0, base + 0.18)
-        if ok > 100 and base < 0.05:
-            base = max(0.0, base - 0.02)
+        if fail > 20 and ok < 5: base = min(1.0, base + 0.18)
+        if ok > 100 and base < 0.05: base = max(0.0, base - 0.02)
         return min(1.0, base)
 
     @staticmethod
     def compute_delay(user_delay, risk, is_warmup=False):
-        d = max(AntiBanGhost.MIN_DELAY, user_delay)
-        if risk > 0.85:
-            d = max(d, 18.0)
-        elif risk > 0.7:
-            d = max(d, 10.0)
-        elif risk > 0.5:
-            d = max(d, 5.0)
-        elif risk > 0.3:
-            d = max(d, 2.5)
-        if is_warmup:
-            d *= AntiBanGhost.WARMUP_MULT
+        d = max(AntiBan.MIN_DELAY, user_delay)
+        if risk > 0.85: d = max(d, 18.0)
+        elif risk > 0.7: d = max(d, 10.0)
+        elif risk > 0.5: d = max(d, 5.0)
+        elif risk > 0.3: d = max(d, 2.5)
+        if is_warmup: d *= AntiBan.WARMUP_MULT
         d = d * random.uniform(0.88, 1.12)
-        return max(AntiBanGhost.MIN_DELAY, min(AntiBanGhost.MAX_DELAY, d))
+        return max(AntiBan.MIN_DELAY, min(AntiBan.MAX_DELAY, d))
 
     @staticmethod
     def pick_color(color_mode, fixed_color, idx=0):
-        if color_mode == 'none':
-            return None
-        if color_mode == 'random':
-            return random.choice(COLOR_IDS)
+        if color_mode == 'none': return None
+        if color_mode == 'random': return random.choice(COLOR_IDS)
         if color_mode == 'fixed':
             return fixed_color if fixed_color in COLOR_IDS else random.choice(COLOR_IDS)
-        if color_mode == 'cycle':
-            return COLOR_IDS[idx % len(COLOR_IDS)]
+        if color_mode == 'cycle': return COLOR_IDS[idx % len(COLOR_IDS)]
         return None
 
     @staticmethod
     def append_icons(text, count):
-        if count <= 0:
-            return text
+        if count <= 0: return text
         icons = [get_icon_hard() for _ in range(count)]
         return text + " " + " ".join(icons)
 
     @staticmethod
-    def human_typing_rate(speed):
+    def typing_rate(speed):
         return {"fast": 0.014, "normal": 0.032,
                 "slow": 0.055, "instant": 0.0}.get(speed, 0.014)
 
 
 # ============================================================
-# ZALO API v32
+# ZALO API v33 — TRUE MULTILINE + REAL COLOR
 # ============================================================
 class Zalo:
     def __init__(self, imei, cookies):
@@ -259,8 +246,7 @@ class Zalo:
             pass
 
     def _fetch_own_profile(self):
-        if not self.uid:
-            return
+        if not self.uid: return
         try:
             enc = self._enc({"friendId": self.uid})
             r = self.s.post(
@@ -281,7 +267,7 @@ class Zalo:
     def _enc(self, params):
         key = base64.b64decode(self.secret_key)
         cipher = AES.new(key, AES.MODE_CBC, bytes(16))
-        pt = json.dumps(params).encode()
+        pt = json.dumps(params, ensure_ascii=False).encode("utf-8")
         pad = AES.block_size - len(pt) % AES.block_size
         pt += bytes([pad]) * pad
         return base64.b64encode(cipher.encrypt(pt)).decode()
@@ -351,8 +337,7 @@ class Zalo:
         mem_list = info.get("memVerList", [])
 
         uids = [m.split("_")[0] for m in mem_list]
-        if not uids:
-            return []
+        if not uids: return []
 
         members = []
         try:
@@ -372,49 +357,38 @@ class Zalo:
                 un = p.get("username") or ""
                 final_name = dn or zn or un or ("User_" + uid[:8])
                 members.append({
-                    "id": uid,
-                    "name": final_name,
-                    "display_name": dn,
-                    "zalo_name": zn,
-                    "username": un,
+                    "id": uid, "name": final_name,
+                    "display_name": dn, "zalo_name": zn, "username": un,
                 })
         except Exception as e:
             print("[MEMBERS] batch fail: " + str(e))
             for uid in uids:
                 members.append({
-                    "id": uid,
-                    "name": "User_" + uid[:8],
+                    "id": uid, "name": "User_" + uid[:8],
                     "display_name": "", "zalo_name": "", "username": "",
                 })
         return members
 
     def build_mention_payload(self, text, mentions):
-        if not mentions:
-            return text, []
+        if not mentions: return text, []
         final = text
         m_arr = []
         for m in mentions:
             name = m.get("name", "")
             uid = m.get("uid") or m.get("id")
-            if not name or not uid:
-                continue
+            if not name or not uid: continue
             tag_str = "@" + name
-            if final:
-                final = final + " " + tag_str
-            else:
-                final = tag_str
+            if final: final = final + " " + tag_str
+            else: final = tag_str
             pos = final.rfind(tag_str)
-            m_arr.append({
-                "uid": str(uid),
-                "pos": pos,
-                "len": len(tag_str),
-                "type": 0,
-            })
+            m_arr.append({"uid": str(uid), "pos": pos,
+                          "len": len(tag_str), "type": 0})
         return final, m_arr
 
     def send(self, msg, thread_id, color=None, is_group=True, mentions=None):
         """
-        Gửi 1 message. Giữ nguyên \n → Zalo render xuống dòng trong 1 bubble.
+        Gửi message. GIỮ NGUYÊN \n THẬT trong message field.
+        Không escape 2 lần — dùng json.dumps với ensure_ascii=False.
         """
         url = ("https://tt-group-wpa.chat.zalo.me/api/group/sendmsg"
                if is_group
@@ -425,7 +399,7 @@ class Zalo:
         if mentions:
             final_msg, m_arr = self.build_mention_payload(msg, mentions)
 
-        # Normalize newline: Zalo protocol dùng LF
+        # CRITICAL: đảm bảo newline là \n thật (không phải \\n)
         final_msg = final_msg.replace("\r\n", "\n").replace("\r", "\n")
 
         pl = {
@@ -434,7 +408,7 @@ class Zalo:
             "imei": self.imei,
         }
         if m_arr:
-            pl["mentions"] = json.dumps(m_arr)
+            pl["mentions"] = json.dumps(m_arr, ensure_ascii=False)
         if color:
             pl["msgColor"] = color
         if is_group:
@@ -445,6 +419,17 @@ class Zalo:
         enc = self._enc(pl)
         return self.s.post(url, params={"zpw_ver": 645, "zpw_type": 30},
                            data={"params": enc}, timeout=20)
+
+    def send_multiline(self, lines, thread_id, color=None, is_group=True,
+                       mentions=None):
+        """
+        Gửi N dòng trong 1 tin nhắn DUY NHẤT.
+        Join bằng \n → Zalo render xuống dòng.
+        """
+        if not lines: return None
+        text = "\n".join(lines)
+        return self.send(text, thread_id, color=color,
+                         is_group=is_group, mentions=mentions)
 
     def set_typing(self, thread_id, is_group=True):
         if is_group:
@@ -486,8 +471,7 @@ def parse_blocks(filepath, max_blocks=5000):
             content = f.read()
         content = content.replace("\r\n", "\n").replace("\r", "\n")
         for line in content.split("\n"):
-            if len(blocks) >= max_blocks:
-                break
+            if len(blocks) >= max_blocks: break
             if line.strip() == "":
                 if current:
                     blocks.append("\n".join(current))
@@ -502,29 +486,26 @@ def parse_blocks(filepath, max_blocks=5000):
 
 
 # ============================================================
-# WORKER v32
+# WORKER v33 — MODE TÁCH RÕ RÀNG
 # ============================================================
 def update_stats(aid, ok):
     conn = db()
     row = conn.execute("SELECT * FROM accounts WHERE id = ?", (aid,)).fetchone()
     if not row:
-        conn.close()
-        return
+        conn.close(); return
     ok_c = row["ok_count"] + (1 if ok else 0)
     fail_c = row["fail_count"] + (0 if ok else 1)
     sent = row["total_sent"] + (1 if ok else 0)
-    risk = AntiBanGhost.compute_risk(ok_c, fail_c)
+    risk = AntiBan.compute_risk(ok_c, fail_c)
     enabled = row["enabled"]
     if fail_c >= 50 and ok_c / max(fail_c, 1) < 0.05:
         enabled = 0
     conn.execute("""
-        UPDATE accounts SET
-            ok_count = ?, fail_count = ?, risk = ?,
+        UPDATE accounts SET ok_count = ?, fail_count = ?, risk = ?,
             total_sent = ?, enabled = ?, last_used = ?
         WHERE id = ?
     """, (ok_c, fail_c, risk, sent, enabled, time.time(), aid))
-    conn.commit()
-    conn.close()
+    conn.commit(); conn.close()
 
 
 def pick_account(exclude_id=None):
@@ -532,8 +513,7 @@ def pick_account(exclude_id=None):
     q = "SELECT * FROM accounts WHERE enabled = 1 AND risk < 0.85"
     params = []
     if exclude_id:
-        q += " AND id != ?"
-        params.append(exclude_id)
+        q += " AND id != ?"; params.append(exclude_id)
     q += " ORDER BY risk ASC, last_used ASC LIMIT 1"
     rows = conn.execute(q, params).fetchall()
     if not rows and exclude_id:
@@ -546,16 +526,12 @@ def pick_account(exclude_id=None):
 
 
 def humanize_typing(z, thread_id, is_group, msg_len, speed="fast"):
-    r = AntiBanGhost.human_typing_rate(speed)
-    if r <= 0:
-        return
+    r = AntiBan.typing_rate(speed)
+    if r <= 0: return
     typing_time = min(msg_len * r, 2.5)
-    try:
-        z.set_typing(thread_id, is_group=is_group)
-    except Exception:
-        pass
-    if typing_time > 0.05:
-        time.sleep(typing_time)
+    try: z.set_typing(thread_id, is_group=is_group)
+    except Exception: pass
+    if typing_time > 0.05: time.sleep(typing_time)
 
 
 def spam_worker(tid, targets, blocks, delay,
@@ -566,9 +542,9 @@ def spam_worker(tid, targets, blocks, delay,
     """
     Mode:
       fast        — xoay vòng block, mỗi block 1 tin
-      treo_ngon   — dán N dòng → gửi N dòng TRONG 1 TIN
-                    (color_mode=none → 1 request \n; color_mode khác → N request gap 0.08s)
-      treo_nhay   — dán N dòng → gửi N tin riêng, đánh số, gap vừa
+      treo_ngon   — dán N dòng → gửi N dòng TRONG 1 TIN DUY NHẤT
+                    (1 request, message = "d1\nd2\nd3\nd4", giữ newline thật)
+      treo_nhay   — dán N dòng → N tin riêng, đánh số 1. 2. 3.
     """
     block_idx = 0
     target_idx = 0
@@ -578,34 +554,31 @@ def spam_worker(tid, targets, blocks, delay,
     acc_session_counter = {}
     global_color_idx = 0
 
-    print("[SPAM v32] Start: " + tid)
+    print("[SPAM v33] Start: " + tid)
     print("  Mode: " + mode + " | Color: " + color_mode + " | Emoji: " + str(use_emoji))
 
     while not stop_event.is_set():
         acc = pick_account(exclude_id=last_acc_id)
         if not acc:
-            time.sleep(0.3)
-            continue
+            time.sleep(0.3); continue
 
         last_acc_id = acc["id"]
         aid_key = acc["id"]
         acc_warmup_counter.setdefault(aid_key, 0)
         acc_session_counter.setdefault(aid_key, 0)
 
-        if acc_session_counter[aid_key] >= AntiBanGhost.SESSION_MAX:
-            rest = random.uniform(AntiBanGhost.SESSION_REST_MIN,
-                                  AntiBanGhost.SESSION_REST_MAX)
+        if acc_session_counter[aid_key] >= AntiBan.SESSION_MAX:
+            rest = random.uniform(AntiBan.SESSION_REST_MIN, AntiBan.SESSION_REST_MAX)
             print("[ROTATE] " + acc["label"] + " nghỉ " + str(round(rest,1)) + "s")
             end = time.time() + rest
             while time.time() < end:
-                if stop_event.is_set():
-                    break
+                if stop_event.is_set(): break
                 time.sleep(0.05)
             acc_session_counter[aid_key] = 0
             last_acc_id = None
             continue
 
-        is_warmup = acc_warmup_counter[aid_key] < AntiBanGhost.WARMUP_MSGS
+        is_warmup = acc_warmup_counter[aid_key] < AntiBan.WARMUP_MSGS
 
         target = targets[target_idx % len(targets)]
         target_idx += 1
@@ -623,26 +596,21 @@ def spam_worker(tid, targets, blocks, delay,
                 z.mark_read(target_id, is_group=is_group)
                 time.sleep(random.uniform(0.05, 0.15))
 
-            # ============================================
-            # SEND theo mode
-            # ============================================
             if mode == "treo_nhay":
-                # Tách dòng, đánh số, mỗi dòng 1 tin riêng
+                # N dòng → N TIN RIÊNG, đánh số
                 lines = [ln for ln in raw.split("\n") if ln.strip()]
                 numbered = [str(i) + ". " + ln for i, ln in enumerate(lines, 1)]
 
                 if human_mode:
-                    humanize_typing(z, target_id, is_group,
-                                    len(raw), typing_speed)
+                    humanize_typing(z, target_id, is_group, len(raw), typing_speed)
 
                 for mi, ln in enumerate(numbered):
-                    if stop_event.is_set():
-                        break
+                    if stop_event.is_set(): break
                     text = ln
                     if use_emoji and icon_count > 0:
-                        text = AntiBanGhost.append_icons(text, icon_count)
+                        text = AntiBan.append_icons(text, icon_count)
                     mentions = tag_users if (real_mention and tag_users and mi == 0) else None
-                    color = AntiBanGhost.pick_color(color_mode, fixed_color, global_color_idx)
+                    color = AntiBan.pick_color(color_mode, fixed_color, global_color_idx)
                     global_color_idx += 1
 
                     r = z.send(text, target_id, color=color,
@@ -662,83 +630,51 @@ def spam_worker(tid, targets, blocks, delay,
                         gap = random.uniform(0.3, 0.7) if human_mode else 0.15
                         end = time.time() + gap
                         while time.time() < end:
-                            if stop_event.is_set():
-                                break
+                            if stop_event.is_set(): break
                             time.sleep(0.01)
 
             elif mode == "treo_ngon":
-                # Dán N dòng → gửi N dòng TRONG 1 TIN
+                # N dòng → 1 TIN DUY NHẤT, giữ newline thật
                 lines = [ln for ln in raw.split("\n") if ln.strip()]
 
                 # Icon dòng cuối
                 if use_emoji and icon_count > 0 and lines:
-                    lines[-1] = AntiBanGhost.append_icons(lines[-1], icon_count)
+                    lines[-1] = AntiBan.append_icons(lines[-1], icon_count)
 
                 if human_mode:
-                    humanize_typing(z, target_id, is_group,
-                                    len(raw), typing_speed)
+                    humanize_typing(z, target_id, is_group, len(raw), typing_speed)
 
-                if color_mode == 'none':
-                    # CÁCH A: 1 request với \n → 4 dòng cùng 1 bubble cùng 1 màu
-                    text_full = "\n".join(lines)
-                    mentions = tag_users if (real_mention and tag_users) else None
-                    r = z.send(text_full, target_id, color=None,
-                               is_group=is_group, mentions=mentions)
-                    ok = bool(r and r.status_code == 200)
-                    update_stats(acc["id"], ok)
-                    count += 1
-                    acc_warmup_counter[aid_key] += 1
-                    acc_session_counter[aid_key] += 1
-                    print("[#" + str(count) + "] " + acc["label"] + " → " +
-                          str(target_id) + " [1req-" + str(len(lines)) + "dòng]" +
-                          " [" + ("OK" if ok else "ERR") + "] " +
-                          text_full.replace("\n", " ⏎ ")[:60])
-                else:
-                    # CÁCH B: N request gap 0.08s → Zalo gộp bubble nhiều màu
-                    for idx, ln in enumerate(lines):
-                        if stop_event.is_set():
-                            break
-                        c = AntiBanGhost.pick_color(color_mode, fixed_color, global_color_idx)
-                        global_color_idx += 1
-                        m = tag_users if (real_mention and tag_users and idx == 0) else None
-                        r = z.send(ln, target_id, color=c,
-                                   is_group=is_group, mentions=m)
-                        ok = bool(r and r.status_code == 200)
-                        update_stats(acc["id"], ok)
-                        count += 1
-                        acc_warmup_counter[aid_key] += 1
-                        acc_session_counter[aid_key] += 1
-                        cs = "[" + c + "]" if c else ""
-                        print("[#" + str(count) + "] " + acc["label"] + " → " +
-                              str(target_id) + cs + " [" + ("OK" if ok else "ERR") +
-                              "]" + (" [W]" if is_warmup else "") + " " + ln[:50])
+                # 1 REQUEST DUY NHẤT — message chứa \n thật
+                text_full = "\n".join(lines)
+                mentions = tag_users if (real_mention and tag_users) else None
+                color = AntiBan.pick_color(color_mode, fixed_color, global_color_idx)
+                global_color_idx += 1
 
-                        # Gap siêu ngắn để Zalo gộp bubble
-                        if idx < len(lines) - 1:
-                            end = time.time() + 0.08
-                            while time.time() < end:
-                                if stop_event.is_set():
-                                    break
-                                time.sleep(0.01)
+                r = z.send(text_full, target_id, color=color,
+                           is_group=is_group, mentions=mentions)
+                ok = bool(r and r.status_code == 200)
+                update_stats(acc["id"], ok)
+                count += 1
+                acc_warmup_counter[aid_key] += 1
+                acc_session_counter[aid_key] += 1
+
+                cs = "[" + color + "]" if color else ""
+                preview = text_full.replace("\n", " ⏎ ")[:60]
+                print("[#" + str(count) + "] " + acc["label"] + " → " +
+                      str(target_id) + cs + " [" + ("OK" if ok else "ERR") +
+                      "] [1tin-" + str(len(lines)) + "dòng]" +
+                      (" [W]" if is_warmup else "") + " " + preview)
 
             else:
-                # FAST — block như 1 tin, giữ \n
+                # FAST
                 text = raw
                 if use_emoji and icon_count > 0:
-                    text = AntiBanGhost.append_icons(text, icon_count)
+                    text = AntiBan.append_icons(text, icon_count)
 
                 if human_mode:
-                    humanize_typing(z, target_id, is_group,
-                                    len(text), typing_speed)
-                    if random.random() < 0.04:
-                        time.sleep(random.uniform(0.2, 0.5))
-                        try:
-                            z.set_typing(target_id, is_group=is_group)
-                        except Exception:
-                            pass
-                        time.sleep(random.uniform(0.1, 0.25))
+                    humanize_typing(z, target_id, is_group, len(text), typing_speed)
 
-                color = AntiBanGhost.pick_color(color_mode, fixed_color, global_color_idx)
+                color = AntiBan.pick_color(color_mode, fixed_color, global_color_idx)
                 global_color_idx += 1
                 mentions = tag_users if (real_mention and tag_users) else None
 
@@ -762,7 +698,7 @@ def spam_worker(tid, targets, blocks, delay,
 
         # Delay giữa các block
         risk = acc["risk"] if acc["risk"] else 0.0
-        base = AntiBanGhost.compute_delay(delay, risk, is_warmup=is_warmup)
+        base = AntiBan.compute_delay(delay, risk, is_warmup=is_warmup)
 
         if human_mode:
             actual = base * random.uniform(0.92, 1.18)
@@ -775,19 +711,15 @@ def spam_worker(tid, targets, blocks, delay,
 
         end = time.time() + actual
         while time.time() < end:
-            if stop_event.is_set():
-                break
+            if stop_event.is_set(): break
             time.sleep(0.03)
 
     conn = db()
-    conn.execute(
-        "UPDATE tasks SET status = 'stopped', stats = ? WHERE id = ?",
-        (json.dumps({"sent": count}), tid)
-    )
-    conn.commit()
-    conn.close()
+    conn.execute("UPDATE tasks SET status = 'stopped', stats = ? WHERE id = ?",
+                 (json.dumps({"sent": count}), tid))
+    conn.commit(); conn.close()
     ACTIVE_TASKS.pop(tid, None)
-    print("[SPAM v32] " + tid + " stop - total: " + str(count))
+    print("[SPAM v33] " + tid + " stop - total: " + str(count))
 
 
 # ============================================================
@@ -868,7 +800,6 @@ def api_accounts_add():
         un = z.username or ""
     except Exception as e:
         return jsonify({"error": "Cookie chết: " + str(e)}), 400
-
     conn = db()
     conn.execute("""
         INSERT INTO accounts (label, imei, cookies, added_at,
@@ -876,8 +807,7 @@ def api_accounts_add():
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """, (label, imei, json.dumps(ck_obj), time.time(),
           uid, dn, zn, un))
-    conn.commit()
-    conn.close()
+    conn.commit(); conn.close()
     return jsonify({"ok": True, "label": label, "uid": uid,
                     "display_name": dn, "zalo_name": zn, "username": un})
 
@@ -887,8 +817,7 @@ def api_accounts_add():
 def api_accounts_delete(aid):
     conn = db()
     conn.execute("DELETE FROM accounts WHERE id = ?", (aid,))
-    conn.commit()
-    conn.close()
+    conn.commit(); conn.close()
     return jsonify({"ok": True})
 
 
@@ -897,8 +826,7 @@ def api_accounts_delete(aid):
 def api_accounts_reset(aid):
     conn = db()
     conn.execute("UPDATE accounts SET risk = 0, enabled = 1 WHERE id = ?", (aid,))
-    conn.commit()
-    conn.close()
+    conn.commit(); conn.close()
     return jsonify({"ok": True})
 
 
@@ -984,8 +912,7 @@ def api_files_upload():
         INSERT INTO files (filename, filepath, lines, size, uploaded_at)
         VALUES (?, ?, ?, ?, ?)
     """, (f.filename, fp, len(blocks), size, time.time()))
-    conn.commit()
-    conn.close()
+    conn.commit(); conn.close()
     return jsonify({"ok": True, "filename": f.filename,
                     "lines": len(blocks), "preview": blocks[:3]})
 
@@ -996,16 +923,12 @@ def api_files_delete(fid):
     conn = db()
     row = conn.execute("SELECT * FROM files WHERE id = ?", (fid,)).fetchone()
     if not row:
-        conn.close()
-        return jsonify({"error": "Không tìm thấy"}), 404
+        conn.close(); return jsonify({"error": "Không tìm thấy"}), 404
     try:
-        if os.path.exists(row["filepath"]):
-            os.remove(row["filepath"])
-    except Exception:
-        pass
+        if os.path.exists(row["filepath"]): os.remove(row["filepath"])
+    except Exception: pass
     conn.execute("DELETE FROM files WHERE id = ?", (fid,))
-    conn.commit()
-    conn.close()
+    conn.commit(); conn.close()
     return jsonify({"ok": True})
 
 
@@ -1018,10 +941,8 @@ def api_files_preview(fid):
     if not row:
         return jsonify({"error": "Không tìm thấy"}), 404
     blocks = parse_blocks(row["filepath"], max_blocks=5000)
-    return jsonify({"filename": row["filename"],
-                    "total": len(blocks),
-                    "preview": blocks[:5],
-                    "all": blocks})
+    return jsonify({"filename": row["filename"], "total": len(blocks),
+                    "preview": blocks[:5], "all": blocks})
 
 
 @app.route("/api/tasks", methods=["GET"])
@@ -1048,8 +969,7 @@ def api_tasks_start():
 
     use_emoji = bool(d.get("use_emoji", True))
     icon_count = int(d.get("icon_count", 3))
-    if not use_emoji:
-        icon_count = 0  # FORCE 0 nếu tắt emoji
+    if not use_emoji: icon_count = 0
 
     tag_users = d.get("tag_users", [])
     mode = d.get("mode", "fast")
@@ -1064,18 +984,15 @@ def api_tasks_start():
         return jsonify({"error": "Chưa chọn target"}), 400
     if not blocks:
         return jsonify({"error": "Chưa có tin nhắn"}), 400
-    if delay < AntiBanGhost.MIN_DELAY:
-        return jsonify({"error": "Delay tối thiểu " + str(AntiBanGhost.MIN_DELAY) + "s"}), 400
-    if delay > AntiBanGhost.MAX_DELAY:
-        return jsonify({"error": "Delay tối đa " + str(AntiBanGhost.MAX_DELAY) + "s"}), 400
+    if delay < AntiBan.MIN_DELAY:
+        return jsonify({"error": "Delay tối thiểu " + str(AntiBan.MIN_DELAY) + "s"}), 400
+    if delay > AntiBan.MAX_DELAY:
+        return jsonify({"error": "Delay tối đa " + str(AntiBan.MAX_DELAY) + "s"}), 400
     if icon_count < 0: icon_count = 0
     if icon_count > 20: icon_count = 20
-    if mode not in ("fast", "treo_ngon", "treo_nhay"):
-        mode = "fast"
-    if typing_speed not in ("instant", "fast", "normal", "slow"):
-        typing_speed = "fast"
-    if color_mode not in ("none", "random", "fixed", "cycle"):
-        color_mode = "random"
+    if mode not in ("fast", "treo_ngon", "treo_nhay"): mode = "fast"
+    if typing_speed not in ("instant", "fast", "normal", "slow"): typing_speed = "fast"
+    if color_mode not in ("none", "random", "fixed", "cycle"): color_mode = "random"
     if color_mode == "fixed" and fixed_color not in COLOR_IDS:
         return jsonify({"error": "Màu cố định không hợp lệ"}), 400
 
@@ -1110,8 +1027,7 @@ def api_tasks_start():
                       "typing_speed": typing_speed, "human_mode": human_mode,
                       "real_mention": real_mention}),
           "running", time.time(), "{}"))
-    conn.commit()
-    conn.close()
+    conn.commit(); conn.close()
 
     ACTIVE_TASKS[tid] = {"stop": stop_ev, "thread": th}
     th.start()
@@ -1139,7 +1055,7 @@ def api_tasks_stop_all():
 
 @app.route("/health")
 def health():
-    return jsonify({"status": "ok", "service": "alb-forge", "version": "32.0"})
+    return jsonify({"status": "ok", "service": "alb-forge", "version": "33.0"})
 
 
 # ============================================================
@@ -1201,7 +1117,7 @@ LOGO_SVG = """<svg viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg" fill
 
 
 # ============================================================
-# CSS ROOT — WHITE
+# CSS ROOT
 # ============================================================
 CSS_ROOT = """
 :root{
@@ -1241,7 +1157,6 @@ button,input,textarea,select{font-family:inherit}
 *::-webkit-scrollbar{width:7px;height:7px}
 *::-webkit-scrollbar-track{background:transparent}
 *::-webkit-scrollbar-thumb{background:rgba(15,23,42,.15);border-radius:99px}
-*::-webkit-scrollbar-thumb:hover{background:rgba(15,23,42,.28)}
 :focus-visible{outline:2px solid var(--brand-a);outline-offset:2px;border-radius:5px}
 """
 
@@ -1255,71 +1170,30 @@ HTML_LOGIN = """<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
-<title>ALB Forge v32</title>
+<title>ALB Forge v33</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
 <style>
 """ + CSS_ROOT + """
 body{display:flex;align-items:center;justify-content:center;min-height:100vh;min-height:100dvh;padding:20px;position:relative;overflow:hidden}
-body::before{
-  content:'';position:absolute;inset:0;
-  background-image:
-    linear-gradient(rgba(0,104,255,.04) 1px,transparent 1px),
-    linear-gradient(90deg,rgba(0,104,255,.04) 1px,transparent 1px);
-  background-size:40px 40px;
-  animation:gridMove 30s linear infinite;pointer-events:none;
-}
+body::before{content:'';position:absolute;inset:0;background-image:linear-gradient(rgba(0,104,255,.04) 1px,transparent 1px),linear-gradient(90deg,rgba(0,104,255,.04) 1px,transparent 1px);background-size:40px 40px;animation:gridMove 30s linear infinite;pointer-events:none}
 @keyframes gridMove{from{background-position:0 0}to{background-position:40px 40px}}
-.card{
-  position:relative;background:rgba(255,255,255,.98);
-  backdrop-filter:blur(24px) saturate(160%);
-  -webkit-backdrop-filter:blur(24px) saturate(160%);
-  padding:40px 30px 32px;border-radius:var(--r-xl);
-  border:1px solid var(--line-2);
-  box-shadow:0 20px 60px rgba(15,23,42,.1),0 0 0 1px rgba(255,255,255,.6) inset;
-  width:100%;max-width:400px;text-align:center;
-  animation:cardIn .8s var(--ease) both;overflow:hidden;
-}
+.card{position:relative;background:rgba(255,255,255,.98);backdrop-filter:blur(24px) saturate(160%);-webkit-backdrop-filter:blur(24px) saturate(160%);padding:40px 30px 32px;border-radius:var(--r-xl);border:1px solid var(--line-2);box-shadow:0 20px 60px rgba(15,23,42,.1);width:100%;max-width:400px;text-align:center;animation:cardIn .8s var(--ease) both;overflow:hidden}
 .card::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:var(--grad-rainbow)}
 @keyframes cardIn{from{opacity:0;transform:translateY(30px) scale(.96)}to{opacity:1;transform:translateY(0) scale(1)}}
 .logo-box{width:110px;height:110px;margin:0 auto 14px;filter:drop-shadow(0 10px 30px rgba(0,104,255,.25));animation:logoFloat 4s ease-in-out infinite}
 @keyframes logoFloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
 .logo-box svg{width:100%;height:100%}
-h1{
-  font-family:'Orbitron',sans-serif;
-  font-size:24px;font-weight:900;letter-spacing:2px;
-  background:var(--grad-brand);
-  -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;
-  margin-bottom:5px;text-transform:uppercase;
-}
+h1{font-family:'Orbitron',sans-serif;font-size:24px;font-weight:900;letter-spacing:2px;background:var(--grad-brand);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:5px;text-transform:uppercase}
 p.sub{color:var(--txt-2);margin-bottom:22px;font-size:10.5px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase}
 .input-wrap{position:relative;margin-bottom:6px}
-input[type=password]{
-  width:100%;padding:15px 46px 15px 16px;
-  border:2px solid var(--line-2);border-radius:var(--r-md);
-  font-size:14px;font-weight:600;background:#f8fafc;color:var(--txt-0);
-  letter-spacing:2px;transition:all .25s var(--ease);
-}
+input[type=password]{width:100%;padding:15px 46px 15px 16px;border:2px solid var(--line-2);border-radius:var(--r-md);font-size:14px;font-weight:600;background:#f8fafc;color:var(--txt-0);letter-spacing:2px;transition:all .25s var(--ease)}
 input[type=password]::placeholder{color:var(--txt-3);letter-spacing:normal;font-weight:500}
 input[type=password]:focus{outline:none;border-color:var(--brand-a);background:#fff;box-shadow:0 0 0 4px rgba(0,104,255,.1)}
-.pw-toggle{
-  position:absolute;right:5px;top:50%;transform:translateY(-50%);
-  width:36px;height:36px;border-radius:9px;border:none;background:transparent;
-  color:var(--txt-2);cursor:pointer;font-size:15px;
-  display:flex;align-items:center;justify-content:center;
-  transition:all .2s var(--ease);
-}
+.pw-toggle{position:absolute;right:5px;top:50%;transform:translateY(-50%);width:36px;height:36px;border-radius:9px;border:none;background:transparent;color:var(--txt-2);cursor:pointer;font-size:15px;display:flex;align-items:center;justify-content:center;transition:all .2s var(--ease)}
 .pw-toggle:hover{background:var(--bg-2);color:var(--brand-a)}
-button.submit{
-  width:100%;padding:15px;margin-top:14px;
-  background:var(--grad-brand);color:#fff;border:none;border-radius:var(--r-md);
-  font-size:13px;font-weight:900;letter-spacing:1.5px;cursor:pointer;text-transform:uppercase;
-  box-shadow:0 12px 30px rgba(0,104,255,.35);
-  transition:all .3s var(--ease);
-  position:relative;overflow:hidden;
-  display:flex;align-items:center;justify-content:center;gap:8px;
-}
+button.submit{width:100%;padding:15px;margin-top:14px;background:var(--grad-brand);color:#fff;border:none;border-radius:var(--r-md);font-size:13px;font-weight:900;letter-spacing:1.5px;cursor:pointer;text-transform:uppercase;box-shadow:0 12px 30px rgba(0,104,255,.35);transition:all .3s var(--ease);position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center;gap:8px}
 button.submit::before{content:'';position:absolute;inset:0;background:linear-gradient(120deg,transparent 30%,rgba(255,255,255,.5) 50%,transparent 70%);transform:translateX(-100%);transition:transform .8s var(--ease)}
 button.submit:hover::before{transform:translateX(100%)}
 button.submit:hover{transform:translateY(-2px);box-shadow:0 18px 40px rgba(0,104,255,.45)}
@@ -1334,12 +1208,12 @@ button.submit:active{transform:translateY(0) scale(.99)}
 <div class="card">
 <div class="logo-box">""" + LOGO_SVG + """</div>
 <h1>ALB FORGE</h1>
-<p class="sub">Universal • v32.0 • Multi-line</p>
+<p class="sub">Universal • v33.0 • True Multiline</p>
 {% if error %}<div class="error">⚠️ {{ error }}</div>{% endif %}
 <form method="POST" autocomplete="off">
 <div class="input-wrap">
 <input type="password" name="password" id="pw" placeholder="Nhập mật khẩu..." autofocus required>
-<button type="button" class="pw-toggle" onclick="tgPw()" aria-label="Hiện">👁️</button>
+<button type="button" class="pw-toggle" onclick="tgPw()">👁️</button>
 </div>
 <button type="submit" class="submit">🚀 Đăng nhập</button>
 </form>
@@ -1354,7 +1228,7 @@ function tgPw(){var p=document.getElementById('pw');p.type=p.type==='password'?'
 
 
 # ============================================================
-# HTML INDEX v32
+# HTML INDEX v33
 # ============================================================
 HTML_INDEX = """<!DOCTYPE html>
 <html lang="vi">
@@ -1362,77 +1236,31 @@ HTML_INDEX = """<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
-<title>ALB Forge v32.0</title>
+<title>ALB Forge v33.0</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@500;700&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
 <style>
 """ + CSS_ROOT + """
 
-/* HEADER */
-.header{
-  background:rgba(255,255,255,.85);
-  backdrop-filter:blur(20px) saturate(160%);
-  -webkit-backdrop-filter:blur(20px) saturate(160%);
-  color:var(--txt-0);padding:11px 15px;
-  padding-top:calc(11px + env(safe-area-inset-top,0px));
-  border-bottom:1px solid var(--line-2);
-  box-shadow:0 2px 12px rgba(15,23,42,.04);
-  position:sticky;top:0;z-index:100;
-}
+.header{background:rgba(255,255,255,.85);backdrop-filter:blur(20px) saturate(160%);-webkit-backdrop-filter:blur(20px) saturate(160%);color:var(--txt-0);padding:11px 15px;padding-top:calc(11px + env(safe-area-inset-top,0px));border-bottom:1px solid var(--line-2);box-shadow:0 2px 12px rgba(15,23,42,.04);position:sticky;top:0;z-index:100}
 .header::after{content:'';position:absolute;left:0;right:0;bottom:0;height:2px;background:var(--grad-rainbow)}
 .header-inner{max-width:1200px;margin:0 auto;display:flex;align-items:center;gap:10px}
-.logo-mini{
-  width:38px;height:38px;flex-shrink:0;
-  display:flex;align-items:center;justify-content:center;
-  background:#fff;border-radius:10px;
-  border:1px solid var(--line-2);padding:4px;
-  box-shadow:0 2px 8px rgba(15,23,42,.06);
-}
+.logo-mini{width:38px;height:38px;flex-shrink:0;display:flex;align-items:center;justify-content:center;background:#fff;border-radius:10px;border:1px solid var(--line-2);padding:4px;box-shadow:0 2px 8px rgba(15,23,42,.06)}
 .logo-mini svg{width:100%;height:100%}
 .header-info{flex:1;min-width:0}
-.header-info h1{
-  font-family:'Orbitron',sans-serif;
-  font-size:13.5px;font-weight:900;letter-spacing:1.2px;
-  background:var(--grad-brand);
-  -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;
-}
+.header-info h1{font-family:'Orbitron',sans-serif;font-size:13.5px;font-weight:900;letter-spacing:1.2px;background:var(--grad-brand);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
 .header-info p{font-size:8.5px;color:var(--txt-2);font-weight:700;margin-top:2px;letter-spacing:1.2px;text-transform:uppercase}
-.logout-btn{
-  display:inline-flex;align-items:center;gap:5px;
-  background:#fff;color:var(--txt-1);
-  border:1px solid var(--line-2);
-  padding:7px 11px;border-radius:10px;
-  font-size:10.5px;font-weight:800;cursor:pointer;letter-spacing:.4px;
-  transition:all .25s var(--ease);
-}
+.logout-btn{display:inline-flex;align-items:center;gap:5px;background:#fff;color:var(--txt-1);border:1px solid var(--line-2);padding:7px 11px;border-radius:10px;font-size:10.5px;font-weight:800;cursor:pointer;letter-spacing:.4px;transition:all .25s var(--ease)}
 .logout-btn:hover{background:#fef2f2;border-color:rgba(239,68,68,.4);color:#dc2626}
 .logout-btn svg{width:13px;height:13px}
 
 .container{max-width:1200px;margin:0 auto;padding:12px}
-.tabs{
-  display:grid;grid-template-columns:repeat(4,1fr);gap:5px;
-  margin-bottom:12px;padding:5px;
-  background:var(--bg-glass);backdrop-filter:blur(18px);
-  border-radius:var(--r-lg);border:1px solid var(--line-2);
-  box-shadow:0 4px 16px rgba(15,23,42,.05);
-}
-.tab{
-  position:relative;padding:10px 4px;border-radius:10px;cursor:pointer;
-  font-size:9.5px;font-weight:800;letter-spacing:.5px;
-  text-align:center;color:var(--txt-2);
-  display:flex;flex-direction:column;align-items:center;gap:4px;
-  user-select:none;background:transparent;border:none;
-  transition:all .3s var(--ease);isolation:isolate;text-transform:uppercase;
-}
+.tabs{display:grid;grid-template-columns:repeat(4,1fr);gap:5px;margin-bottom:12px;padding:5px;background:var(--bg-glass);backdrop-filter:blur(18px);border-radius:var(--r-lg);border:1px solid var(--line-2);box-shadow:0 4px 16px rgba(15,23,42,.05)}
+.tab{position:relative;padding:10px 4px;border-radius:10px;cursor:pointer;font-size:9.5px;font-weight:800;letter-spacing:.5px;text-align:center;color:var(--txt-2);display:flex;flex-direction:column;align-items:center;gap:4px;user-select:none;background:transparent;border:none;transition:all .3s var(--ease);isolation:isolate;text-transform:uppercase}
 .tab svg{width:18px;height:18px;transition:transform .3s var(--ease-2)}
 .tab:hover svg{transform:scale(1.15)}
-.tab::before{
-  content:'';position:absolute;inset:0;border-radius:inherit;
-  background:var(--grad-brand);opacity:0;transform:scale(.92);
-  transition:all .3s var(--ease);z-index:-1;
-  box-shadow:0 6px 16px rgba(0,104,255,.3);
-}
+.tab::before{content:'';position:absolute;inset:0;border-radius:inherit;background:var(--grad-brand);opacity:0;transform:scale(.92);transition:all .3s var(--ease);z-index:-1;box-shadow:0 6px 16px rgba(0,104,255,.3)}
 .tab.active{color:#fff;transform:translateY(-2px)}
 .tab.active::before{opacity:1;transform:scale(1)}
 
@@ -1440,109 +1268,46 @@ HTML_INDEX = """<!DOCTYPE html>
 .panel.active{display:block}
 @keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
 
-.card{
-  position:relative;background:#fff;
-  padding:14px;border-radius:var(--r-lg);
-  border:1px solid var(--line-2);
-  box-shadow:0 4px 16px rgba(15,23,42,.05);
-  margin-bottom:12px;transition:all .3s var(--ease);
-}
+.card{position:relative;background:#fff;padding:14px;border-radius:var(--r-lg);border:1px solid var(--line-2);box-shadow:0 4px 16px rgba(15,23,42,.05);margin-bottom:12px;transition:all .3s var(--ease)}
 .card:hover{border-color:var(--line-3);box-shadow:0 8px 24px rgba(15,23,42,.08)}
-.card h2{
-  font-size:11.5px;font-weight:900;letter-spacing:.5px;
-  margin-bottom:12px;display:flex;align-items:center;gap:8px;
-  color:var(--txt-0);text-transform:uppercase;
-}
-.card h2 .bi{
-  width:26px;height:26px;border-radius:8px;
-  background:var(--grad-brand);
-  display:flex;align-items:center;justify-content:center;
-  font-size:12px;color:#fff;
-  box-shadow:0 4px 10px rgba(0,104,255,.3);
-}
+.card h2{font-size:11.5px;font-weight:900;letter-spacing:.5px;margin-bottom:12px;display:flex;align-items:center;gap:8px;color:var(--txt-0);text-transform:uppercase}
+.card h2 .bi{width:26px;height:26px;border-radius:8px;background:var(--grad-brand);display:flex;align-items:center;justify-content:center;font-size:12px;color:#fff;box-shadow:0 4px 10px rgba(0,104,255,.3)}
 
 .form-group{margin-bottom:11px}
-.form-group label{
-  display:block;margin-bottom:5px;
-  font-size:9.5px;font-weight:800;color:var(--txt-2);
-  text-transform:uppercase;letter-spacing:.8px;
-}
-.form-group input,.form-group textarea,.form-group select{
-  width:100%;padding:11px 13px;
-  border:2px solid var(--line-2);border-radius:11px;
-  font-size:12.5px;font-weight:500;
-  background:#f8fafc;color:var(--txt-0);
-  transition:all .25s var(--ease);
-}
+.form-group label{display:block;margin-bottom:5px;font-size:9.5px;font-weight:800;color:var(--txt-2);text-transform:uppercase;letter-spacing:.8px}
+.form-group input,.form-group textarea,.form-group select{width:100%;padding:11px 13px;border:2px solid var(--line-2);border-radius:11px;font-size:12.5px;font-weight:500;background:#f8fafc;color:var(--txt-0);transition:all .25s var(--ease)}
 .form-group input::placeholder,.form-group textarea::placeholder{color:var(--txt-3)}
-.form-group input:focus,.form-group textarea:focus,.form-group select:focus{
-  outline:none;border-color:var(--brand-a);background:#fff;
-  box-shadow:0 0 0 4px rgba(0,104,255,.08);
-}
-.form-group textarea{
-  min-height:88px;resize:vertical;
-  font-family:'JetBrains Mono',ui-monospace,monospace;
-  font-size:11.5px;line-height:1.55;
-}
-.form-group select{
-  appearance:none;-webkit-appearance:none;
-  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='11' height='11' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
-  background-repeat:no-repeat;background-position:right 12px center;
-  padding-right:34px;cursor:pointer;
-}
+.form-group input:focus,.form-group textarea:focus,.form-group select:focus{outline:none;border-color:var(--brand-a);background:#fff;box-shadow:0 0 0 4px rgba(0,104,255,.08)}
+.form-group textarea{min-height:88px;resize:vertical;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11.5px;line-height:1.55}
+.form-group select{appearance:none;-webkit-appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='11' height='11' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");background-repeat:no-repeat;background-position:right 12px center;padding-right:34px;cursor:pointer}
 
-.btn-circle{
-  width:46px;height:46px;border-radius:50%;border:none;cursor:pointer;
-  display:inline-flex;align-items:center;justify-content:center;
-  color:#fff;transition:all .3s var(--ease-2);
-  position:relative;overflow:hidden;margin:3px;
-  isolation:isolate;
-}
+.btn-circle{width:46px;height:46px;border-radius:50%;border:none;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;color:#fff;transition:all .3s var(--ease-2);position:relative;overflow:hidden;margin:3px;isolation:isolate}
 .btn-circle svg{width:19px;height:19px}
-.btn-circle::before{
-  content:'';position:absolute;inset:0;border-radius:inherit;
-  background:linear-gradient(120deg,transparent 30%,rgba(255,255,255,.55) 50%,transparent 70%);
-  transform:translateX(-120%);transition:transform .7s var(--ease);
-}
+.btn-circle::before{content:'';position:absolute;inset:0;border-radius:inherit;background:linear-gradient(120deg,transparent 30%,rgba(255,255,255,.55) 50%,transparent 70%);transform:translateX(-120%);transition:transform .7s var(--ease)}
 .btn-circle:hover{transform:translateY(-3px) scale(1.05);filter:brightness(1.05)}
 .btn-circle:hover::before{transform:translateX(120%)}
 .btn-circle:active{transform:translateY(-1px) scale(.98)}
-.btn-circle:disabled{opacity:.4;cursor:not-allowed;filter:grayscale(.6)}
 .btn-circle.primary{background:var(--grad-brand);box-shadow:0 6px 18px rgba(0,104,255,.35)}
 .btn-circle.danger{background:var(--grad-err);box-shadow:0 6px 18px rgba(239,68,68,.35)}
 .btn-circle.success{background:var(--grad-ok);box-shadow:0 6px 18px rgba(16,185,129,.35)}
 .btn-circle.warning{background:var(--grad-warn);box-shadow:0 6px 18px rgba(245,158,11,.35)}
 .btn-circle.info{background:var(--grad-info);box-shadow:0 6px 18px rgba(59,130,246,.35)}
-.btn-circle.purple{background:var(--grad-purple);box-shadow:0 6px 18px rgba(139,92,246,.35)}
 .btn-circle.small{width:32px;height:32px}
 .btn-circle.small svg{width:14px;height:14px}
 .btn-circle.big{width:64px;height:64px}
 .btn-circle.big svg{width:25px;height:25px}
 
-.btn-rect{
-  padding:10px 16px;border:none;border-radius:11px;cursor:pointer;
-  font-size:11px;font-weight:900;letter-spacing:.5px;color:#fff;
-  text-transform:uppercase;
-  display:inline-flex;align-items:center;gap:6px;
-  box-shadow:0 4px 14px rgba(15,23,42,.15);
-  transition:all .3s var(--ease-2);
-}
+.btn-rect{padding:10px 16px;border:none;border-radius:11px;cursor:pointer;font-size:11px;font-weight:900;letter-spacing:.5px;color:#fff;text-transform:uppercase;display:inline-flex;align-items:center;gap:6px;box-shadow:0 4px 14px rgba(15,23,42,.15);transition:all .3s var(--ease-2)}
 .btn-rect:hover{transform:translateY(-2px);filter:brightness(1.05)}
 .btn-rect:active{transform:translateY(-1px) scale(.98)}
 .btn-rect.primary{background:var(--grad-brand)}
 .btn-rect.danger{background:var(--grad-err)}
 .btn-rect.success{background:var(--grad-ok)}
 .btn-rect.info{background:var(--grad-info)}
-.btn-rect.purple{background:var(--grad-purple)}
 .btn-rect.full{width:100%;justify-content:center}
 
 .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:7px;margin-bottom:12px}
-.stat{
-  position:relative;overflow:hidden;
-  background:#f8fafc;
-  padding:11px 10px;border-radius:var(--r-md);
-  border:1px solid var(--line-2);
-}
+.stat{position:relative;overflow:hidden;background:#f8fafc;padding:11px 10px;border-radius:var(--r-md);border:1px solid var(--line-2)}
 .stat::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--grad-rainbow)}
 .stat .label{font-size:8.5px;color:var(--txt-2);margin-bottom:5px;text-transform:uppercase;letter-spacing:.9px;font-weight:800}
 .stat .value{font-size:19px;font-weight:900;color:var(--txt-0);line-height:1;font-variant-numeric:tabular-nums;font-family:'Orbitron',sans-serif}
@@ -1550,25 +1315,13 @@ HTML_INDEX = """<!DOCTYPE html>
 .table-wrap{overflow-x:auto;border-radius:var(--r-md);border:1px solid var(--line-2);background:#fff}
 .table{width:100%;border-collapse:collapse}
 .table th,.table td{padding:9px 7px;text-align:left;font-size:10.5px;border-bottom:1px solid var(--line);white-space:nowrap}
-.table th{
-  background:#f8fafc;font-weight:800;color:var(--txt-2);
-  text-transform:uppercase;font-size:8.5px;letter-spacing:.9px;
-  position:sticky;top:0;z-index:1;
-}
+.table th{background:#f8fafc;font-weight:800;color:var(--txt-2);text-transform:uppercase;font-size:8.5px;letter-spacing:.9px;position:sticky;top:0;z-index:1}
 .table tbody tr{transition:background .2s var(--ease)}
 .table tbody tr:hover{background:#f8fafc}
 .table tbody tr:last-child td{border-bottom:none}
-.table td code{
-  background:#eef2f8;padding:2px 6px;border-radius:5px;
-  font-size:9.5px;font-family:'JetBrains Mono',monospace;
-  color:var(--brand-a);font-weight:700;border:1px solid var(--line-2);
-}
+.table td code{background:#eef2f8;padding:2px 6px;border-radius:5px;font-size:9.5px;font-family:'JetBrains Mono',monospace;color:var(--brand-a);font-weight:700;border:1px solid var(--line-2)}
 
-.badge{
-  display:inline-flex;align-items:center;gap:4px;
-  padding:3px 7px;border-radius:20px;
-  font-size:9px;font-weight:800;letter-spacing:.3px;
-}
+.badge{display:inline-flex;align-items:center;gap:4px;padding:3px 7px;border-radius:20px;font-size:9px;font-weight:800;letter-spacing:.3px}
 .badge::before{content:'';width:5px;height:5px;border-radius:50%;background:currentColor}
 .badge-ok{background:#d1fae5;color:#065f46}
 .badge-err{background:#fee2e2;color:#991b1b}
@@ -1579,145 +1332,52 @@ HTML_INDEX = """<!DOCTYPE html>
 .badge-mode-nhay{background:#fce7f3;color:#9d174d}
 
 .box-list{max-height:320px;overflow-y:auto;border:1px solid var(--line-2);border-radius:var(--r-md);padding:7px;background:#f8fafc}
-.box-item{
-  padding:10px;border-radius:10px;background:#fff;
-  margin-bottom:5px;cursor:pointer;border:1px solid var(--line-2);
-  display:flex;align-items:center;gap:9px;font-size:12px;
-  transition:all .25s var(--ease);
-}
+.box-item{padding:10px;border-radius:10px;background:#fff;margin-bottom:5px;cursor:pointer;border:1px solid var(--line-2);display:flex;align-items:center;gap:9px;font-size:12px;transition:all .25s var(--ease)}
 .box-item:hover{border-color:var(--brand-a);transform:translateX(2px);box-shadow:0 3px 10px rgba(0,104,255,.1)}
 .box-item.selected{border-color:var(--ok);background:#ecfdf5}
-.box-item .check{
-  width:18px;height:18px;border:2px solid var(--line-3);border-radius:5px;
-  display:flex;align-items:center;justify-content:center;
-  font-size:10px;color:transparent;font-weight:900;flex-shrink:0;
-  transition:all .25s var(--ease);
-}
+.box-item .check{width:18px;height:18px;border:2px solid var(--line-3);border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:10px;color:transparent;font-weight:900;flex-shrink:0;transition:all .25s var(--ease)}
 .box-item.selected .check{background:var(--ok);border-color:var(--ok);color:#fff}
 .box-item .info{flex:1;min-width:0}
 .box-item .name{font-weight:700;font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--txt-0)}
 .box-item .meta{font-size:9.5px;color:var(--txt-3);font-family:'JetBrains Mono',monospace;margin-top:2px}
 
-.file-item{
-  display:flex;align-items:center;gap:9px;
-  padding:10px;border-radius:11px;
-  background:#f8fafc;margin-bottom:7px;
-  border:1px solid var(--line-2);
-  transition:all .25s var(--ease);
-}
+.file-item{display:flex;align-items:center;gap:9px;padding:10px;border-radius:11px;background:#f8fafc;margin-bottom:7px;border:1px solid var(--line-2);transition:all .25s var(--ease)}
 .file-item:hover{border-color:var(--brand-a);box-shadow:0 3px 10px rgba(0,104,255,.08)}
 .file-item .info{flex:1;min-width:0}
 .file-item .name{font-weight:700;font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--txt-0)}
 .file-item .meta{font-size:9.5px;color:var(--txt-3);margin-top:2px}
 
 .chip-group{display:flex;flex-wrap:wrap;gap:5px;margin-top:5px}
-.chip{
-  position:relative;padding:7px 13px;
-  background:#f1f5f9;color:var(--txt-2);
-  border-radius:20px;font-size:10.5px;font-weight:800;letter-spacing:.3px;
-  cursor:pointer;user-select:none;border:1px solid var(--line-2);
-  transition:all .25s var(--ease-2);
-}
+.chip{position:relative;padding:7px 13px;background:#f1f5f9;color:var(--txt-2);border-radius:20px;font-size:10.5px;font-weight:800;letter-spacing:.3px;cursor:pointer;user-select:none;border:1px solid var(--line-2);transition:all .25s var(--ease-2)}
 .chip:hover{background:#e2e8f0;color:var(--brand-a);transform:translateY(-1px)}
-.chip.active{
-  background:var(--grad-brand);color:#fff;border-color:transparent;
-  box-shadow:0 4px 14px rgba(0,104,255,.35);
-  transform:translateY(-2px);
-}
+.chip.active{background:var(--grad-brand);color:#fff;border-color:transparent;box-shadow:0 4px 14px rgba(0,104,255,.35);transform:translateY(-2px)}
 
 .color-mode-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:6px}
-.color-mode{
-  padding:9px 6px;border-radius:10px;cursor:pointer;
-  background:#f8fafc;border:1px solid var(--line-2);
-  text-align:center;font-size:9.5px;font-weight:800;
-  color:var(--txt-2);user-select:none;text-transform:uppercase;
-  letter-spacing:.4px;transition:all .25s var(--ease);
-}
+.color-mode{padding:9px 6px;border-radius:10px;cursor:pointer;background:#f8fafc;border:1px solid var(--line-2);text-align:center;font-size:9.5px;font-weight:800;color:var(--txt-2);user-select:none;text-transform:uppercase;letter-spacing:.4px;transition:all .25s var(--ease)}
 .color-mode:hover{border-color:var(--brand-a);color:var(--brand-a);transform:translateY(-2px)}
-.color-mode.active{
-  background:var(--grad-brand);color:#fff;border-color:transparent;
-  box-shadow:0 4px 14px rgba(0,104,255,.35);
-  transform:translateY(-2px);
-}
-.color-palette{
-  display:grid;grid-template-columns:repeat(6,1fr);gap:6px;margin-top:8px;
-  display:none;
-}
+.color-mode.active{background:var(--grad-brand);color:#fff;border-color:transparent;box-shadow:0 4px 14px rgba(0,104,255,.35);transform:translateY(-2px)}
+.color-palette{display:grid;grid-template-columns:repeat(6,1fr);gap:6px;margin-top:8px;display:none}
 .color-palette.show{display:grid}
-.color-swatch{
-  position:relative;aspect-ratio:1;border-radius:9px;cursor:pointer;
-  border:2px solid transparent;
-  transition:all .25s var(--ease-2);
-  overflow:hidden;
-}
-.color-swatch::after{
-  content:'';position:absolute;inset:0;border-radius:inherit;
-  box-shadow:inset 0 -4px 8px rgba(0,0,0,.18),inset 0 2px 4px rgba(255,255,255,.25);
-}
+.color-swatch{position:relative;aspect-ratio:1;border-radius:9px;cursor:pointer;border:2px solid transparent;transition:all .25s var(--ease-2);overflow:hidden}
+.color-swatch::after{content:'';position:absolute;inset:0;border-radius:inherit;box-shadow:inset 0 -4px 8px rgba(0,0,0,.18),inset 0 2px 4px rgba(255,255,255,.25)}
 .color-swatch:hover{transform:scale(1.08) translateY(-2px)}
-.color-swatch.active{
-  border-color:#fff;
-  box-shadow:0 0 0 3px rgba(0,104,255,.5),0 6px 16px rgba(0,104,255,.3);
-  transform:scale(1.1);
-}
-.color-swatch .cname{
-  position:absolute;bottom:2px;left:0;right:0;
-  font-size:7px;font-weight:900;color:#fff;
-  text-shadow:0 1px 2px rgba(0,0,0,.85);
-  text-align:center;letter-spacing:.3px;z-index:1;
-}
-.color-preview{
-  margin-top:8px;padding:9px 12px;border-radius:10px;
-  background:#f8fafc;border:1px dashed var(--line-3);
-  font-size:12px;font-weight:700;
-  font-family:'JetBrains Mono',monospace;
-  text-align:center;letter-spacing:.3px;
-  transition:color .25s var(--ease);
-}
+.color-swatch.active{border-color:#fff;box-shadow:0 0 0 3px rgba(0,104,255,.5),0 6px 16px rgba(0,104,255,.3);transform:scale(1.1)}
+.color-swatch .cname{position:absolute;bottom:2px;left:0;right:0;font-size:7px;font-weight:900;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.85);text-align:center;letter-spacing:.3px;z-index:1}
+.color-preview{margin-top:8px;padding:9px 12px;border-radius:10px;background:#f8fafc;border:1px dashed var(--line-3);font-size:12px;font-weight:700;font-family:'JetBrains Mono',monospace;text-align:center;letter-spacing:.3px;transition:color .25s var(--ease)}
 
 .toggle-group{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:11px}
-.toggle{
-  position:relative;padding:11px 9px;
-  border:1px solid var(--line-2);border-radius:var(--r-md);
-  cursor:pointer;text-align:center;
-  font-weight:800;font-size:10px;letter-spacing:.4px;
-  background:#f8fafc;color:var(--txt-2);
-  user-select:none;isolation:isolate;text-transform:uppercase;
-  transition:all .3s var(--ease-2);
-}
-.toggle::before{
-  content:'';position:absolute;inset:-1px;border-radius:inherit;
-  background:var(--grad-brand);opacity:0;transform:scale(.94);
-  transition:all .3s var(--ease);z-index:-1;
-  box-shadow:0 4px 14px rgba(0,104,255,.3);
-}
+.toggle{position:relative;padding:11px 9px;border:1px solid var(--line-2);border-radius:var(--r-md);cursor:pointer;text-align:center;font-weight:800;font-size:10px;letter-spacing:.4px;background:#f8fafc;color:var(--txt-2);user-select:none;isolation:isolate;text-transform:uppercase;transition:all .3s var(--ease-2)}
+.toggle::before{content:'';position:absolute;inset:-1px;border-radius:inherit;background:var(--grad-brand);opacity:0;transform:scale(.94);transition:all .3s var(--ease);z-index:-1;box-shadow:0 4px 14px rgba(0,104,255,.3)}
 .toggle.active{color:#fff;border-color:transparent;transform:translateY(-2px)}
 .toggle.active::before{opacity:1;transform:scale(1)}
 
 .mode-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-top:6px}
-.mode-card{
-  position:relative;padding:12px 7px;border-radius:13px;cursor:pointer;
-  background:#f8fafc;border:1px solid var(--line-2);
-  text-align:center;transition:all .3s var(--ease-2);
-  isolation:isolate;overflow:hidden;
-}
-.mode-card::before{
-  content:'';position:absolute;inset:0;border-radius:inherit;
-  background:var(--grad-brand);opacity:0;
-  transition:opacity .3s var(--ease);z-index:-1;
-}
+.mode-card{position:relative;padding:12px 7px;border-radius:13px;cursor:pointer;background:#f8fafc;border:1px solid var(--line-2);text-align:center;transition:all .3s var(--ease-2);isolation:isolate;overflow:hidden}
+.mode-card::before{content:'';position:absolute;inset:0;border-radius:inherit;background:var(--grad-brand);opacity:0;transition:opacity .3s var(--ease);z-index:-1}
 .mode-card:hover{transform:translateY(-3px);border-color:var(--brand-a)}
-.mode-card.active{
-  border-color:transparent;color:#fff;
-  box-shadow:0 8px 22px rgba(0,104,255,.35);
-  transform:translateY(-3px);
-}
+.mode-card.active{border-color:transparent;color:#fff;box-shadow:0 8px 22px rgba(0,104,255,.35);transform:translateY(-3px)}
 .mode-card.active::before{opacity:1}
-.mode-card .mc-icon{
-  width:32px;height:32px;margin:0 auto 6px;
-  display:flex;align-items:center;justify-content:center;
-  color:var(--txt-1);
-}
+.mode-card .mc-icon{width:32px;height:32px;margin:0 auto 6px;display:flex;align-items:center;justify-content:center;color:var(--txt-1)}
 .mode-card .mc-icon svg{width:22px;height:22px}
 .mode-card.active .mc-icon{color:#fff}
 .mode-card .mc-title{font-size:10.5px;font-weight:900;letter-spacing:.5px;color:var(--txt-0);margin-bottom:3px;text-transform:uppercase}
@@ -1727,37 +1387,17 @@ HTML_INDEX = """<!DOCTYPE html>
 
 .tag-selector{max-height:220px;overflow-y:auto;border:1px solid var(--line-2);border-radius:11px;padding:7px;background:#f8fafc;display:none;margin-top:7px}
 .tag-selector.show{display:block}
-.tag-member{
-  padding:8px;border-radius:8px;background:#fff;margin-bottom:4px;cursor:pointer;
-  border:1px solid var(--line-2);font-size:11.5px;
-  display:flex;align-items:center;gap:8px;transition:all .2s var(--ease);
-}
+.tag-member{padding:8px;border-radius:8px;background:#fff;margin-bottom:4px;cursor:pointer;border:1px solid var(--line-2);font-size:11.5px;display:flex;align-items:center;gap:8px;transition:all .2s var(--ease)}
 .tag-member:hover{border-color:var(--purple);background:#f3e8ff}
 .tag-member.selected{border-color:var(--purple);background:#f3e8ff}
-.tag-member .check{
-  width:15px;height:15px;border:2px solid var(--line-3);border-radius:4px;
-  display:flex;align-items:center;justify-content:center;
-  font-size:9px;color:transparent;font-weight:900;flex-shrink:0;
-  transition:all .2s var(--ease);
-}
+.tag-member .check{width:15px;height:15px;border:2px solid var(--line-3);border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:9px;color:transparent;font-weight:900;flex-shrink:0;transition:all .2s var(--ease)}
 .tag-member.selected .check{background:var(--purple);border-color:var(--purple);color:#fff}
 .tag-member .tm-body{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
 .tag-member .tm-name{color:var(--txt-0);font-weight:700;font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tag-member .tm-sub{color:var(--txt-3);font-size:9px;font-family:'JetBrains Mono',monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
-#toast-stack{
-  position:fixed;top:calc(14px + env(safe-area-inset-top,0px));right:12px;
-  z-index:9999;display:flex;flex-direction:column;gap:8px;
-  max-width:360px;width:calc(100% - 24px);pointer-events:none;
-}
-.toast{
-  pointer-events:auto;position:relative;overflow:hidden;
-  padding:12px 13px 12px 50px;border-radius:13px;
-  background:#fff;
-  box-shadow:0 12px 32px rgba(15,23,42,.15),0 0 0 1px rgba(15,23,42,.04);
-  display:flex;flex-direction:column;gap:3px;
-  animation:toastIn .4s var(--ease-2) both;
-}
+#toast-stack{position:fixed;top:calc(14px + env(safe-area-inset-top,0px));right:12px;z-index:9999;display:flex;flex-direction:column;gap:8px;max-width:360px;width:calc(100% - 24px);pointer-events:none}
+.toast{pointer-events:auto;position:relative;overflow:hidden;padding:12px 13px 12px 50px;border-radius:13px;background:#fff;box-shadow:0 12px 32px rgba(15,23,42,.15);display:flex;flex-direction:column;gap:3px;animation:toastIn .4s var(--ease-2) both}
 .toast.removing{animation:toastOut .28s var(--ease) both}
 @keyframes toastIn{from{opacity:0;transform:translateX(120%) scale(.9)}to{opacity:1;transform:translateX(0) scale(1)}}
 @keyframes toastOut{from{opacity:1;transform:translateX(0) scale(1)}to{opacity:0;transform:translateX(120%) scale(.9)}}
@@ -1766,12 +1406,7 @@ HTML_INDEX = """<!DOCTYPE html>
 .toast.error::before{background:var(--grad-err)}
 .toast.warning::before{background:var(--grad-warn)}
 .toast.info::before{background:var(--grad-info)}
-.toast .t-icon{
-  position:absolute;left:11px;top:50%;transform:translateY(-50%);
-  width:30px;height:30px;border-radius:9px;
-  display:flex;align-items:center;justify-content:center;
-  color:#fff;box-shadow:0 4px 10px rgba(15,23,42,.18);
-}
+.toast .t-icon{position:absolute;left:11px;top:50%;transform:translateY(-50%);width:30px;height:30px;border-radius:9px;display:flex;align-items:center;justify-content:center;color:#fff;box-shadow:0 4px 10px rgba(15,23,42,.18)}
 .toast .t-icon svg{width:16px;height:16px}
 .toast.success .t-icon{background:var(--grad-ok)}
 .toast.error .t-icon{background:var(--grad-err)}
@@ -1781,31 +1416,16 @@ HTML_INDEX = """<!DOCTYPE html>
 .toast .t-msg{font-size:10.5px;font-weight:600;color:var(--txt-2);line-height:1.45}
 .toast .t-msg code{background:#eef2f8;color:var(--brand-a);padding:1px 5px;border-radius:4px;font-size:10px;font-family:'JetBrains Mono',monospace;font-weight:700}
 .toast .t-progress{position:absolute;left:0;right:0;bottom:0;height:2px;background:rgba(15,23,42,.05);overflow:hidden}
-.toast .t-progress::after{
-  content:'';display:block;height:100%;width:100%;
-  background:currentColor;opacity:.8;
-  transform-origin:left;animation:toastBar linear forwards;
-}
+.toast .t-progress::after{content:'';display:block;height:100%;width:100%;background:currentColor;opacity:.8;transform-origin:left;animation:toastBar linear forwards}
 .toast.success .t-progress::after{color:var(--ok)}
 .toast.error .t-progress::after{color:var(--err)}
 .toast.warning .t-progress::after{color:var(--warn)}
 .toast.info .t-progress::after{color:var(--info)}
 @keyframes toastBar{from{transform:scaleX(1)}to{transform:scaleX(0)}}
-.toast .t-close{
-  position:absolute;top:6px;right:6px;
-  width:20px;height:20px;border-radius:5px;border:none;
-  background:transparent;color:var(--txt-3);cursor:pointer;
-  font-size:11px;display:flex;align-items:center;justify-content:center;
-  transition:all .2s var(--ease);
-}
+.toast .t-close{position:absolute;top:6px;right:6px;width:20px;height:20px;border-radius:5px;border:none;background:transparent;color:var(--txt-3);cursor:pointer;font-size:11px;display:flex;align-items:center;justify-content:center;transition:all .2s var(--ease)}
 .toast .t-close:hover{background:#f1f5f9;color:var(--txt-0)}
 
-.hint{
-  font-size:10px;color:var(--txt-2);line-height:1.55;
-  padding:9px 11px;background:#eff6ff;
-  border-radius:9px;border-left:3px solid var(--brand-a);
-  margin-top:9px;
-}
+.hint{font-size:10px;color:var(--txt-2);line-height:1.55;padding:9px 11px;background:#eff6ff;border-radius:9px;border-left:3px solid var(--brand-a);margin-top:9px}
 .hint b{color:var(--brand-a);font-weight:800}
 
 @media (max-width:640px){
@@ -1828,13 +1448,8 @@ HTML_INDEX = """<!DOCTYPE html>
   .color-mode-grid{grid-template-columns:repeat(2,1fr)}
   .color-palette{grid-template-columns:repeat(4,1fr)}
 }
-
 @media (prefers-reduced-motion:reduce){
-  *,*::before,*::after{
-    animation-duration:.001ms !important;
-    animation-iteration-count:1 !important;
-    transition-duration:.001ms !important;
-  }
+  *,*::before,*::after{animation-duration:.001ms !important;animation-iteration-count:1 !important;transition-duration:.001ms !important}
 }
 </style>
 </head>
@@ -1845,15 +1460,11 @@ HTML_INDEX = """<!DOCTYPE html>
     <div class="logo-mini">""" + LOGO_SVG + """</div>
     <div class="header-info">
       <h1>ALB FORGE</h1>
-      <p>Universal • v32.0 • Multi-line</p>
+      <p>Universal • v33.0 • True Multiline</p>
     </div>
     <button class="logout-btn" onclick="location.href='/logout'">
       <span>Thoát</span>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
-        <polyline points="16 17 21 12 16 7"/>
-        <line x1="21" y1="12" x2="9" y2="12"/>
-      </svg>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
     </button>
   </div>
 </div>
@@ -1863,33 +1474,18 @@ HTML_INDEX = """<!DOCTYPE html>
 <div class="container">
 
 <div class="tabs">
-  <button type="button" class="tab active" data-tab="accounts">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-    <div>Acc</div>
-  </button>
-  <button type="button" class="tab" data-tab="boxes">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
-    <div>Box</div>
-  </button>
-  <button type="button" class="tab" data-tab="files">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-    <div>File</div>
-  </button>
-  <button type="button" class="tab" data-tab="spam">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
-    <div>Spam</div>
-  </button>
+  <button type="button" class="tab active" data-tab="accounts"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg><div>Acc</div></button>
+  <button type="button" class="tab" data-tab="boxes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg><div>Box</div></button>
+  <button type="button" class="tab" data-tab="files"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg><div>File</div></button>
+  <button type="button" class="tab" data-tab="spam"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg><div>Spam</div></button>
 </div>
 
-<!-- ACCOUNTS -->
 <div class="panel active" id="panel-accounts">
   <div class="card">
     <h2><span class="bi">+</span> Thêm tài khoản</h2>
     <div class="form-group"><label>Tên gợi nhớ</label><input id="add-label" placeholder="acc1"></div>
     <div class="form-group"><label>IMEI</label><input id="add-imei" placeholder="000000000000000"></div>
-    <div class="form-group"><label>Cookie (JSON)</label>
-      <textarea id="add-cookies" placeholder='{"zpw_sek":"...","zpw_ver":"645","zpw_type":"30"}'></textarea>
-    </div>
+    <div class="form-group"><label>Cookie (JSON)</label><textarea id="add-cookies" placeholder='{"zpw_sek":"...","zpw_ver":"645","zpw_type":"30"}'></textarea></div>
     <button type="button" class="btn-rect primary full" onclick="addAccount()">💾 Thêm tài khoản</button>
   </div>
   <div class="card">
@@ -1899,48 +1495,28 @@ HTML_INDEX = """<!DOCTYPE html>
       <div class="stat"><div class="label">Active</div><div class="value" id="stat-active">0</div></div>
       <div class="stat"><div class="label">Sent</div><div class="value" id="stat-sent">0</div></div>
     </div>
-    <div class="table-wrap">
-      <table class="table">
-        <thead><tr>
-          <th>ID</th><th>Tên</th><th>Tên thật</th><th>UID</th><th>OK/Lỗi</th><th>Risk</th><th></th>
-        </tr></thead>
-        <tbody id="accounts-tbody"></tbody>
-      </table>
-    </div>
+    <div class="table-wrap"><table class="table"><thead><tr><th>ID</th><th>Tên</th><th>Tên thật</th><th>UID</th><th>OK/Lỗi</th><th>Risk</th><th></th></tr></thead><tbody id="accounts-tbody"></tbody></table></div>
   </div>
 </div>
 
-<!-- BOXES -->
 <div class="panel" id="panel-boxes">
   <div class="card">
     <h2><span class="bi">▦</span> Load Box</h2>
-    <div class="form-group">
-      <label>Chọn tài khoản</label>
-      <select id="load-acc-select"><option value="">-- Chọn --</option></select>
-    </div>
+    <div class="form-group"><label>Chọn tài khoản</label><select id="load-acc-select"><option value="">-- Chọn --</option></select></div>
     <div style="text-align:center;">
-      <button type="button" class="btn-circle primary" onclick="loadBoxes()" title="Load">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-      </button>
-      <button type="button" class="btn-circle success" onclick="selectAllBoxes()" title="Chọn tất cả">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-      </button>
-      <button type="button" class="btn-circle danger" onclick="clearAllBoxes()" title="Bỏ chọn">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-      </button>
+      <button type="button" class="btn-circle primary" onclick="loadBoxes()" title="Load"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>
+      <button type="button" class="btn-circle success" onclick="selectAllBoxes()" title="Chọn tất cả"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></button>
+      <button type="button" class="btn-circle danger" onclick="clearAllBoxes()" title="Bỏ chọn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
     </div>
     <div style="margin-top:11px;">
       <div style="display:flex;justify-content:space-between;margin-bottom:5px;font-size:10px;">
         <b style="color:var(--txt-2);text-transform:uppercase;letter-spacing:.9px;">Đã chọn: <span id="selected-count" style="color:var(--brand-a);font-weight:900;">0</span></b>
       </div>
-      <div class="box-list" id="box-list">
-        <div style="text-align:center;padding:18px;color:var(--txt-3);font-size:11px;">Chưa load</div>
-      </div>
+      <div class="box-list" id="box-list"><div style="text-align:center;padding:18px;color:var(--txt-3);font-size:11px;">Chưa load</div></div>
     </div>
   </div>
 </div>
 
-<!-- FILES -->
 <div class="panel" id="panel-files">
   <div class="card">
     <h2><span class="bi">↑</span> Upload file</h2>
@@ -1948,8 +1524,8 @@ HTML_INDEX = """<!DOCTYPE html>
     <button type="button" class="btn-rect primary full" onclick="uploadFile()">📤 Upload</button>
     <div class="hint">
       💡 Mỗi khối ngăn bởi <b>dòng trống</b> = 1 tin nhắn.<br>
-      <b>Treo ngôn</b>: 4 dòng → gửi trong 1 tin (màu xoay vòng vẫn gộp bubble).<br>
-      <b>Treo nhây</b>: 4 dòng → 4 tin riêng, đánh số 1. 2. 3.
+      <b>Treo ngôn</b>: N dòng → gửi trong <b>1 tin duy nhất</b> (giữ nguyên xuống dòng).<br>
+      <b>Treo nhây</b>: N dòng → N tin riêng, đánh số 1. 2. 3.
     </div>
   </div>
   <div class="card">
@@ -1958,7 +1534,6 @@ HTML_INDEX = """<!DOCTYPE html>
   </div>
 </div>
 
-<!-- SPAM -->
 <div class="panel" id="panel-spam">
   <div class="card">
     <h2><span class="bi">▶</span> Cấu hình spam</h2>
@@ -1969,7 +1544,7 @@ HTML_INDEX = """<!DOCTYPE html>
         <div class="mode-card active" data-mode="fast">
           <div class="mc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></div>
           <div class="mc-title">Siêu nhanh</div>
-          <div class="mc-desc">Xoay vòng block</div>
+          <div class="mc-desc">Block xoay vòng</div>
         </div>
         <div class="mode-card" data-mode="treo_ngon">
           <div class="mc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/></svg></div>
@@ -2006,10 +1581,6 @@ HTML_INDEX = """<!DOCTYPE html>
       <input type="hidden" id="color-mode" value="random">
       <div class="color-palette" id="color-palette"></div>
       <div class="color-preview" id="color-preview">Xem trước màu chữ</div>
-      <div class="hint" id="color-hint">
-        💡 <b>Màu ngẫu nhiên / xoay vòng</b> trong Treo ngôn → Zalo tách bubble.<br>
-        Muốn 1 bubble 1 màu → chọn <b>Tắt</b>.
-      </div>
     </div>
 
     <div class="form-group">
@@ -2063,9 +1634,7 @@ HTML_INDEX = """<!DOCTYPE html>
         Bật chọn members để tag
       </label>
       <div id="tag-wrap" style="display:none;margin-top:7px;">
-        <div class="form-group">
-          <select id="member-acc-select"><option value="">-- Chọn acc --</option></select>
-        </div>
+        <div class="form-group"><select id="member-acc-select"><option value="">-- Chọn acc --</option></select></div>
         <button type="button" class="btn-rect info" onclick="loadMembers()">🔄 Load members</button>
         <div class="tag-selector" id="tag-selector"></div>
         <input type="hidden" id="tag-selected" value="">
@@ -2074,23 +1643,15 @@ HTML_INDEX = """<!DOCTYPE html>
   </div>
 
   <div style="text-align:center;margin-bottom:12px;">
-    <button type="button" class="btn-circle success big" onclick="startSpam()" title="Bắt đầu">
-      <svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="6 3 20 12 6 21 6 3"/></svg>
-    </button>
-    <button type="button" class="btn-circle danger big" onclick="stopAll()" title="Dừng">
-      <svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
-    </button>
+    <button type="button" class="btn-circle success big" onclick="startSpam()" title="Bắt đầu"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="6 3 20 12 6 21 6 3"/></svg></button>
+    <button type="button" class="btn-circle danger big" onclick="stopAll()" title="Dừng"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg></button>
   </div>
 
   <div class="card">
     <h2><span class="bi">≡</span> Tác vụ</h2>
-    <button type="button" class="btn-circle danger small" onclick="stopAll()" title="Dừng hết">
-      <svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
-    </button>
+    <button type="button" class="btn-circle danger small" onclick="stopAll()" title="Dừng hết"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg></button>
     <div class="table-wrap" style="margin-top:9px;">
-      <table class="table"><thead><tr>
-        <th>ID</th><th>Mode</th><th>Màu</th><th>Delay</th><th>Trạng thái</th><th></th>
-      </tr></thead><tbody id="tasks-tbody"></tbody></table>
+      <table class="table"><thead><tr><th>ID</th><th>Mode</th><th>Màu</th><th>Delay</th><th>Trạng thái</th><th></th></tr></thead><tbody id="tasks-tbody"></tbody></table>
     </div>
   </div>
 </div>
@@ -2098,9 +1659,6 @@ HTML_INDEX = """<!DOCTYPE html>
 </div>
 
 <script>
-/* ============================================================
-   STATE
-============================================================ */
 var flags = { emoji: true, human: true, mention: true, read: true };
 var selectedBoxes = [];
 var selectedTags = [];
@@ -2111,10 +1669,6 @@ var colorMode = "random";
 var fixedColor = null;
 var ZALO_COLORS = [];
 
-
-/* ============================================================
-   TOAST — auto-close nhanh 1800ms
-============================================================ */
 var Toast = (function(){
   var stack = null;
   function ensure(){ if(!stack) stack = document.getElementById('toast-stack'); return stack; }
@@ -2126,26 +1680,19 @@ var Toast = (function(){
   };
   var TITLES = { success:'OK', error:'Lỗi', warning:'Cảnh báo', info:'Info' };
   function show(msg, type, title, duration){
-    type = type || 'success';
-    duration = duration || 1800;
+    type = type || 'success'; duration = duration || 1800;
     var s = ensure(); if(!s) return;
     var el = document.createElement('div');
     el.className = 'toast ' + type;
-    el.innerHTML =
-      '<div class="t-icon">' + (ICONS[type] || ICONS.info) + '</div>' +
+    el.innerHTML = '<div class="t-icon">' + (ICONS[type] || ICONS.info) + '</div>' +
       '<button type="button" class="t-close" aria-label="Đóng">✕</button>' +
       '<div class="t-title">' + (title || TITLES[type] || '') + '</div>' +
       '<div class="t-msg">' + msg + '</div>' +
       '<div class="t-progress" style="animation-duration:' + duration + 'ms;"></div>';
     s.appendChild(el);
     var timer = setTimeout(remove, duration);
-    function remove(){
-      clearTimeout(timer);
-      el.classList.add('removing');
-      el.addEventListener('animationend', function(){ el.remove(); }, { once:true });
-    }
+    function remove(){ clearTimeout(timer); el.classList.add('removing'); el.addEventListener('animationend', function(){ el.remove(); }, { once:true }); }
     el.querySelector('.t-close').addEventListener('click', remove);
-    return el;
   }
   return {
     success:function(m,t,d){return show(m,'success',t,d);},
@@ -2155,10 +1702,6 @@ var Toast = (function(){
   };
 })();
 
-
-/* ============================================================
-   TABS
-============================================================ */
 document.querySelectorAll('.tab').forEach(function(t){
   t.addEventListener('click', function(){
     document.querySelectorAll('.tab').forEach(function(x){ x.classList.remove('active'); });
@@ -2170,87 +1713,46 @@ document.querySelectorAll('.tab').forEach(function(t){
   });
 });
 
-
-/* ============================================================
-   MODE
-============================================================ */
 document.querySelectorAll('.mode-card').forEach(function(c){
   c.addEventListener('click', function(){
     document.querySelectorAll('.mode-card').forEach(function(x){ x.classList.remove('active'); });
     c.classList.add('active');
     currentMode = c.dataset.mode;
     document.getElementById('spam-mode').value = currentMode;
-    updateColorHint();
   });
 });
 
-
-/* ============================================================
-   COLOR
-============================================================ */
 function renderPalette(){
   var pal = document.getElementById('color-palette');
   pal.innerHTML = ZALO_COLORS.map(function(c){
     var act = (fixedColor === c.id) ? ' active' : '';
-    return '<div class="color-swatch' + act + '" data-color="' + c.id +
-      '" style="background:' + c.hex + ';" title="' + c.name + '">' +
-      '<div class="cname">' + c.name + '</div></div>';
+    return '<div class="color-swatch' + act + '" data-color="' + c.id + '" style="background:' + c.hex + ';" title="' + c.name + '"><div class="cname">' + c.name + '</div></div>';
   }).join('');
   pal.querySelectorAll('.color-swatch').forEach(function(sw){
     sw.addEventListener('click', function(){
       fixedColor = sw.dataset.color;
       colorMode = 'fixed';
-      document.querySelectorAll('.color-mode').forEach(function(x){
-        x.classList.toggle('active', x.dataset.cmode === 'fixed');
-      });
+      document.querySelectorAll('.color-mode').forEach(function(x){ x.classList.toggle('active', x.dataset.cmode === 'fixed'); });
       document.getElementById('color-mode').value = 'fixed';
-      pal.querySelectorAll('.color-swatch').forEach(function(s){
-        s.classList.toggle('active', s.dataset.color === fixedColor);
-      });
+      pal.querySelectorAll('.color-swatch').forEach(function(s){ s.classList.toggle('active', s.dataset.color === fixedColor); });
       updateColorPreview();
-      updateColorHint();
     });
   });
 }
-
 function updateColorPreview(){
   var prev = document.getElementById('color-preview');
   var col = null;
-  if(colorMode === 'random'){
-    col = randomHex();
-  } else if(colorMode === 'cycle'){
-    col = ZALO_COLORS[Math.floor(Math.random() * ZALO_COLORS.length)].hex;
-  } else if(colorMode === 'fixed' && fixedColor){
+  if(colorMode === 'random') col = randomHex();
+  else if(colorMode === 'cycle') col = ZALO_COLORS[Math.floor(Math.random() * ZALO_COLORS.length)].hex;
+  else if(colorMode === 'fixed' && fixedColor){
     var found = ZALO_COLORS.find(function(x){ return x.id === fixedColor; });
     col = found ? found.hex : '#0068ff';
   } else {
-    prev.style.color = 'var(--txt-2)';
-    prev.textContent = 'Không đổi màu';
-    return;
+    prev.style.color = 'var(--txt-2)'; prev.textContent = 'Không đổi màu'; return;
   }
-  prev.style.color = col;
-  prev.textContent = 'Aa Xem trước màu chữ Zalo Aa';
+  prev.style.color = col; prev.textContent = 'Aa Xem trước màu chữ Zalo Aa';
 }
-
-function updateColorHint(){
-  var h = document.getElementById('color-hint');
-  if(!h) return;
-  if(currentMode === 'treo_ngon'){
-    if(colorMode === 'none'){
-      h.innerHTML = '💡 <b>Treo ngôn + Tắt màu</b> → 4 dòng trong 1 bubble cùng 1 màu.';
-    } else {
-      h.innerHTML = '💡 <b>Treo ngôn + Có màu</b> → 4 dòng 4 màu, Zalo gộp thành 1 block (gửi 4 request gap 0.08s).';
-    }
-  } else if(currentMode === 'treo_nhay'){
-    h.innerHTML = '💡 <b>Treo nhây</b> → 4 tin riêng, đánh số 1. 2. 3. 4., mỗi tin 1 màu.';
-  } else {
-    h.innerHTML = '💡 <b>Siêu nhanh</b> → 1 block 1 tin, giữ nguyên \\n trong message.';
-  }
-}
-
-function randomHex(){
-  return ZALO_COLORS[Math.floor(Math.random() * ZALO_COLORS.length)].hex;
-}
+function randomHex(){ return ZALO_COLORS[Math.floor(Math.random() * ZALO_COLORS.length)].hex; }
 
 document.querySelectorAll('.color-mode').forEach(function(cm){
   cm.addEventListener('click', function(){
@@ -2259,20 +1761,11 @@ document.querySelectorAll('.color-mode').forEach(function(cm){
     colorMode = cm.dataset.cmode;
     document.getElementById('color-mode').value = colorMode;
     var pal = document.getElementById('color-palette');
-    if(colorMode === 'fixed'){
-      pal.classList.add('show');
-    } else {
-      pal.classList.remove('show');
-    }
+    if(colorMode === 'fixed') pal.classList.add('show'); else pal.classList.remove('show');
     updateColorPreview();
-    updateColorHint();
   });
 });
 
-
-/* ============================================================
-   CHIPS
-============================================================ */
 document.querySelectorAll('#delay-chips .chip').forEach(function(c){
   c.addEventListener('click', function(){
     document.querySelectorAll('#delay-chips .chip').forEach(function(x){ x.classList.remove('active'); });
@@ -2295,17 +1788,11 @@ document.querySelectorAll('#speed-chips .chip').forEach(function(c){
   });
 });
 
-
-/* ============================================================
-   TOGGLES
-============================================================ */
 function tgFlag(name){
   flags[name] = !flags[name];
   var map = { emoji:'tg-emoji', human:'tg-human', mention:'tg-mention', read:'tg-read' };
   var el = document.getElementById(map[name] || ('tg-'+name));
   if(el) el.classList.toggle('active', flags[name]);
-
-  // Khi tắt emoji → chip icon mờ + disable
   if(name === 'emoji'){
     var ic = document.getElementById('icon-chips');
     if(ic){
@@ -2329,10 +1816,6 @@ function tgTag(){
   if(wrap) wrap.style.display = c.checked ? 'block' : 'none';
 }
 
-
-/* ============================================================
-   API
-============================================================ */
 async function api(url, opts){
   opts = opts || {};
   var ctrl = new AbortController();
@@ -2349,10 +1832,6 @@ async function api(url, opts){
   }
 }
 
-
-/* ============================================================
-   ACCOUNTS
-============================================================ */
 async function loadAccounts(){
   var accs = await api('/api/accounts');
   if(!Array.isArray(accs)) accs = [];
@@ -2365,35 +1844,25 @@ async function loadAccounts(){
       var rc = risk > 0.5 ? 'badge-err' : risk > 0.2 ? 'badge-warn' : 'badge-ok';
       var uidShort = a.uid ? String(a.uid).slice(-7) : '?';
       var realName = a.display_name || a.zalo_name || a.username || '—';
-      return '<tr>' +
-        '<td>' + a.id + '</td>' +
+      return '<tr><td>' + a.id + '</td>' +
         '<td><b style="color:var(--txt-0)">' + a.label + '</b></td>' +
         '<td><span style="color:var(--brand-a);font-weight:700;font-size:10.5px;">' + realName + '</span></td>' +
         '<td><code>…' + uidShort + '</code></td>' +
         '<td><span class="badge badge-ok">' + a.ok_count + '</span> <span class="badge badge-err">' + a.fail_count + '</span></td>' +
         '<td><span class="badge ' + rc + '">' + risk + '</span></td>' +
         '<td>' +
-          '<button type="button" class="btn-circle primary small" onclick="checkAcc(' + a.id + ')" title="Check">' +
-            '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>' +
-          '</button>' +
-          '<button type="button" class="btn-circle warning small" onclick="resetAcc(' + a.id + ')" title="Reset">' +
-            '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>' +
-          '</button>' +
-          '<button type="button" class="btn-circle danger small" onclick="delAcc(' + a.id + ')" title="Xoá">' +
-            '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>' +
-          '</button>' +
-        '</td>' +
-      '</tr>';
+          '<button type="button" class="btn-circle primary small" onclick="checkAcc(' + a.id + ')" title="Check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></button>' +
+          '<button type="button" class="btn-circle warning small" onclick="resetAcc(' + a.id + ')" title="Reset"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>' +
+          '<button type="button" class="btn-circle danger small" onclick="delAcc(' + a.id + ')" title="Xoá"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg></button>' +
+        '</td></tr>';
     }).join('');
   }
   document.getElementById('stat-total').textContent = accs.length;
   document.getElementById('stat-active').textContent = accs.filter(function(a){return a.enabled;}).length;
   document.getElementById('stat-sent').textContent = accs.reduce(function(s,a){return s+(a.total_sent||0);},0);
-
   var s1 = document.getElementById('load-acc-select');
   var s2 = document.getElementById('member-acc-select');
-  var opts = '<option value="">-- Chọn --</option>' +
-    accs.map(function(a){return '<option value="'+a.id+'">'+a.label+'</option>';}).join('');
+  var opts = '<option value="">-- Chọn --</option>' + accs.map(function(a){return '<option value="'+a.id+'">'+a.label+'</option>';}).join('');
   var v1 = s1.value, v2 = s2.value;
   s1.innerHTML = opts; s1.value = v1;
   s2.innerHTML = opts; s2.value = v2;
@@ -2405,10 +1874,7 @@ async function addAccount(){
   var cookies = document.getElementById('add-cookies').value.trim();
   if(!imei || !cookies){ return Toast.error('Điền IMEI và cookie'); }
   Toast.info('Đang verify cookie...', 'Đợi', 30000);
-  var r = await api('/api/accounts/add', {
-    method:'POST',
-    body: JSON.stringify({ label:label, imei:imei, cookies:cookies })
-  });
+  var r = await api('/api/accounts/add', { method:'POST', body: JSON.stringify({ label:label, imei:imei, cookies:cookies }) });
   if(r.error){ return Toast.error(r.error, 'Thêm thất bại'); }
   var nameInfo = r.display_name || r.zalo_name || r.username || '?';
   Toast.success('Đã thêm <b>' + r.label + '</b> • ' + nameInfo, 'OK', 2500);
@@ -2434,10 +1900,6 @@ async function checkAcc(id){
   Toast.success('Sống • ' + nameInfo + ' • <code>' + String(r.uid).slice(-7) + '</code>', 'OK', 2500);
 }
 
-
-/* ============================================================
-   BOXES
-============================================================ */
 async function loadBoxes(){
   var aid = document.getElementById('load-acc-select').value;
   if(!aid) return Toast.error('Chọn tài khoản trước');
@@ -2447,20 +1909,12 @@ async function loadBoxes(){
   var all = (r.groups||[]).concat(r.friends||[]);
   var bl = document.getElementById('box-list');
   if(!all.length){
-    bl.innerHTML = '<div style="text-align:center;padding:18px;color:var(--txt-3);">Không có box</div>';
-    return;
+    bl.innerHTML = '<div style="text-align:center;padding:18px;color:var(--txt-3);">Không có box</div>'; return;
   }
   bl.innerHTML = all.map(function(b,i){
-    return '<div class="box-item" data-idx="'+i+'" onclick="tgBox(this, '+i+')">' +
-      '<div class="check">✓</div>' +
-      '<div class="info">' +
-        '<div class="name">' + b.name + '</div>' +
-        '<div class="meta">' + b.id + ' | ' + b.type + (b.members?(' | '+b.members+' mem'):'') + '</div>' +
-      '</div>' +
-    '</div>';
+    return '<div class="box-item" data-idx="'+i+'" onclick="tgBox(this, '+i+')"><div class="check">✓</div><div class="info"><div class="name">' + b.name + '</div><div class="meta">' + b.id + ' | ' + b.type + (b.members?(' | '+b.members+' mem'):'') + '</div></div></div>';
   }).join('');
-  _boxes = all;
-  selectedBoxes = [];
+  _boxes = all; selectedBoxes = [];
   document.getElementById('selected-count').textContent = '0';
   Toast.success('Load ' + all.length + ' box', 'OK', 2200);
 }
@@ -2488,10 +1942,6 @@ function clearAllBoxes(){
   Toast.info('Đã bỏ chọn');
 }
 
-
-/* ============================================================
-   FILES
-============================================================ */
 async function uploadFile(){
   var input = document.getElementById('file-input');
   if(!input.files.length) return Toast.error('Chưa chọn file');
@@ -2502,8 +1952,7 @@ async function uploadFile(){
     var r = await fetch('/api/files/upload', { method:'POST', body: fd }).then(function(x){return x.json();});
     if(r.error) return Toast.error(r.error);
     Toast.success('Upload ' + r.filename + ' • ' + r.lines + ' khối', 'OK', 2500);
-    input.value = '';
-    loadFiles();
+    input.value = ''; loadFiles();
   } catch(e){ Toast.error('Lỗi: ' + e.message); }
 }
 async function loadFiles(){
@@ -2515,24 +1964,14 @@ async function loadFiles(){
   } else {
     list.innerHTML = files.map(function(f){
       var kb = (f.size/1024).toFixed(1);
-      return '<div class="file-item">' +
-        '<div class="info">' +
-          '<div class="name">📄 ' + f.filename + '</div>' +
-          '<div class="meta">' + f.lines + ' khối • ' + kb + ' KB</div>' +
-        '</div>' +
-        '<button type="button" class="btn-circle info small" onclick="previewFile('+f.id+')" title="Xem">' +
-          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>' +
-        '</button>' +
-        '<button type="button" class="btn-circle danger small" onclick="delFile('+f.id+')" title="Xoá">' +
-          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>' +
-        '</button>' +
-      '</div>';
+      return '<div class="file-item"><div class="info"><div class="name">📄 ' + f.filename + '</div><div class="meta">' + f.lines + ' khối • ' + kb + ' KB</div></div>' +
+        '<button type="button" class="btn-circle info small" onclick="previewFile('+f.id+')" title="Xem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>' +
+        '<button type="button" class="btn-circle danger small" onclick="delFile('+f.id+')" title="Xoá"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg></button></div>';
     }).join('');
   }
   var s = document.getElementById('spam-file-select');
   var cur = s.value;
-  s.innerHTML = '<option value="">-- Chọn file --</option>' +
-    files.map(function(f){return '<option value="'+f.id+'">'+f.filename+' ('+f.lines+')</option>';}).join('');
+  s.innerHTML = '<option value="">-- Chọn file --</option>' + files.map(function(f){return '<option value="'+f.id+'">'+f.filename+' ('+f.lines+')</option>';}).join('');
   s.value = cur;
 }
 async function previewFile(fid){
@@ -2550,10 +1989,6 @@ async function delFile(fid){
   Toast.success('Đã xóa'); loadFiles();
 }
 
-
-/* ============================================================
-   MEMBERS
-============================================================ */
 async function loadMembers(){
   var aid = document.getElementById('member-acc-select').value;
   if(!aid) return Toast.error('Chọn acc');
@@ -2566,24 +2001,16 @@ async function loadMembers(){
   var sel = document.getElementById('tag-selector');
   sel.classList.add('show');
   if(!mem.length){
-    sel.innerHTML = '<div style="padding:14px;text-align:center;color:var(--txt-3);font-size:11px;">Không có members</div>';
-    return;
+    sel.innerHTML = '<div style="padding:14px;text-align:center;color:var(--txt-3);font-size:11px;">Không có members</div>'; return;
   }
   sel.innerHTML = mem.map(function(m,i){
     var sub = [];
     if(m.username) sub.push('@'+m.username);
     if(m.zalo_name && m.zalo_name !== m.name) sub.push(m.zalo_name);
     sub.push(m.id);
-    return '<div class="tag-member" data-idx="'+i+'" onclick="tgMember(this, '+i+')">' +
-      '<div class="check">✓</div>' +
-      '<div class="tm-body">' +
-        '<div class="tm-name">' + m.name + '</div>' +
-        '<div class="tm-sub">' + sub.join(' • ') + '</div>' +
-      '</div>' +
-    '</div>';
+    return '<div class="tag-member" data-idx="'+i+'" onclick="tgMember(this, '+i+')"><div class="check">✓</div><div class="tm-body"><div class="tm-name">' + m.name + '</div><div class="tm-sub">' + sub.join(' • ') + '</div></div></div>';
   }).join('');
-  _members = mem;
-  selectedTags = [];
+  _members = mem; selectedTags = [];
   Toast.success('Load ' + mem.length + ' members', 'OK', 2200);
 }
 function tgMember(el, idx){
@@ -2598,10 +2025,6 @@ function tgMember(el, idx){
   document.getElementById('tag-selected').value = JSON.stringify(selectedTags);
 }
 
-
-/* ============================================================
-   SPAM
-============================================================ */
 async function startSpam(){
   if(!selectedBoxes.length) return Toast.error('Chưa chọn box');
   var fid = document.getElementById('spam-file-select').value;
@@ -2624,19 +2047,11 @@ async function startSpam(){
   if(document.getElementById('tg-tag').checked) tagUsers = selectedTags;
 
   var payload = {
-    targets: selectedBoxes,
-    blocks: blocks,
-    delay: delay,
-    use_emoji: flags.emoji,
-    icon_count: iconCount,
-    tag_users: tagUsers,
-    mode: currentMode,
-    color_mode: colorMode,
-    fixed_color: fixedColor,
-    typing_speed: typingSpeed,
-    human_mode: flags.human,
-    real_mention: flags.mention,
-    read_receipt: flags.read
+    targets: selectedBoxes, blocks: blocks, delay: delay,
+    use_emoji: flags.emoji, icon_count: iconCount, tag_users: tagUsers,
+    mode: currentMode, color_mode: colorMode, fixed_color: fixedColor,
+    typing_speed: typingSpeed, human_mode: flags.human,
+    real_mention: flags.mention, read_receipt: flags.read
   };
   var r = await api('/api/tasks/start', { method:'POST', body: JSON.stringify(payload) });
   if(r.error) return Toast.error(r.error);
@@ -2653,8 +2068,7 @@ async function loadTasks(){
   if(!Array.isArray(tasks)) tasks = [];
   var tb = document.getElementById('tasks-tbody');
   if(!tasks.length){
-    tb.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--txt-3);padding:14px;">Chưa có</td></tr>';
-    return;
+    tb.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--txt-3);padding:14px;">Chưa có</td></tr>'; return;
   }
   tb.innerHTML = tasks.map(function(t){
     var running = t.status === 'running';
@@ -2663,25 +2077,17 @@ async function loadTasks(){
     var meta = {};
     try { meta = JSON.parse(t.meta || '{}'); } catch(e){}
     var mode = meta.mode || 'fast';
-    var modeLabels = {
-      'fast':['⚡ Nhanh','badge-mode-fast'],
-      'treo_ngon':['❄️ Ngôn','badge-mode-ngon'],
-      'treo_nhay':['🌀 Nhây','badge-mode-nhay']
-    };
+    var modeLabels = { 'fast':['⚡ Nhanh','badge-mode-fast'], 'treo_ngon':['❄️ Ngôn','badge-mode-ngon'], 'treo_nhay':['🌀 Nhây','badge-mode-nhay'] };
     var ml = modeLabels[mode] || modeLabels['fast'];
     var cm = meta.color_mode || 'random';
     var cmLabels = {'none':'Tắt','random':'Rnd','fixed':'Fix','cycle':'Cycle'};
     var d = meta.delay ? (meta.delay + 's') : '—';
-    return '<tr>' +
-      '<td><code>' + t.id.split('_').pop() + '</code></td>' +
+    return '<tr><td><code>' + t.id.split('_').pop() + '</code></td>' +
       '<td><span class="badge ' + ml[1] + '">' + ml[0] + '</span></td>' +
       '<td><b style="color:var(--brand-a)">' + (cmLabels[cm]||cm) + '</b></td>' +
       '<td><b style="color:var(--brand-a)">' + d + '</b></td>' +
       '<td><span class="badge ' + b + '">' + txt + '</span></td>' +
-      '<td>' + (running ? '<button type="button" class="btn-circle danger small" onclick="stopTask(\\'' + t.id + '\\')" title="Dừng">' +
-        '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>' +
-      '</button>' : '') + '</td>' +
-    '</tr>';
+      '<td>' + (running ? '<button type="button" class="btn-circle danger small" onclick="stopTask(\\'' + t.id + '\\')" title="Dừng"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg></button>' : '') + '</td></tr>';
   }).join('');
 }
 async function stopTask(tid){
@@ -2689,17 +2095,12 @@ async function stopTask(tid){
   Toast.warning('Đã dừng'); loadTasks();
 }
 
-
-/* ============================================================
-   BOOT
-============================================================ */
 async function loadColors(){
   var cols = await api('/api/colors');
   if(Array.isArray(cols)){
     ZALO_COLORS = cols;
     renderPalette();
     updateColorPreview();
-    updateColorHint();
   }
 }
 
