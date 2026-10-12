@@ -3,6 +3,7 @@
 # Hệ thống điều hành: ALB Forge — Giao diện Hoa Anh Đào
 # ============================================================
 import os
+import re
 import json
 import time
 import sqlite3
@@ -316,23 +317,25 @@ class Zalo:
         missing_uids = [u for u in uids if u not in members_dict]
 
         if missing_uids:
-            try:
-                enc2 = self._enc({"grid": str(gid), "userIds": missing_uids, "friendId": missing_uids})
-                r2 = self.s.post(
-                    "https://tt-group-wpa.chat.zalo.me/api/group/getuserinfo",
-                    params={"zpw_ver": 645, "zpw_type": 30},
-                    data={"params": enc2}, timeout=18,
-                )
-                dec2 = self._dec(r2.json()["data"])
-                profiles_data = json.loads(dec2).get("data", {})
-                profiles = profiles_data.get("profiles", {}) if isinstance(profiles_data, dict) else {}
-                for uid in missing_uids:
-                    p = profiles.get(uid, {})
-                    pname = (p.get("displayName") or p.get("zaloName") or p.get("username") or "").strip()
-                    if pname:
-                        members_dict[uid] = pname
-            except Exception:
-                pass
+            # Chia nhỏ thành các nhóm 50 UID để tránh quá tải payload hoặc timeout của API Zalo
+            for chunk in [missing_uids[i:i+50] for i in range(0, len(missing_uids), 50)]:
+                try:
+                    enc2 = self._enc({"grid": str(gid), "userIds": chunk, "friendId": chunk})
+                    r2 = self.s.post(
+                        "https://tt-group-wpa.chat.zalo.me/api/group/getuserinfo",
+                        params={"zpw_ver": 645, "zpw_type": 30},
+                        data={"params": enc2}, timeout=18,
+                    )
+                    dec2 = self._dec(r2.json()["data"])
+                    profiles_data = json.loads(dec2).get("data", {})
+                    profiles = profiles_data.get("profiles", {}) if isinstance(profiles_data, dict) else {}
+                    for uid in chunk:
+                        p = profiles.get(uid, {})
+                        pname = (p.get("displayName") or p.get("zaloName") or p.get("username") or "").strip()
+                        if pname:
+                            members_dict[uid] = pname
+                except Exception:
+                    pass
 
         out = []
         for uid in uids:
@@ -343,85 +346,143 @@ class Zalo:
             })
         return out
 
-    def build_colored_message(self, raw_text, color_mode, fixed_color, is_heading=True):
-        lines = [l for l in raw_text.split("\n")]
+    def build_colored_message(self, raw_text, color_mode, fixed_color, is_heading=True, color_offset=0):
+        lines = raw_text.split("\n")
         styled_lines = []
         styles = []
         current_u16_pos = 0
 
-        RAINBOW_HEX = ["#e8453c", "#f5c500", "#00b14f", "#ff8c00", "#0091ff", "#a05eff", "#ff47a8"]
         first_color = "red"
 
-        for i, ln in enumerate(lines):
+        for j, ln in enumerate(lines):
             content = ln.strip()
             if not content:
                 styled_lines.append("")
                 current_u16_pos += 1
                 continue
 
-            if is_heading and not content.startswith("#"):
+            # Xử lý định dạng tiêu đề & màu sắc:
+            # Lưu ý quan trọng: Khi áp dụng màu sắc, KHÔNG thêm ký tự markdown '# ' vào đầu dòng
+            # vì trong Zalo markdown heading sẽ ép kiểu màu đen/mặc định và ghi đè mất màu chữ!
+            # Thay vào đó, nếu is_heading được bật, ta thêm style in đậm ('b') để chữ vừa to rõ, vừa giữ nguyên màu sắc rực rỡ!
+            if color_mode == "none" and is_heading and not content.startswith("#"):
                 line_text = f"# {content}"
+            elif color_mode != "none" and content.startswith("# "):
+                line_text = content[2:].strip()
             else:
                 line_text = content
 
             styled_lines.append(line_text)
             l_len = utf16_len(line_text)
 
-            if color_mode in ("rainbow", "random"):
-                c_hex = RAINBOW_HEX[i % len(RAINBOW_HEX)]
-                c_id = ZALO_PALETTE[i % len(ZALO_PALETTE)]["id"]
+            c_hex = None
+            c_id = None
+            if color_mode == "rainbow":
+                pal = ZALO_PALETTE[(color_offset + j) % len(ZALO_PALETTE)]
+                c_hex = pal["hex"]
+                c_id = pal["id"]
+            elif color_mode == "random":
+                pal = random.choice(ZALO_PALETTE)
+                c_hex = pal["hex"]
+                c_id = pal["id"]
             elif color_mode == "fixed" and fixed_color:
-                c_hex = next((c["hex"] for c in ZALO_PALETTE if c["id"] == fixed_color), "#e8453c")
-                c_id = fixed_color
-            else:
-                c_hex = None
-                c_id = None
+                pal = next((c for c in ZALO_PALETTE if c["id"] == fixed_color), ZALO_PALETTE[0])
+                c_hex = pal["hex"]
+                c_id = pal["id"]
 
-            if i == 0 and c_id:
+            if j == 0 and c_id:
                 first_color = c_id
 
             if c_hex:
-                styles.append({"offset": current_u16_pos, "len": l_len, "type": "color", "value": c_hex})
-                styles.append({"start": current_u16_pos, "len": l_len, "st": f"c_{c_hex}"})
+                clean_hex = c_hex.lstrip("#").lower()
+                # Định dạng chuẩn của Zalo Web Rich Text style: "c_<hex_lowercase_no_hash>"
+                styles.append({"start": current_u16_pos, "len": l_len, "st": f"c_{clean_hex}"})
+
+                # Nếu bật chữ to / tiêu đề thì thêm style 'b' (in đậm) để chữ nổi bật, to đẹp
+                if is_heading:
+                    styles.append({"start": current_u16_pos, "len": l_len, "st": "b"})
 
             current_u16_pos += l_len + 1
 
         final_msg = "\n".join(styled_lines)
         return final_msg, styles, first_color
 
-    def attach_mentions(self, msg, mentions, tag_all=False):
-        final = msg
+    def attach_mentions(self, msg, mentions=None, tag_all=False):
+        final = msg.rstrip() if msg else ""
         m_arr = []
-        if tag_all:
-            tag_token = "@All"
-            pos = utf16_len(final) + (1 if final else 0)
-            final = (final + " " + tag_token) if final else tag_token
-            m_arr.append({"uid": "0", "pos": pos, "len": utf16_len(tag_token), "type": 1})
-            return final, m_arr
 
+        # Xử lý Tag @All: Trong giao thức Zalo, UID của @All là "-1", type là 1
+        if tag_all or re.search(r'(?i)@all\b', final):
+            match_all = re.search(r'(?i)@all\b', final)
+            if match_all:
+                prefix = final[:match_all.start()]
+                pos = utf16_len(prefix)
+                m_len = utf16_len(match_all.group(0))
+                m_arr.append({
+                    "uid": "-1",
+                    "pos": pos,
+                    "len": m_len,
+                    "type": 1
+                })
+            else:
+                tag_token = "@All"
+                pos = utf16_len(final) + (1 if final else 0)
+                final = (final + " " + tag_token) if final else tag_token
+                m_arr.append({
+                    "uid": "-1",
+                    "pos": pos,
+                    "len": utf16_len(tag_token),
+                    "type": 1
+                })
+
+        # Xử lý Tag từng người theo danh sách thành viên đã chọn
         if mentions:
             for m in mentions:
                 raw_name = str(m.get("name", "")).strip()
                 name = raw_name.split(" (")[0] if " (" in raw_name else raw_name
                 uid = str(m.get("uid") or m.get("id") or "").strip()
-                if not name or not uid: continue
-                tag_token = f"@{name}"
-                pos = utf16_len(final) + (1 if final else 0)
-                final = (final + " " + tag_token) if final else tag_token
-                m_arr.append({"uid": uid, "pos": pos, "len": utf16_len(tag_token), "type": 0})
+                if not name or not uid or uid in ("-1", "0"):
+                    continue
+
+                pattern = re.escape("@" + name)
+                match_name = re.search(pattern, final)
+                if match_name:
+                    pos = utf16_len(final[:match_name.start()])
+                    m_len = utf16_len(match_name.group(0))
+                    m_arr.append({
+                        "uid": uid,
+                        "pos": pos,
+                        "len": m_len,
+                        "type": 0
+                    })
+                else:
+                    tag_token = f"@{name}"
+                    pos = utf16_len(final) + (1 if final else 0)
+                    final = (final + " " + tag_token) if final else tag_token
+                    m_arr.append({
+                        "uid": uid,
+                        "pos": pos,
+                        "len": utf16_len(tag_token),
+                        "type": 0
+                    })
+
         return final, m_arr
 
     def send_adv(self, raw_text, thread_id, color_mode="rainbow", fixed_color="red",
-                 is_group=True, mentions=None, tag_all=False, is_heading=True):
+                 is_group=True, mentions=None, tag_all=False, is_heading=True, color_offset=0):
         url = ("https://tt-group-wpa.chat.zalo.me/api/group/sendmsg"
                if is_group
                else "https://tt-chat2-wpa.chat.zalo.me/api/message/sms")
 
         final_msg, styles, first_color = self.build_colored_message(
-            raw_text, color_mode, fixed_color, is_heading=is_heading
+            raw_text, color_mode, fixed_color, is_heading=is_heading, color_offset=color_offset
         )
 
-        final_msg, m_arr = self.attach_mentions(final_msg, mentions, tag_all=tag_all)
+        final_msg, m_arr = self.attach_mentions(
+            final_msg,
+            mentions=(mentions if is_group else None),
+            tag_all=(tag_all if is_group else False)
+        )
 
         pl = {
             "message": final_msg,
@@ -445,7 +506,6 @@ class Zalo:
         enc = self._enc(pl)
         return self.s.post(url, params={"zpw_ver": 645, "zpw_type": 30},
                            data={"params": enc}, timeout=15)
-
 
 # ============================================================
 # CSS GIAO DIỆN HOA ANH ĐÀO SANG TRỌNG
@@ -994,7 +1054,17 @@ HTML_INDEX = """<!DOCTYPE html>
         </label>
         <div id="tag-wrap" style="display:none; margin-top:10px;">
           <div class="form-group"><select id="member-acc-select"><option value="">-- Chọn tài khoản quét --</option></select></div>
-          <button class="btn-pill dark" onclick="loadMembers()">Nạp Danh Sách Tên Thật</button>
+          <div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px;">
+            <button class="btn-pill dark" onclick="loadMembers()">Nạp Danh Sách Thành Viên</button>
+            <button class="btn-pill light" onclick="selectAllMembers()">Chọn Tất Cả</button>
+            <button class="btn-pill danger" onclick="clearAllMembers()">Bỏ Chọn Tất Cả</button>
+          </div>
+          <div class="form-group" style="margin-bottom:8px;">
+            <input type="text" id="search-member-inp" placeholder="Tìm kiếm tên thành viên..." oninput="filterMembers()" style="padding:8px 12px; font-size:11.5px;">
+          </div>
+          <div style="font-size:10.5px; font-weight:800; color:var(--txt-2); margin-bottom:6px;">
+            ĐÃ CHỌN: <span id="tag-count" style="color:var(--sakura); font-weight:900;">0</span> THÀNH VIÊN
+          </div>
           <div class="box-list" id="tag-selector" style="margin-top:8px; max-height:220px; display:none;"></div>
           <input type="hidden" id="tag-selected" value="">
         </div>
@@ -1291,37 +1361,64 @@ function clearAllBoxes(){
   document.getElementById('selected-count').textContent = '0';
 }
 
+function renderMemberItems(){
+  var sel = document.getElementById('tag-selector');
+  var query = (document.getElementById('search-member-inp').value || '').toLowerCase().trim();
+  var filtered = _members.filter(m => !query || m.name.toLowerCase().includes(query) || m.id.includes(query));
+  sel.innerHTML = filtered.map((m, i) => {
+    var isSel = selectedTags.some(t => t.id === m.id);
+    return `<div class="box-item ${isSel ? 'selected' : ''}" onclick="toggleMemberById('${m.id}')">
+      <div class="check-mark">${isSel ? '✓' : ''}</div>
+      <div><div class="b-title">${m.name}</div><div class="b-sub">ID: ${m.id}</div></div>
+    </div>`;
+  }).join('') || '<div style="padding:14px; text-align:center; color:var(--txt-2);">Không tìm thấy thành viên phù hợp</div>';
+}
+
+function toggleMemberById(mid){
+  var m = _members.find(x => x.id === mid);
+  if(!m) return;
+  var exists = selectedTags.some(t => t.id === mid);
+  if(exists){
+    selectedTags = selectedTags.filter(t => t.id !== mid);
+  } else {
+    selectedTags.push({ id: m.id, name: m.name });
+  }
+  document.getElementById('tag-count').textContent = selectedTags.length;
+  renderMemberItems();
+}
+
+function selectAllMembers(){
+  selectedTags = _members.map(m => ({ id: m.id, name: m.name }));
+  document.getElementById('tag-count').textContent = selectedTags.length;
+  renderMemberItems();
+  Toast.success('Đã chọn tất cả ' + selectedTags.length + ' thành viên');
+}
+
+function clearAllMembers(){
+  selectedTags = [];
+  document.getElementById('tag-count').textContent = '0';
+  renderMemberItems();
+  Toast.info('Đã bỏ chọn tất cả thành viên');
+}
+
+function filterMembers(){
+  renderMemberItems();
+}
+
 async function loadMembers(){
   var aid = document.getElementById('member-acc-select').value;
   if(!aid) return Toast.error('Vui lòng chọn tài khoản quét');
   var box = selectedBoxes.find(b => b.type === 'group');
   if(!box) return Toast.error('Cần chọn ít nhất 1 nhóm ở mục Hội Thoại');
-  Toast.info('Đang nạp tên thật thành viên...');
+  Toast.info('Đang nạp danh sách thành viên nhóm ' + box.name + '...');
   var r = await api('/api/accounts/' + aid + '/members/' + box.id, { method: 'POST' });
   if(r.error) return Toast.error(r.error);
-  var mem = r.members || [];
-  var sel = document.getElementById('tag-selector');
-  sel.style.display = 'block';
-  sel.innerHTML = mem.map((m, i) => `
-    <div class="box-item" onclick="tgMember(this, ${i})">
-      <div class="check-mark">✓</div>
-      <div><div class="b-title">${m.name}</div><div class="b-sub">ID: ${m.id}</div></div>
-    </div>
-  `).join('') || '<div style="padding:14px; text-align:center;">Không có thành viên</div>';
-  _members = mem; selectedTags = [];
-  Toast.success('Đã nạp ' + mem.length + ' thành viên đầy đủ họ tên');
-}
-
-function tgMember(el, idx){
-  var m = _members[idx];
-  if(!m) return;
-  if(el.classList.contains('selected')){
-    el.classList.remove('selected');
-    selectedTags = selectedTags.filter(t => t.id !== m.id);
-  } else {
-    el.classList.add('selected');
-    selectedTags.push({ id: m.id, name: m.name });
-  }
+  _members = r.members || [];
+  selectedTags = [];
+  document.getElementById('tag-count').textContent = '0';
+  document.getElementById('tag-selector').style.display = 'block';
+  renderMemberItems();
+  Toast.success('Đã nạp ' + _members.length + ' thành viên đầy đủ họ tên');
 }
 
 async function uploadFile(){
@@ -1435,13 +1532,17 @@ async function loadColors(){
   if(Array.isArray(cols)){
     ZALO_PALETTE = cols;
     var wrap = document.getElementById('fixed-colors-wrap');
-    wrap.innerHTML = cols.map(c => `<div class="chip-item" style="border-color:${c.hex}; color:${c.hex};" onclick="setFixedColor('${c.id}')">${c.name}</div>`).join('');
+    wrap.innerHTML = cols.map(c => `<div class="chip-item ${c.id === fixedColor ? 'active' : ''}" id="fc-${c.id}" style="border-color:${c.hex}; color:${c.hex};" onclick="setFixedColor('${c.id}')">${c.name}</div>`).join('');
   }
 }
 
 function setFixedColor(cid){
   fixedColor = cid;
-  Toast.info('Đã chọn màu: ' + cid);
+  document.querySelectorAll('#fixed-colors-wrap .chip-item').forEach(x => x.classList.remove('active'));
+  var el = document.getElementById('fc-' + cid);
+  if(el) el.classList.add('active');
+  var col = ZALO_PALETTE.find(c => c.id === cid);
+  Toast.info('Đã chọn màu: ' + (col ? col.name : cid));
 }
 
 function refreshAll(){ loadAccounts(); loadFiles(); loadTasks(); }
@@ -1815,6 +1916,7 @@ def single_acc_worker(acc_dict, targets, blocks, delay, use_emoji, icon_count,
         return
 
     b_idx, t_idx = 0, 0
+    color_counter = 0
 
     while not stop_ev.is_set():
         target = targets[t_idx % len(targets)]
@@ -1827,15 +1929,18 @@ def single_acc_worker(acc_dict, targets, blocks, delay, use_emoji, icon_count,
 
         try:
             if mode == "treo_ngon":
-                text = raw.replace("\r\n", "\n").replace("\r", "\n")
+                text_msg = raw.replace("\r\n", "\n").replace("\r", "\n")
                 if use_emoji and icon_count > 0:
-                    text = text + " " + " ".join([get_icon_hard() for _ in range(icon_count)])
-                z.send_adv(text, target_id, color_mode=color_mode, fixed_color=fixed_color,
-                           is_group=is_group, mentions=tag_users, tag_all=tag_all, is_heading=is_heading)
+                    text_msg = text_msg + " " + " ".join([get_icon_hard() for _ in range(icon_count)])
+                z.send_adv(text_msg, target_id, color_mode=color_mode, fixed_color=fixed_color,
+                           is_group=is_group, mentions=(tag_users if is_group else None),
+                           tag_all=(tag_all if is_group else False), is_heading=is_heading,
+                           color_offset=color_counter)
+                color_counter += 1
                 with lock: counter["sent"] += 1
 
             elif mode == "treo_nhay":
-                # Chỉnh sửa: Gửi nguyên văn từng dòng, KHÔNG đánh số
+                # Gửi nguyên văn từng dòng, xoay vòng màu liên tục giữa các dòng
                 lines = [ln.strip() for ln in raw.split("\n") if ln.strip()]
                 for ln in lines:
                     if stop_ev.is_set(): break
@@ -1843,22 +1948,27 @@ def single_acc_worker(acc_dict, targets, blocks, delay, use_emoji, icon_count,
                     if use_emoji and icon_count > 0:
                         msg_line += " " + " ".join([get_icon_hard() for _ in range(icon_count)])
                     z.send_adv(msg_line, target_id, color_mode=color_mode, fixed_color=fixed_color,
-                               is_group=is_group, mentions=tag_users, tag_all=tag_all, is_heading=is_heading)
+                               is_group=is_group, mentions=(tag_users if is_group else None),
+                               tag_all=(tag_all if is_group else False), is_heading=is_heading,
+                               color_offset=color_counter)
+                    color_counter += 1
                     with lock: counter["sent"] += 1
                     time.sleep(0.3)
             else:
-                text = raw
+                text_msg = raw
                 if use_emoji and icon_count > 0:
-                    text = text + " " + " ".join([get_icon_hard() for _ in range(icon_count)])
-                z.send_adv(text, target_id, color_mode=color_mode, fixed_color=fixed_color,
-                           is_group=is_group, mentions=tag_users, tag_all=tag_all, is_heading=is_heading)
+                    text_msg = text_msg + " " + " ".join([get_icon_hard() for _ in range(icon_count)])
+                z.send_adv(text_msg, target_id, color_mode=color_mode, fixed_color=fixed_color,
+                           is_group=is_group, mentions=(tag_users if is_group else None),
+                           tag_all=(tag_all if is_group else False), is_heading=is_heading,
+                           color_offset=color_counter)
+                color_counter += 1
                 with lock: counter["sent"] += 1
 
         except Exception:
             pass
 
         time.sleep(max(0.3, delay))
-
 
 def task_supervisor(tid, targets, blocks, delay, use_emoji, icon_count,
                     tag_users, tag_all, is_heading, multi_acc, mode, color_mode, fixed_color, stop_ev):
