@@ -1,4 +1,7 @@
-# Copyright belongs to © Phạm Anh Khôi
+# ============================================================
+# Copyright © 2026 Pham Anh Khoi • All Rights Reserved ⚡
+# System: ALB Forge — I Love Ngọc Hân Luxury Edition
+# ============================================================
 import os
 import json
 import time
@@ -26,11 +29,11 @@ STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 os.makedirs(STATIC_DIR, exist_ok=True)
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "pham-anh-khoi-ngoc-han")
+app.secret_key = os.environ.get("SECRET_KEY", "pak-ngoc-han-verified-2026")
 app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024
 
-DDOS_LIMIT_PER_MINUTE = 150
-DDOS_BURST_PER_SEC = 30
+DDOS_LIMIT_PER_MINUTE = 100
+DDOS_BURST_PER_SEC = 20
 LOGIN_MAX_FAILS = 5
 LOGIN_LOCKOUT_TIME = 900
 
@@ -57,7 +60,10 @@ def security_shield_middleware():
     with security_lock:
         if ip in ip_blocked_until:
             if now < ip_blocked_until[ip]:
-                return jsonify({"error": "Hệ thống tạm khóa IP do phát hiện truy vấn bất thường"}), 429
+                return jsonify({
+                    "error": "IP bị chặn do gửi yêu cầu quá nhanh. Vui lòng thử lại sau.",
+                    "retry_after": int(ip_blocked_until[ip] - now)
+                }), 429
             else:
                 del ip_blocked_until[ip]
 
@@ -66,8 +72,8 @@ def security_shield_middleware():
 
         burst = sum(1 for t in history if now - t <= 1.0)
         if burst > DDOS_BURST_PER_SEC or len(history) > DDOS_LIMIT_PER_MINUTE:
-            ip_blocked_until[ip] = now + 180
-            return jsonify({"error": "Hệ thống đang chịu tải lớn, vui lòng chờ ít phút"}), 429
+            ip_blocked_until[ip] = now + 300
+            return jsonify({"error": "Phát hiện lưu lượng bất thường. IP đã bị khóa trong 5 phút."}), 429
 
         ip_request_history[ip].append(now)
 
@@ -132,18 +138,22 @@ def new_tid(p):
     return p + "_" + str(int(time.time() * 1000))
 
 
-ZALO_COLORS = [
+def utf16_len(s):
+    return len(s.encode('utf-16-le')) // 2
+
+
+ZALO_PALETTE = [
     {"id": "red",    "name": "Đỏ Rực",       "hex": "#e8453c"},
-    {"id": "orange", "name": "Cam Lửa",      "hex": "#ff8c00"},
-    {"id": "yellow", "name": "Vàng Tươi",    "hex": "#f5c500"},
+    {"id": "yellow", "name": "Vàng Chói",     "hex": "#f5c500"},
     {"id": "green",  "name": "Xanh Lá",      "hex": "#00b14f"},
+    {"id": "orange", "name": "Cam Lửa",      "hex": "#ff8c00"},
     {"id": "ocean",  "name": "Xanh Biển",    "hex": "#0091ff"},
     {"id": "blue",   "name": "Xanh Dương",   "hex": "#0068ff"},
     {"id": "purple", "name": "Tím Pha Lê",   "hex": "#a05eff"},
     {"id": "pink",   "name": "Hồng Ngọc Hân","hex": "#ff47a8"},
 ]
 
-COLOR_IDS = [c["id"] for c in ZALO_COLORS]
+COLOR_IDS = [c["id"] for c in ZALO_PALETTE]
 
 ZALO_ICON_HARD = [
     ";-A", ":-bd", "/-punch", "/-shit", "/-weak",
@@ -159,12 +169,12 @@ ZALO_ICON_HARD = [
 ZALO_ICON_UNICODE = [
     "😏", "🤡", "💩", "🖕", "👊", "💀", "🤣", "🤪",
     "🤦", "💢", "☠️", "🗿", "😆", "🙄", "😒", "😑",
-    "😹", "😈", "🔥", "😤", "🤮", "🤢", "🐒", "💖"
+    "😹", "😈", "🔥", "😤", "🤮", "🤢", "🐒", "✌️", "☝️", "😁"
 ]
 
 
 def get_icon_hard():
-    if random.random() < 0.6:
+    if random.random() < 0.65:
         return random.choice(ZALO_ICON_HARD)
     return random.choice(ZALO_ICON_UNICODE)
 
@@ -280,50 +290,64 @@ class Zalo:
         )
         dec = self._dec(r.json()["data"])
         info = json.loads(dec).get("data", {}).get("gridInfoMap", {}).get(str(gid), {})
-        mem_list = info.get("memVerList", [])
-        uids = [m.split("_")[0] for m in mem_list if m]
-        if not uids: return []
 
-        members = []
-        try:
-            enc2 = self._enc({"friendId": uids})
-            r2 = self.s.post(
-                "https://tt-group-wpa.chat.zalo.me/api/group/getuserinfo",
-                params={"zpw_ver": 645, "zpw_type": 30},
-                data={"params": enc2}, timeout=20,
-            )
-            dec2 = self._dec(r2.json()["data"])
-            profiles_raw = json.loads(dec2).get("data", {})
-            profiles = profiles_raw.get("profiles", {}) if isinstance(profiles_raw, dict) else {}
+        members_dict = {}
 
-            for uid in uids:
-                p = profiles.get(uid, {}) if isinstance(profiles, dict) else {}
-                dn = p.get("displayName", "").strip()
-                zn = p.get("zaloName", "").strip()
-                un = p.get("username", "").strip()
-                real_name = dn or zn or un or f"Tài khoản {uid[-6:]}"
-                tag_label = f"{real_name}"
-                if un: tag_label += f" (@{un})"
-                members.append({
-                    "id": str(uid), "name": tag_label,
-                    "display_name": dn, "zalo_name": zn, "username": un
-                })
-        except Exception:
-            for uid in uids:
-                members.append({
-                    "id": str(uid), "name": f"Tài khoản {uid[-6:]}",
-                    "display_name": "", "zalo_name": "", "username": ""
-                })
-        return members
+        mem_info_list = info.get("memInfoList", [])
+        if isinstance(mem_info_list, list):
+            for m in mem_info_list:
+                if isinstance(m, dict):
+                    uid = str(m.get("userId") or m.get("id") or "")
+                    name = (m.get("dName") or m.get("displayName") or m.get("name") or m.get("zaloName") or "").strip()
+                    if uid and name:
+                        members_dict[uid] = name
+
+        mem_ver_list = info.get("memVerList", [])
+        uids = [m.split("_")[0] for m in mem_ver_list if m]
+        missing_uids = [u for u in uids if u not in members_dict]
+
+        if missing_uids:
+            try:
+                enc2 = self._enc({"grid": str(gid), "userIds": missing_uids, "friendId": missing_uids})
+                r2 = self.s.post(
+                    "https://tt-group-wpa.chat.zalo.me/api/group/getuserinfo",
+                    params={"zpw_ver": 645, "zpw_type": 30},
+                    data={"params": enc2}, timeout=18,
+                )
+                dec2 = self._dec(r2.json()["data"])
+                profiles_data = json.loads(dec2).get("data", {})
+                profiles = profiles_data.get("profiles", {}) if isinstance(profiles_data, dict) else {}
+                for uid in missing_uids:
+                    p = profiles.get(uid, {})
+                    pname = (p.get("displayName") or p.get("zaloName") or p.get("username") or "").strip()
+                    if pname:
+                        members_dict[uid] = pname
+            except Exception:
+                pass
+
+        friends = self.friends()
+        for f in friends:
+            fid = str(f.get("id"))
+            if fid in uids and fid not in members_dict:
+                members_dict[fid] = f.get("name")
+
+        out = []
+        for uid in uids:
+            real_name = members_dict.get(uid) or f"Thành viên {uid[-6:]}"
+            out.append({
+                "id": str(uid),
+                "name": real_name
+            })
+        return out
 
     def build_mentions(self, text, mentions, tag_all=False):
         final = text
         m_arr = []
         if tag_all:
             tag_str = "@All"
-            pos = len(final) + (1 if final else 0)
+            pos = utf16_len(final) + (1 if final else 0)
             final = (final + " " + tag_str) if final else tag_str
-            m_arr.append({"uid": "0", "pos": pos, "len": len(tag_str), "type": 1})
+            m_arr.append({"uid": "0", "pos": pos, "len": utf16_len(tag_str), "type": 1})
             return final, m_arr
 
         if not mentions:
@@ -335,12 +359,12 @@ class Zalo:
             uid = str(m.get("uid") or m.get("id") or "").strip()
             if not name or not uid: continue
             tag_str = "@" + name
-            pos = len(final) + (1 if final else 0)
+            pos = utf16_len(final) + (1 if final else 0)
             final = (final + " " + tag_str) if final else tag_str
-            m_arr.append({"uid": str(uid), "pos": pos, "len": len(tag_str), "type": 0})
+            m_arr.append({"uid": str(uid), "pos": pos, "len": utf16_len(tag_str), "type": 0})
         return final, m_arr
 
-    def send(self, msg, thread_id, color=None, is_group=True, mentions=None, tag_all=False, is_heading=True):
+    def send(self, msg, thread_id, color_item=None, is_group=True, mentions=None, tag_all=False, is_heading=True):
         url = ("https://tt-group-wpa.chat.zalo.me/api/group/sendmsg"
                if is_group
                else "https://tt-chat2-wpa.chat.zalo.me/api/message/sms")
@@ -370,11 +394,16 @@ class Zalo:
         if m_arr:
             pl["mentions"] = json.dumps(m_arr, ensure_ascii=False)
 
-        if color and color != "none":
-            pl["msgColor"] = color
+        if color_item and isinstance(color_item, dict):
+            c_id = color_item.get("id", "red")
+            c_hex = color_item.get("hex", "#e8453c")
+            pl["msgColor"] = c_id
+            pl["color"] = c_hex
+            u16_length = utf16_len(final_msg)
             styles = [
-                {"offset": 0, "len": len(final_msg), "type": "color", "value": color},
-                {"offset": 0, "len": len(final_msg), "st": color}
+                {"offset": 0, "len": u16_length, "type": "color", "value": c_hex},
+                {"offset": 0, "len": u16_length, "type": "color", "value": c_id},
+                {"start": 0, "len": u16_length, "st": f"c_{c_hex}"}
             ]
             pl["styles"] = json.dumps(styles)
 
@@ -389,10 +418,10 @@ class Zalo:
                            data={"params": enc}, timeout=15)
 
 
-CSS_MAIN = """
+CSS_STYLE = """
 :root {
   --bg-page: #fbfbfd;
-  --bg-card: rgba(255, 255, 255, 0.92);
+  --bg-card: rgba(255, 255, 255, 0.94);
   --border-color: rgba(226, 232, 240, 0.85);
   --txt-0: #0f172a;
   --txt-1: #334155;
@@ -410,7 +439,7 @@ body {
   background-color: var(--bg-page);
   color: var(--txt-1);
   min-height: 100vh;
-  padding-bottom: 105px;
+  padding-bottom: 110px;
   position: relative;
   overflow-x: hidden;
 }
@@ -425,7 +454,7 @@ body::before {
 }
 
 .header {
-  background: rgba(255, 255, 255, 0.9);
+  background: rgba(255, 255, 255, 0.92);
   backdrop-filter: blur(25px);
   padding: 10px 18px;
   border-bottom: 1px solid var(--border-color);
@@ -444,7 +473,12 @@ body::before {
 .logo-box img { width: 100%; height: 100%; object-fit: cover; }
 .header-meta { flex: 1; min-width: 0; }
 .header-meta h1 { font-family: 'Orbitron', sans-serif; font-size: 14px; font-weight: 900; color: var(--txt-0); }
-.header-meta p { font-size: 9.5px; color: var(--txt-2); font-weight: 700; margin-top: 2px; }
+.header-meta p { font-size: 9.5px; color: var(--txt-2); font-weight: 700; margin-top: 2px; display: flex; align-items: center; gap: 4px; }
+
+.v-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  color: #0084ff; font-weight: 900; filter: drop-shadow(0 2px 4px rgba(0,132,255,0.3));
+}
 
 .container { max-width: 1050px; margin: 0 auto; padding: 14px; position: relative; z-index: 10; }
 .panel { display: none; animation: fadeIn .28s var(--ease) both; }
@@ -580,10 +614,10 @@ HTML_GATE = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Hệ Thống Xác Thực Tự Động</title>
+<title>Bảo Mật ALB Shield — Cổng Xác Thực</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
 <style>
-""" + CSS_MAIN + """
+""" + CSS_STYLE + """
 body { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
 .gate-card {
   background: rgba(255, 255, 255, 0.98); border: 1px solid var(--border-color);
@@ -602,15 +636,14 @@ body { display: flex; align-items: center; justify-content: center; min-height: 
   animation: spin 1.2s linear infinite;
 }
 @keyframes spin { 100% { transform: rotate(360deg); } }
-.radar-icon { font-size: 32px; animation: pulse 1.5s ease-in-out infinite; }
-@keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.15); } }
+.radar-icon { font-size: 32px; }
 .progress-line {
   height: 4px; width: 100%; background: #f1f5f9; border-radius: 99px;
-  overflow: hidden; margin: 16px 0;
+  overflow: hidden; margin: 16px 0; display: none;
 }
 .progress-fill {
   height: 100%; width: 0%; background: var(--grad-primary);
-  border-radius: 99px; transition: width 0.3s ease;
+  border-radius: 99px; transition: width 0.35s ease;
 }
 .copyright-tag { margin-top: 18px; font-size: 9.5px; color: var(--txt-2); font-weight: 800; }
 </style>
@@ -620,37 +653,47 @@ body { display: flex; align-items: center; justify-content: center; min-height: 
   <div class="radar-scanner">
     <div class="radar-icon">🛡️</div>
   </div>
-  <h1 style="font-family:'Orbitron',sans-serif; font-size:16px; margin-bottom:6px;">KIỂM TRA AN TOÀN TỰ ĐỘNG</h1>
-  <p id="scan-status" style="font-size:11px; color:var(--txt-2); min-height:30px;">Đang khởi tạo môi trường bảo mật...</p>
-  <div class="progress-line"><div class="progress-fill" id="p-bar"></div></div>
-  <button class="btn-pill primary full" id="manual-btn" style="display:none;" onclick="finishScan()">Tiếp tục vào hệ thống</button>
-  <div class="copyright-tag">Bản quyền thuộc về <b>Phạm Anh Khôi</b></div>
+  <h1 style="font-family:'Orbitron',sans-serif; font-size:16px; margin-bottom:6px;">CỔNG BẢO MẬT ANTI-DDOS</h1>
+  <p id="scan-status" style="font-size:11px; color:var(--txt-2); min-height:30px;">Hệ thống yêu cầu xác thực danh tính để ngăn chặn các lượt truy vấn ảo.</p>
+  <div class="progress-line" id="p-box"><div class="progress-fill" id="p-bar"></div></div>
+  <button class="btn-pill primary full" id="start-btn" onclick="startVerification()">Bắt đầu quét bảo mật & Xác thực</button>
+  <div class="copyright-tag">Copyright © 2026 Pham Anh Khoi • All Rights Reserved ⚡</div>
 </div>
 <script>
+var pBox = document.getElementById('p-box');
 var pBar = document.getElementById('p-bar');
 var statusTxt = document.getElementById('scan-status');
+var startBtn = document.getElementById('start-btn');
+
 var steps = [
-  { p: 25, txt: 'Đang kiểm tra chứng chỉ bảo mật máy chủ...' },
-  { p: 55, txt: 'Đang phân tích cấu trúc kết nối mạng...' },
-  { p: 85, txt: 'Xác nhận danh tính an toàn thành công!' },
-  { p: 100, txt: 'Chuyển hướng vào trang chính...' }
+  { p: 25, txt: 'Đang kiểm tra địa chỉ IP và tần suất truy vấn...' },
+  { p: 60, txt: 'Đang phân tích chứng chỉ trình duyệt bảo mật...' },
+  { p: 85, txt: 'Xác thực hoàn tất! Cấp quyền truy cập hệ thống...' },
+  { p: 100, txt: 'Đang chuyển hướng vào bảng điều khiển...' }
 ];
 var idx = 0;
+
+function startVerification(){
+  startBtn.style.display = 'none';
+  pBox.style.display = 'block';
+  runStep();
+}
+
 function runStep(){
   if(idx < steps.length){
     pBar.style.width = steps[idx].p + '%';
     statusTxt.textContent = steps[idx].txt;
     idx++;
-    setTimeout(runStep, 400);
+    setTimeout(runStep, 450);
   } else {
     finishScan();
   }
 }
+
 async function finishScan(){
   var r = await fetch('/api/verify_human', { method: 'POST' }).then(x => x.json());
   if(r.ok) window.location.href = '/login';
 }
-setTimeout(runStep, 250);
 </script>
 </body>
 </html>
@@ -664,7 +707,7 @@ HTML_LOGIN = """<!DOCTYPE html>
 <title>Đăng Nhập Hệ Thống</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
 <style>
-""" + CSS_MAIN + """
+""" + CSS_STYLE + """
 body { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
 .login-card {
   background: rgba(255, 255, 255, 0.98); border: 1px solid var(--border-color);
@@ -682,7 +725,9 @@ body { display: flex; align-items: center; justify-content: center; min-height: 
     <img src="/static/logo.png" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\\'http://www.w3.org/2000/svg\\' viewBox=\\'0 0 100 100\\'><circle cx=\\'50\\' cy=\\'50\\' r=\\'50\\' fill=\\'%23e11d48\\'/><text x=\\'50\\' y=\\'58\\' text-anchor=\\'middle\\' font-size=\\'36\\' fill=\\'white\\'>❤</text></svg>'">
   </div>
   <h1 style="font-family:'Orbitron',sans-serif; font-size:18px; margin-bottom:4px;">I LOVE NGỌC HÂN</h1>
-  <p style="font-size:10px; color:var(--txt-2); font-weight:700; margin-bottom:20px;">HỆ THỐNG ĐIỀU HÀNH CHUYÊN NGHIỆP</p>
+  <p style="font-size:10px; color:var(--txt-2); font-weight:700; margin-bottom:20px; display:flex; align-items:center; justify-content:center; gap:4px;">
+    Bản quyền thiết kế: <span class="v-badge"><svg viewBox="0 0 24 24" width="14" height="14" fill="#0084ff"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg></span> Phạm Anh Khôi
+  </p>
   {% if error %}<div class="err-msg">⚠️ {{ error }}</div>{% endif %}
   <form method="POST">
     <div class="form-group" style="text-align:left;">
@@ -690,7 +735,7 @@ body { display: flex; align-items: center; justify-content: center; min-height: 
     </div>
     <button type="submit" class="btn-pill primary full">💖 Đăng nhập hệ thống</button>
   </form>
-  <div style="margin-top:18px; font-size:9.5px; color:var(--txt-2); font-weight:800;">Bản quyền thuộc về <b>Phạm Anh Khôi</b></div>
+  <div style="margin-top:18px; font-size:9.5px; color:var(--txt-2); font-weight:800;">Copyright © 2026 Pham Anh Khoi • All Rights Reserved ⚡</div>
 </div>
 </body>
 </html>
@@ -701,12 +746,12 @@ HTML_INDEX = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Hệ Thống Quản Lý — I Love Ngọc Hân</title>
+<title>Bảng Điều Khiển — I Love Ngọc Hân</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@500;700&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
 <style>
-""" + CSS_MAIN + """
+""" + CSS_STYLE + """
 </style>
 </head>
 <body>
@@ -719,7 +764,9 @@ HTML_INDEX = """<!DOCTYPE html>
     </div>
     <div class="header-meta">
       <h1>I LOVE NGỌC HÂN 💖</h1>
-      <p>Bản quyền thuộc về <b>Phạm Anh Khôi</b></p>
+      <p>
+        Bản quyền thiết kế: <span class="v-badge"><svg viewBox="0 0 24 24" width="13" height="13" fill="#0084ff"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg></span> <b>Phạm Anh Khôi</b>
+      </p>
     </div>
     <button class="btn-pill light" onclick="location.href='/logout'">Thoát</button>
   </div>
@@ -742,7 +789,7 @@ HTML_INDEX = """<!DOCTYPE html>
     </div>
 
     <div class="card">
-      <h2><span>Tải Lên Logo Mới</span></h2>
+      <h2><span>Tải Lên Logo Website</span></h2>
       <div style="display:flex; gap:8px; align-items:center;">
         <input type="file" id="logo-file-input" accept="image/*" style="font-size:11px; padding:6px;">
         <button class="btn-pill dark" onclick="uploadLogo()">Cập Nhật Logo</button>
@@ -753,7 +800,7 @@ HTML_INDEX = """<!DOCTYPE html>
       <h2><span>Danh Sách Tài Khoản</span></h2>
       <div class="table-wrap">
         <table class="table">
-          <thead><tr><th>ID</th><th>Gợi nhớ</th><th>Họ Tên Thật</th><th>UID</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
+          <thead><tr><th>ID</th><th>Gợi nhớ</th><th>Họ Tên Thật Zalo</th><th>UID</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
           <tbody id="accounts-tbody"></tbody>
         </table>
       </div>
@@ -792,14 +839,14 @@ HTML_INDEX = """<!DOCTYPE html>
 
   <div class="panel" id="panel-spam">
     <div class="card">
-      <h2><span>Thiết Lập Gửi Tin Tự Động</span></h2>
+      <h2><span>Thiết Lập Gửi Tin Nâng Cao</span></h2>
 
       <div class="form-group">
         <label>Chế độ gửi</label>
         <div class="chip-bar" id="mode-selector">
           <div class="chip-item active" data-mode="fast">Siêu Nhanh</div>
           <div class="chip-item" data-mode="treo_ngon">Treo Ngôn (N Dòng / 1 Tin)</div>
-          <div class="chip-item" data-mode="treo_nhay">Treo Nhây (Đánh số dòng)</div>
+          <div class="chip-item" data-mode="treo_nhay">Treo Nhây (Từng Dòng Không Số)</div>
         </div>
         <input type="hidden" id="spam-mode" value="fast">
       </div>
@@ -811,11 +858,11 @@ HTML_INDEX = """<!DOCTYPE html>
 
       <div class="form-group">
         <label>Hoặc dán trực tiếp văn bản</label>
-        <textarea id="spam-messages" placeholder="Dán nội dung nhiều dòng vào đây... Nếu chọn Treo Ngôn, toàn bộ văn bản sẽ được gửi trong đúng 1 tin nhắn duy nhất!"></textarea>
+        <textarea id="spam-messages" placeholder="Dán văn bản nhiều dòng vào đây... Nếu chọn Treo Ngôn, toàn bộ văn bản sẽ được gửi trong 1 tin duy nhất. Nếu chọn Treo Nhây, mỗi dòng sẽ được gửi riêng biệt (không đánh số)."></textarea>
       </div>
 
       <div class="form-group">
-        <label>Tự động đổi màu chữ Zalo</label>
+        <label>Đổi màu chữ Zalo tự động</label>
         <div class="chip-bar" id="color-mode-bar">
           <div class="chip-item active" data-cmode="random">Đổi màu ngẫu nhiên</div>
           <div class="chip-item" data-cmode="cycle">Đổi màu xoay vòng</div>
@@ -913,7 +960,7 @@ var _members = [];
 var currentMode = "fast";
 var colorMode = "random";
 var fixedColor = "red";
-var ZALO_COLORS = [];
+var ZALO_PALETTE = [];
 
 var Toast = (function(){
   var stack = null;
@@ -1217,6 +1264,8 @@ async function startSpam(){
   } else if(direct){
     if(currentMode === "treo_ngon"){
       blocks = [direct];
+    } else if(currentMode === "treo_nhay"){
+      blocks = direct.split('\n').map(m => m.trim()).filter(Boolean);
     } else {
       blocks = direct.includes(';') ? direct.split(';').map(m => m.trim()).filter(Boolean) : [direct];
     }
@@ -1278,7 +1327,7 @@ async function stopTask(tid){
 async function loadColors(){
   var cols = await api('/api/colors');
   if(Array.isArray(cols)){
-    ZALO_COLORS = cols;
+    ZALO_PALETTE = cols;
     var wrap = document.getElementById('fixed-colors-wrap');
     wrap.innerHTML = cols.map(c => `<div class="chip-item" style="border-color:${c.hex}; color:${c.hex};" onclick="setFixedColor('${c.id}')">${c.name}</div>`).join('');
   }
@@ -1411,7 +1460,7 @@ def api_upload_logo():
 @app.route("/api/colors", methods=["GET"])
 @login_required
 def api_colors():
-    return jsonify(ZALO_COLORS)
+    return jsonify(ZALO_PALETTE)
 
 
 @app.route("/api/accounts", methods=["GET"])
@@ -1597,6 +1646,19 @@ def api_tasks():
     return jsonify([dict(r) for r in rows])
 
 
+def pick_color_item(color_mode, fixed_color, index):
+    if color_mode == "none":
+        return None
+    if color_mode == "fixed":
+        for c in ZALO_PALETTE:
+            if c["id"] == fixed_color:
+                return c
+        return ZALO_PALETTE[0]
+    if color_mode == "cycle":
+        return ZALO_PALETTE[index % len(ZALO_PALETTE)]
+    return random.choice(ZALO_PALETTE)
+
+
 def single_acc_worker(acc_dict, targets, blocks, delay, use_emoji, icon_count,
                       tag_users, tag_all, is_heading, mode, color_mode, fixed_color,
                       stop_ev, counter, lock):
@@ -1608,7 +1670,7 @@ def single_acc_worker(acc_dict, targets, blocks, delay, use_emoji, icon_count,
         return
 
     b_idx, t_idx = 0, 0
-    c_idx = random.randint(0, len(COLOR_IDS) - 1)
+    c_idx = random.randint(0, len(ZALO_PALETTE) - 1)
 
     while not stop_ev.is_set():
         target = targets[t_idx % len(targets)]
@@ -1619,38 +1681,36 @@ def single_acc_worker(acc_dict, targets, blocks, delay, use_emoji, icon_count,
         raw = blocks[b_idx % len(blocks)]
         b_idx += 1
 
-        color = None
-        if color_mode == "random": color = random.choice(COLOR_IDS)
-        elif color_mode == "cycle": color = COLOR_IDS[c_idx % len(COLOR_IDS)]; c_idx += 1
-        elif color_mode == "fixed": color = fixed_color
+        color_item = pick_color_item(color_mode, fixed_color, c_idx)
+        c_idx += 1
 
         try:
             if mode == "treo_ngon":
                 text = raw.replace("\r\n", "\n").replace("\r", "\n")
                 if use_emoji and icon_count > 0:
                     text = text + " " + " ".join([get_icon_hard() for _ in range(icon_count)])
-                z.send(text, target_id, color=color, is_group=is_group,
+                z.send(text, target_id, color_item=color_item, is_group=is_group,
                        mentions=tag_users, tag_all=tag_all, is_heading=is_heading)
                 with lock: counter["sent"] += 1
 
             elif mode == "treo_nhay":
-                lines = [ln for ln in raw.split("\n") if ln.strip()]
-                for mi, ln in enumerate(lines, 1):
+                lines = [ln.strip() for ln in raw.split("\n") if ln.strip()]
+                for ln in lines:
                     if stop_ev.is_set(): break
-                    msg_line = f"{mi}. {ln}"
+                    msg_line = ln
                     if use_emoji and icon_count > 0:
                         msg_line += " " + " ".join([get_icon_hard() for _ in range(icon_count)])
-                    cur_col = random.choice(COLOR_IDS) if color_mode in ("random", "cycle") else color
-                    z.send(msg_line, target_id, color=cur_col, is_group=is_group,
-                           mentions=(tag_users if mi == 1 else None),
-                           tag_all=(tag_all if mi == 1 else False), is_heading=is_heading)
+                    sub_color = pick_color_item(color_mode, fixed_color, c_idx)
+                    c_idx += 1
+                    z.send(msg_line, target_id, color_item=sub_color, is_group=is_group,
+                           mentions=tag_users, tag_all=tag_all, is_heading=is_heading)
                     with lock: counter["sent"] += 1
                     time.sleep(0.2)
             else:
                 text = raw
                 if use_emoji and icon_count > 0:
                     text = text + " " + " ".join([get_icon_hard() for _ in range(icon_count)])
-                z.send(text, target_id, color=color, is_group=is_group,
+                z.send(text, target_id, color_item=color_item, is_group=is_group,
                        mentions=tag_users, tag_all=tag_all, is_heading=is_heading)
                 with lock: counter["sent"] += 1
 
