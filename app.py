@@ -1,7 +1,4 @@
-# ============================================================
-# ALB FORGE v36.0 — WHITE LUXURY & ZALO TRUE COLOR EDITION
-# BRANDING: PHẠM ANH KHÔI • I LOVE NGỌC HÂN
-# ============================================================
+# Copyright belongs to © Phạm Anh Khôi
 import os
 import json
 import time
@@ -29,17 +26,13 @@ STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 os.makedirs(STATIC_DIR, exist_ok=True)
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "alb-ngoc-han-luxury-2026")
+app.secret_key = os.environ.get("SECRET_KEY", "pham-anh-khoi-ngoc-han")
 app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024
 
-
-# ============================================================
-# BẢO MẬT: ANTI-DDOS & CHỐNG DÒ MẬT KHẨU
-# ============================================================
 DDOS_LIMIT_PER_MINUTE = 150
 DDOS_BURST_PER_SEC = 30
 LOGIN_MAX_FAILS = 5
-LOGIN_LOCKOUT_TIME = 900  # 15 phút
+LOGIN_LOCKOUT_TIME = 900
 
 ip_request_history = defaultdict(list)
 ip_blocked_until = {}
@@ -64,10 +57,7 @@ def security_shield_middleware():
     with security_lock:
         if ip in ip_blocked_until:
             if now < ip_blocked_until[ip]:
-                return jsonify({
-                    "error": "Khiên Anti-DDoS đã kích hoạt: Tạm dừng kết nối từ IP này do lưu lượng bất thường.",
-                    "retry_after": int(ip_blocked_until[ip] - now)
-                }), 429
+                return jsonify({"error": "Hệ thống tạm khóa IP do phát hiện truy vấn bất thường"}), 429
             else:
                 del ip_blocked_until[ip]
 
@@ -76,21 +66,17 @@ def security_shield_middleware():
 
         burst = sum(1 for t in history if now - t <= 1.0)
         if burst > DDOS_BURST_PER_SEC or len(history) > DDOS_LIMIT_PER_MINUTE:
-            ip_blocked_until[ip] = now + 180  # Khóa 3 phút
-            return jsonify({"error": "Phát hiện tần suất truy cập vượt ngưỡng cho phép (DDoS Shield Active)."}), 429
+            ip_blocked_until[ip] = now + 180
+            return jsonify({"error": "Hệ thống đang chịu tải lớn, vui lòng chờ ít phút"}), 429
 
         ip_request_history[ip].append(now)
 
-    # Cổng xác thực danh tính Anti-Bot
     if not session.get("human_verified") and request.endpoint not in ("verify_gate", "api_verify_human"):
         if request.path.startswith("/api/"):
-            return jsonify({"error": "Vui lòng vượt qua cổng xác thực danh tính"}), 403
+            return jsonify({"error": "Chưa hoàn tất kiểm tra an toàn"}), 403
         return redirect(url_for("verify_gate"))
 
 
-# ============================================================
-# DATABASE SETUP
-# ============================================================
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -146,22 +132,15 @@ def new_tid(p):
     return p + "_" + str(int(time.time() * 1000))
 
 
-# ============================================================
-# BẢNG MÀU CHỮ ZALO CHUẨN CLIENT
-# ============================================================
 ZALO_COLORS = [
     {"id": "red",    "name": "Đỏ Rực",       "hex": "#e8453c"},
-    {"id": "orange", "name": "Cam Nổi Bật",   "hex": "#ff8c00"},
-    {"id": "yellow", "name": "Vàng Chói",     "hex": "#f5c500"},
-    {"id": "green",  "name": "Lục Bảo",      "hex": "#00b14f"},
+    {"id": "orange", "name": "Cam Lửa",      "hex": "#ff8c00"},
+    {"id": "yellow", "name": "Vàng Tươi",    "hex": "#f5c500"},
+    {"id": "green",  "name": "Xanh Lá",      "hex": "#00b14f"},
     {"id": "ocean",  "name": "Xanh Biển",    "hex": "#0091ff"},
     {"id": "blue",   "name": "Xanh Dương",   "hex": "#0068ff"},
     {"id": "purple", "name": "Tím Pha Lê",   "hex": "#a05eff"},
     {"id": "pink",   "name": "Hồng Ngọc Hân","hex": "#ff47a8"},
-    {"id": "brown",  "name": "Nâu Đất",      "hex": "#a87050"},
-    {"id": "black",  "name": "Đen Tuyền",    "hex": "#1a1a1a"},
-    {"id": "gray",   "name": "Xám Khói",     "hex": "#8a8a8a"},
-    {"id": "white",  "name": "Trắng Sứ",     "hex": "#ffffff"}
 ]
 
 COLOR_IDS = [c["id"] for c in ZALO_COLORS]
@@ -190,9 +169,6 @@ def get_icon_hard():
     return random.choice(ZALO_ICON_UNICODE)
 
 
-# ============================================================
-# GIAO THỨC ZALO ENGINE NÂNG CAO
-# ============================================================
 class Zalo:
     def __init__(self, imei, cookies):
         self.imei = str(imei).strip()
@@ -233,7 +209,7 @@ class Zalo:
         self.zalo_name = ud.get("zaloName")
         self.username = ud.get("username")
         if not self.secret_key:
-            raise Exception("Không thể lấy khóa giải mã bảo mật")
+            raise Exception("Không thể lấy khóa xác thực")
 
     def _enc(self, params):
         key = base64.b64decode(self.secret_key)
@@ -317,25 +293,25 @@ class Zalo:
                 data={"params": enc2}, timeout=20,
             )
             dec2 = self._dec(r2.json()["data"])
-            profiles = json.loads(dec2).get("data", {})
-            if isinstance(profiles, dict) and "profiles" in profiles:
-                profiles = profiles["profiles"]
+            profiles_raw = json.loads(dec2).get("data", {})
+            profiles = profiles_raw.get("profiles", {}) if isinstance(profiles_raw, dict) else {}
 
             for uid in uids:
                 p = profiles.get(uid, {}) if isinstance(profiles, dict) else {}
-                dn = p.get("displayName", "")
-                zn = p.get("zaloName", "")
-                un = p.get("username", "")
-                # Tên thật chính xác tuyệt đối, không bao giờ dùng nhãn Thành viên / User
-                real_name = dn or zn or un or f"ID_{uid}"
+                dn = p.get("displayName", "").strip()
+                zn = p.get("zaloName", "").strip()
+                un = p.get("username", "").strip()
+                real_name = dn or zn or un or f"Tài khoản {uid[-6:]}"
+                tag_label = f"{real_name}"
+                if un: tag_label += f" (@{un})"
                 members.append({
-                    "id": str(uid), "name": real_name,
+                    "id": str(uid), "name": tag_label,
                     "display_name": dn, "zalo_name": zn, "username": un
                 })
         except Exception:
             for uid in uids:
                 members.append({
-                    "id": str(uid), "name": f"Zalo_{uid[-6:]}",
+                    "id": str(uid), "name": f"Tài khoản {uid[-6:]}",
                     "display_name": "", "zalo_name": "", "username": ""
                 })
         return members
@@ -354,7 +330,8 @@ class Zalo:
             return text, []
 
         for m in mentions:
-            name = str(m.get("name", "")).strip()
+            raw_name = str(m.get("name", "")).strip()
+            name = raw_name.split(" (")[0] if " (" in raw_name else raw_name
             uid = str(m.get("uid") or m.get("id") or "").strip()
             if not name or not uid: continue
             tag_str = "@" + name
@@ -363,14 +340,13 @@ class Zalo:
             m_arr.append({"uid": str(uid), "pos": pos, "len": len(tag_str), "type": 0})
         return final, m_arr
 
-    def send(self, msg, thread_id, color=None, is_group=True, mentions=None, tag_all=False, is_heading=False):
+    def send(self, msg, thread_id, color=None, is_group=True, mentions=None, tag_all=False, is_heading=True):
         url = ("https://tt-group-wpa.chat.zalo.me/api/group/sendmsg"
                if is_group
                else "https://tt-chat2-wpa.chat.zalo.me/api/message/sms")
 
         final_msg = msg.replace("\r\n", "\n").replace("\r", "\n")
 
-        # Chế độ Heading `# ` để chữ to đùng y hệt hình mẫu
         if is_heading:
             lines = final_msg.split("\n")
             h_lines = []
@@ -394,7 +370,6 @@ class Zalo:
         if m_arr:
             pl["mentions"] = json.dumps(m_arr, ensure_ascii=False)
 
-        # Cơ chế kích hoạt màu sắc Zalo toàn diện
         if color and color != "none":
             pl["msgColor"] = color
             styles = [
@@ -414,22 +389,18 @@ class Zalo:
                            data={"params": enc}, timeout=15)
 
 
-# ============================================================
-# THIẾT KẾ GIAO DIỆN WHITE LUXURY VÀ FULLSCREEN BACKGROUND
-# ============================================================
-CSS_LUXURY = """
+CSS_MAIN = """
 :root {
-  --bg-page: #f8fafc;
-  --bg-card: rgba(255, 255, 255, 0.95);
-  --border-color: rgba(226, 232, 240, 0.9);
+  --bg-page: #fbfbfd;
+  --bg-card: rgba(255, 255, 255, 0.92);
+  --border-color: rgba(226, 232, 240, 0.85);
   --txt-0: #0f172a;
   --txt-1: #334155;
   --txt-2: #64748b;
   --accent: #e11d48;
-  --accent-soft: rgba(225, 29, 72, 0.1);
-  --grad-pink: linear-gradient(135deg, #f43f5e 0%, #e11d48 100%);
+  --grad-primary: linear-gradient(135deg, #f43f5e 0%, #e11d48 100%);
   --grad-dark: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-  --shadow-card: 0 10px 30px rgba(15, 23, 42, 0.06);
+  --shadow-soft: 0 10px 30px rgba(15, 23, 42, 0.05);
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
 }
 * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
@@ -439,84 +410,91 @@ body {
   background-color: var(--bg-page);
   color: var(--txt-1);
   min-height: 100vh;
-  padding-bottom: 110px;
+  padding-bottom: 105px;
   position: relative;
+  overflow-x: hidden;
 }
-/* HÌNH NỀN CHIẾC VÁY FULLSCREEN PHỦ TOÀN BỘ MÀN HÌNH */
+#particles-canvas {
+  position: fixed; inset: 0; pointer-events: none; z-index: 90; width: 100%; height: 100%;
+}
 body::before {
   content: ''; position: fixed; inset: 0;
   background-image: url('/static/bg.jpg');
   background-size: cover; background-position: center; background-repeat: no-repeat;
-  opacity: 0.14; filter: blur(2px); pointer-events: none; z-index: -1;
+  opacity: 0.16; filter: blur(3px); pointer-events: none; z-index: -1;
 }
 
-/* HEADER TINH TẾ */
 .header {
-  background: rgba(255, 255, 255, 0.92);
-  backdrop-filter: blur(20px);
-  padding: 10px 16px;
+  background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(25px);
+  padding: 10px 18px;
   border-bottom: 1px solid var(--border-color);
   position: sticky; top:0; z-index: 100;
-  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.03);
+  box-shadow: 0 2px 12px rgba(15, 23, 42, 0.03);
 }
-.header-inner { max-width: 1000px; margin: 0 auto; display: flex; align-items: center; gap: 12px; }
+.header-inner { max-width: 1050px; margin: 0 auto; display: flex; align-items: center; gap: 12px; }
 .logo-box {
   width: 44px; height: 44px; border-radius: 50%;
   overflow: hidden; border: 2px solid #fff;
-  box-shadow: 0 4px 15px rgba(225, 29, 72, 0.25);
+  box-shadow: 0 4px 16px rgba(225, 29, 72, 0.3);
   background: #fff; flex-shrink: 0;
+  animation: pulseLogo 3s ease-in-out infinite;
 }
+@keyframes pulseLogo { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.05); } }
 .logo-box img { width: 100%; height: 100%; object-fit: cover; }
 .header-meta { flex: 1; min-width: 0; }
 .header-meta h1 { font-family: 'Orbitron', sans-serif; font-size: 14px; font-weight: 900; color: var(--txt-0); }
-.header-meta p { font-size: 9.5px; color: var(--txt-2); font-weight: 700; text-transform: uppercase; margin-top: 1px; }
+.header-meta p { font-size: 9.5px; color: var(--txt-2); font-weight: 700; margin-top: 2px; }
 
-/* CONTAINER & CARDS */
-.container { max-width: 1000px; margin: 0 auto; padding: 14px; }
-.panel { display: none; animation: fadeIn .25s var(--ease) both; }
+.container { max-width: 1050px; margin: 0 auto; padding: 14px; position: relative; z-index: 10; }
+.panel { display: none; animation: fadeIn .28s var(--ease) both; }
 .panel.active { display: block; }
-@keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 
 .card {
   background: var(--bg-card); backdrop-filter: blur(20px);
-  padding: 16px; border-radius: 16px; border: 1px solid var(--border-color);
-  box-shadow: var(--shadow-card); margin-bottom: 12px;
+  padding: 16px; border-radius: 18px; border: 1px solid var(--border-color);
+  box-shadow: var(--shadow-soft); margin-bottom: 12px;
 }
 .card h2 {
-  font-size: 11.5px; font-weight: 800; letter-spacing: .5px; margin-bottom: 12px;
-  display: flex; align-items: center; justify-content: space-between; color: var(--txt-0); text-transform: uppercase;
+  font-size: 11.5px; font-weight: 900; letter-spacing: .5px; margin-bottom: 12px;
+  display: flex; align-items: center; justify-content: space-between; color: var(--txt-0);
 }
 
-/* NÚT BẤM DẠNG VIÊN THUỐC (PILL-SHAPED) GỌN GÀNG */
 .btn-pill {
   padding: 8px 14px; border-radius: 99px; border: none; cursor: pointer;
-  font-size: 10.5px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase;
-  display: inline-flex; align-items: center; gap: 6px; transition: all .2s var(--ease);
+  font-size: 10.5px; font-weight: 800; letter-spacing: .4px;
+  display: inline-flex; align-items: center; gap: 6px; transition: all .25s var(--ease);
+  position: relative; overflow: hidden;
 }
-.btn-pill:hover { transform: translateY(-1px); filter: brightness(1.05); }
-.btn-pill:active { transform: translateY(0) scale(0.97); }
-.btn-pill.primary { background: var(--grad-pink); color: #fff; box-shadow: 0 4px 12px rgba(225, 29, 72, 0.25); }
+.btn-pill::after {
+  content: ''; position: absolute; top: -50%; left: -60%; width: 40%; height: 200%;
+  background: linear-gradient(60deg, transparent, rgba(255,255,255,0.4), transparent);
+  transform: rotate(25deg); transition: all 0.6s;
+}
+.btn-pill:hover::after { left: 130%; }
+.btn-pill:hover { transform: translateY(-2px); filter: brightness(1.05); }
+.btn-pill:active { transform: translateY(0) scale(0.96); }
+.btn-pill.primary { background: var(--grad-primary); color: #fff; box-shadow: 0 4px 14px rgba(225, 29, 72, 0.28); }
 .btn-pill.dark { background: var(--grad-dark); color: #fff; }
 .btn-pill.light { background: #f1f5f9; color: var(--txt-1); border: 1px solid var(--border-color); }
-.btn-pill.danger { background: #fee2e2; color: #b91c1c; border: 1px solid rgba(239, 68, 68, 0.2); }
+.btn-pill.danger { background: #fee2e2; color: #b91c1c; }
 .btn-pill.full { width: 100%; justify-content: center; padding: 11px; }
 
-/* NÚT TRÒN GỌN GÀNG */
 .btn-round {
-  width: 36px; height: 36px; border-radius: 50%; border: none; cursor: pointer;
+  width: 44px; height: 44px; border-radius: 50%; border: none; cursor: pointer;
   display: inline-flex; align-items: center; justify-content: center;
-  transition: all .2s var(--ease); margin: 2px;
+  transition: all .25s var(--ease); margin: 3px;
 }
-.btn-round svg { width: 16px; height: 16px; }
-.btn-round:hover { transform: scale(1.06); }
-.btn-round.action-start { background: #10b981; color: #fff; box-shadow: 0 4px 12px rgba(16, 185, 129, 0.25); }
-.btn-round.action-stop { background: #ef4444; color: #fff; box-shadow: 0 4px 12px rgba(239, 68, 68, 0.25); }
+.btn-round svg { width: 18px; height: 18px; }
+.btn-round:hover { transform: scale(1.08); }
+.btn-round.action-start { background: #10b981; color: #fff; box-shadow: 0 4px 14px rgba(16, 185, 129, 0.3); }
+.btn-round.action-stop { background: #ef4444; color: #fff; box-shadow: 0 4px 14px rgba(239, 68, 68, 0.3); }
 
-/* FORMS */
 .form-group { margin-bottom: 11px; }
-.form-group label { display: block; margin-bottom: 5px; font-size: 9.5px; font-weight: 800; color: var(--txt-2); text-transform: uppercase; }
+.form-group label { display: block; margin-bottom: 5px; font-size: 9.5px; font-weight: 800; color: var(--txt-2); }
 .form-group input, .form-group textarea, .form-group select {
-  width: 100%; padding: 10px 12px; border: 1.5px solid var(--border-color); border-radius: 11px;
+  width: 100%; padding: 11px 13px; border: 1.5px solid var(--border-color); border-radius: 12px;
   font-size: 12px; background: #fff; color: var(--txt-0); transition: border-color .2s;
 }
 .form-group input:focus, .form-group textarea:focus, .form-group select:focus {
@@ -524,34 +502,29 @@ body::before {
 }
 .form-group textarea { min-height: 85px; font-family: 'JetBrains Mono', monospace; font-size: 11.5px; }
 
-/* CHIPS & TOGGLES */
 .chip-bar { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 4px; }
 .chip-item {
   padding: 6px 12px; background: #fff; color: var(--txt-2); border-radius: 99px;
-  font-size: 10px; font-weight: 700; cursor: pointer; border: 1px solid var(--border-color);
+  font-size: 10px; font-weight: 800; cursor: pointer; border: 1px solid var(--border-color);
   transition: all .2s;
 }
 .chip-item:hover { border-color: var(--accent); color: var(--accent); }
-.chip-item.active { background: var(--grad-pink); color: #fff; border-color: transparent; }
+.chip-item.active { background: var(--grad-primary); color: #fff; border-color: transparent; }
 
 .toggle-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 6px; margin-bottom: 11px; }
 .toggle-item {
   padding: 9px; border: 1px solid var(--border-color); border-radius: 12px;
   cursor: pointer; text-align: center; font-weight: 800; font-size: 10px;
-  background: #fff; color: var(--txt-2); text-transform: uppercase; transition: all .2s;
+  background: #fff; color: var(--txt-2); transition: all .2s;
 }
-.toggle-item.active { background: var(--grad-pink); color: #fff; border-color: transparent; box-shadow: 0 4px 10px rgba(225, 29, 72, 0.2); }
+.toggle-item.active { background: var(--grad-primary); color: #fff; border-color: transparent; box-shadow: 0 4px 10px rgba(225, 29, 72, 0.2); }
 
-/* BẢNG & DANH SÁCH */
 .table-wrap { overflow-x: auto; border-radius: 12px; border: 1px solid var(--border-color); background: #fff; }
 .table { width: 100%; border-collapse: collapse; }
 .table th, .table td { padding: 9px 8px; text-align: left; font-size: 10.5px; border-bottom: 1px solid #f1f5f9; white-space: nowrap; }
-.table th { background: #f8fafc; font-weight: 800; color: var(--txt-2); text-transform: uppercase; font-size: 8.5px; }
+.table th { background: #f8fafc; font-weight: 800; color: var(--txt-2); font-size: 8.5px; }
 
-.status-badge {
-  display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px;
-  border-radius: 99px; font-size: 9px; font-weight: 800;
-}
+.status-badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 99px; font-size: 9px; font-weight: 800; }
 .status-badge.live { background: #dcfce7; color: #15803d; }
 .status-badge.dead { background: #fee2e2; color: #b91c1c; }
 
@@ -571,7 +544,6 @@ body::before {
 .box-item .b-title { font-weight: 700; font-size: 11.5px; color: var(--txt-0); }
 .box-item .b-sub { font-size: 9px; color: var(--txt-2); font-family: 'JetBrains Mono', monospace; }
 
-/* FLOATING BOTTOM DOCK */
 .bottom-dock {
   position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%);
   width: calc(100% - 24px); max-width: 480px;
@@ -582,20 +554,16 @@ body::before {
   padding: 5px; gap: 4px; z-index: 999;
 }
 .bottom-dock .dock-btn {
-  padding: 8px 2px; border-radius: 99px; cursor: pointer; font-size: 9px; font-weight: 800;
+  padding: 8px 2px; border-radius: 99px; cursor: pointer; font-size: 9.5px; font-weight: 800;
   text-align: center; color: var(--txt-2); display: flex; flex-direction: column; align-items: center;
-  gap: 2px; background: transparent; border: none; transition: all .2s; text-transform: uppercase;
+  gap: 2px; background: transparent; border: none; transition: all .2s;
 }
 .bottom-dock .dock-btn svg { width: 17px; height: 17px; }
-.bottom-dock .dock-btn.active { background: var(--grad-pink); color: #fff; }
+.bottom-dock .dock-btn.active { background: var(--grad-primary); color: #fff; }
 
-/* TOAST THÔNG MINH */
-#toast-stack {
-  position: fixed; top: 12px; right: 12px; z-index: 99999;
-  max-width: 320px; width: calc(100% - 24px); pointer-events: none;
-}
+#toast-stack { position: fixed; top: 12px; right: 12px; z-index: 99999; max-width: 320px; width: calc(100% - 24px); pointer-events: none; }
 .toast {
-  pointer-events: auto; padding: 10px 14px; border-radius: 12px;
+  pointer-events: auto; padding: 11px 14px; border-radius: 12px;
   background: rgba(255, 255, 255, 0.98); border: 1px solid var(--border-color);
   box-shadow: 0 10px 25px rgba(15, 23, 42, 0.1); display: flex; flex-direction: column; gap: 2px;
   animation: toastIn .2s var(--ease) both;
@@ -603,70 +571,107 @@ body::before {
 .toast.swipe-up { animation: toastUp .18s ease-out forwards; }
 @keyframes toastIn { from { opacity: 0; transform: translateY(-15px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes toastUp { to { opacity: 0; transform: translateY(-30px); } }
-.toast .t-head { font-size: 10.5px; font-weight: 900; color: var(--txt-0); text-transform: uppercase; }
+.toast .t-head { font-size: 10.5px; font-weight: 900; color: var(--txt-0); }
 .toast .t-body { font-size: 10px; font-weight: 600; color: var(--txt-2); }
 """
 
-
-# ============================================================
-# CỔNG BẢO MẬT XÁC THỰC HUMAN
-# ============================================================
 HTML_GATE = """<!DOCTYPE html>
 <html lang="vi">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>ALB Security Gate — Xác Thực</title>
+<title>Hệ Thống Xác Thực Tự Động</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
 <style>
-""" + CSS_LUXURY + """
+""" + CSS_MAIN + """
 body { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
 .gate-card {
   background: rgba(255, 255, 255, 0.98); border: 1px solid var(--border-color);
-  border-radius: 20px; padding: 32px 24px; max-width: 380px; width: 100%; text-align: center;
-  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.08);
+  border-radius: 24px; padding: 36px 26px; max-width: 390px; width: 100%; text-align: center;
+  box-shadow: 0 25px 60px rgba(15, 23, 42, 0.08); position: relative; overflow: hidden;
 }
-.gate-icon { width: 56px; height: 56px; border-radius: 50%; background: var(--grad-pink); margin: 0 auto 14px; display: flex; align-items: center; justify-content: center; color: #fff; }
-.gate-icon svg { width: 28px; height: 28px; }
+.radar-scanner {
+  width: 90px; height: 90px; margin: 0 auto 18px; border-radius: 50%;
+  position: relative; display: flex; align-items: center; justify-content: center;
+  background: radial-gradient(circle, rgba(225,29,72,0.1) 0%, transparent 70%);
+  border: 2px dashed rgba(225,29,72,0.4);
+}
+.radar-scanner::before {
+  content: ''; position: absolute; inset: 0; border-radius: 50%;
+  border: 2px solid transparent; border-top-color: var(--accent);
+  animation: spin 1.2s linear infinite;
+}
+@keyframes spin { 100% { transform: rotate(360deg); } }
+.radar-icon { font-size: 32px; animation: pulse 1.5s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.15); } }
+.progress-line {
+  height: 4px; width: 100%; background: #f1f5f9; border-radius: 99px;
+  overflow: hidden; margin: 16px 0;
+}
+.progress-fill {
+  height: 100%; width: 0%; background: var(--grad-primary);
+  border-radius: 99px; transition: width 0.3s ease;
+}
+.copyright-tag { margin-top: 18px; font-size: 9.5px; color: var(--txt-2); font-weight: 800; }
 </style>
 </head>
 <body>
 <div class="gate-card">
-  <div class="gate-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
-  <h1 style="font-family:'Orbitron',sans-serif; font-size:16px; margin-bottom:6px;">ALB SECURITY GATE</h1>
-  <p style="font-size:11px; color:var(--txt-2); margin-bottom:20px;">Hệ thống phát hiện và ngăn chặn tự động tấn công DDoS. Vui lòng bấm xác thực để tiếp tục.</p>
-  <button class="btn-pill primary full" onclick="verifyHuman()">🛡️ Tôi là con người (Xác nhận)</button>
+  <div class="radar-scanner">
+    <div class="radar-icon">🛡️</div>
+  </div>
+  <h1 style="font-family:'Orbitron',sans-serif; font-size:16px; margin-bottom:6px;">KIỂM TRA AN TOÀN TỰ ĐỘNG</h1>
+  <p id="scan-status" style="font-size:11px; color:var(--txt-2); min-height:30px;">Đang khởi tạo môi trường bảo mật...</p>
+  <div class="progress-line"><div class="progress-fill" id="p-bar"></div></div>
+  <button class="btn-pill primary full" id="manual-btn" style="display:none;" onclick="finishScan()">Tiếp tục vào hệ thống</button>
+  <div class="copyright-tag">Bản quyền thuộc về <b>Phạm Anh Khôi</b></div>
 </div>
 <script>
-async function verifyHuman(){
+var pBar = document.getElementById('p-bar');
+var statusTxt = document.getElementById('scan-status');
+var steps = [
+  { p: 25, txt: 'Đang kiểm tra chứng chỉ bảo mật máy chủ...' },
+  { p: 55, txt: 'Đang phân tích cấu trúc kết nối mạng...' },
+  { p: 85, txt: 'Xác nhận danh tính an toàn thành công!' },
+  { p: 100, txt: 'Chuyển hướng vào trang chính...' }
+];
+var idx = 0;
+function runStep(){
+  if(idx < steps.length){
+    pBar.style.width = steps[idx].p + '%';
+    statusTxt.textContent = steps[idx].txt;
+    idx++;
+    setTimeout(runStep, 400);
+  } else {
+    finishScan();
+  }
+}
+async function finishScan(){
   var r = await fetch('/api/verify_human', { method: 'POST' }).then(x => x.json());
   if(r.ok) window.location.href = '/login';
 }
+setTimeout(runStep, 250);
 </script>
 </body>
 </html>
 """
 
-
-# ============================================================
-# GIAO DIỆN ĐĂNG NHẬP
-# ============================================================
 HTML_LOGIN = """<!DOCTYPE html>
 <html lang="vi">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>I Love Ngọc Hân — Đăng Nhập</title>
+<title>Đăng Nhập Hệ Thống</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
 <style>
-""" + CSS_LUXURY + """
+""" + CSS_MAIN + """
 body { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
 .login-card {
   background: rgba(255, 255, 255, 0.98); border: 1px solid var(--border-color);
-  border-radius: 20px; padding: 34px 24px; max-width: 380px; width: 100%; text-align: center;
+  border-radius: 24px; padding: 36px 26px; max-width: 380px; width: 100%; text-align: center;
   box-shadow: 0 20px 50px rgba(15, 23, 42, 0.08);
 }
-.login-logo { width: 72px; height: 72px; border-radius: 50%; overflow: hidden; margin: 0 auto 14px; border: 2px solid var(--accent); }
+.login-logo { width: 78px; height: 78px; border-radius: 50%; overflow: hidden; margin: 0 auto 14px; border: 2px solid var(--accent); }
 .login-logo img { width: 100%; height: 100%; object-fit: cover; }
 .err-msg { background: #fee2e2; color: #b91c1c; padding: 9px; border-radius: 10px; font-size: 11px; font-weight: 700; margin-bottom: 14px; text-align: left; }
 </style>
@@ -677,7 +682,7 @@ body { display: flex; align-items: center; justify-content: center; min-height: 
     <img src="/static/logo.png" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\\'http://www.w3.org/2000/svg\\' viewBox=\\'0 0 100 100\\'><circle cx=\\'50\\' cy=\\'50\\' r=\\'50\\' fill=\\'%23e11d48\\'/><text x=\\'50\\' y=\\'58\\' text-anchor=\\'middle\\' font-size=\\'36\\' fill=\\'white\\'>❤</text></svg>'">
   </div>
   <h1 style="font-family:'Orbitron',sans-serif; font-size:18px; margin-bottom:4px;">I LOVE NGỌC HÂN</h1>
-  <p style="font-size:10px; color:var(--txt-2); font-weight:700; margin-bottom:20px; text-transform:uppercase;">White Luxury Edition • v36.0</p>
+  <p style="font-size:10px; color:var(--txt-2); font-weight:700; margin-bottom:20px;">HỆ THỐNG ĐIỀU HÀNH CHUYÊN NGHIỆP</p>
   {% if error %}<div class="err-msg">⚠️ {{ error }}</div>{% endif %}
   <form method="POST">
     <div class="form-group" style="text-align:left;">
@@ -685,29 +690,27 @@ body { display: flex; align-items: center; justify-content: center; min-height: 
     </div>
     <button type="submit" class="btn-pill primary full">💖 Đăng nhập hệ thống</button>
   </form>
+  <div style="margin-top:18px; font-size:9.5px; color:var(--txt-2); font-weight:800;">Bản quyền thuộc về <b>Phạm Anh Khôi</b></div>
 </div>
 </body>
 </html>
 """
 
-
-# ============================================================
-# GIAO DIỆN DASHBOARD CHÍNH
-# ============================================================
 HTML_INDEX = """<!DOCTYPE html>
 <html lang="vi">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>I Love Ngọc Hân — Dashboard</title>
+<title>Hệ Thống Quản Lý — I Love Ngọc Hân</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@500;700&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
 <style>
-""" + CSS_LUXURY + """
+""" + CSS_MAIN + """
 </style>
 </head>
 <body>
+<canvas id="particles-canvas"></canvas>
 
 <div class="header">
   <div class="header-inner">
@@ -715,8 +718,8 @@ HTML_INDEX = """<!DOCTYPE html>
       <img id="header-logo" src="/static/logo.png" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\\'http://www.w3.org/2000/svg\\' viewBox=\\'0 0 100 100\\'><circle cx=\\'50\\' cy=\\'50\\' r=\\'50\\' fill=\\'%23e11d48\\'/><text x=\\'50\\' y=\\'58\\' text-anchor=\\'middle\\' font-size=\\'36\\' fill=\\'white\\'>❤</text></svg>'">
     </div>
     <div class="header-meta">
-      <h1>I LOVE NGỌC HÂN</h1>
-      <p>True Color Engine • Multi-Account Concurrency</p>
+      <h1>I LOVE NGỌC HÂN 💖</h1>
+      <p>Bản quyền thuộc về <b>Phạm Anh Khôi</b></p>
     </div>
     <button class="btn-pill light" onclick="location.href='/logout'">Thoát</button>
   </div>
@@ -726,78 +729,73 @@ HTML_INDEX = """<!DOCTYPE html>
 
 <div class="container">
 
-  <!-- TAB 1: ACCOUNTS -->
   <div class="panel active" id="panel-accounts">
     <div class="card">
       <h2>
-        <span>Tài khoản Zalo</span>
-        <button class="btn-pill dark" onclick="checkAllAccounts()">⚡ Check tất cả Acc</button>
+        <span>Tài Khoản Zalo</span>
+        <button class="btn-pill dark" onclick="checkAllAccounts()">Kiểm Tra Tất Cả</button>
       </h2>
       <div class="form-group"><label>Tên gợi nhớ</label><input id="add-label" placeholder="acc_1"></div>
       <div class="form-group"><label>IMEI thiết bị</label><input id="add-imei" placeholder="000000000000000"></div>
       <div class="form-group"><label>Cookie JSON</label><textarea id="add-cookies" placeholder='{"zpw_sek":"...","zpw_ver":"645","zpw_type":"30"}'></textarea></div>
-      <button class="btn-pill primary full" onclick="addAccount()">Lưu tài khoản</button>
+      <button class="btn-pill primary full" onclick="addAccount()">Lưu Tài Khoản</button>
     </div>
 
-    <!-- TẢI LÊN LOGO WEB -->
     <div class="card">
-      <h2><span>Tùy biến Logo Website</span></h2>
+      <h2><span>Tải Lên Logo Mới</span></h2>
       <div style="display:flex; gap:8px; align-items:center;">
         <input type="file" id="logo-file-input" accept="image/*" style="font-size:11px; padding:6px;">
-        <button class="btn-pill dark" onclick="uploadLogo()">Upload Logo</button>
+        <button class="btn-pill dark" onclick="uploadLogo()">Cập Nhật Logo</button>
       </div>
     </div>
 
     <div class="card">
-      <h2><span>Danh sách Acc Zalo</span></h2>
+      <h2><span>Danh Sách Tài Khoản</span></h2>
       <div class="table-wrap">
         <table class="table">
-          <thead><tr><th>ID</th><th>Tên gợi nhớ</th><th>Tên Zalo thật</th><th>UID</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
+          <thead><tr><th>ID</th><th>Gợi nhớ</th><th>Họ Tên Thật</th><th>UID</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
           <tbody id="accounts-tbody"></tbody>
         </table>
       </div>
     </div>
   </div>
 
-  <!-- TAB 2: BOXES -->
   <div class="panel" id="panel-boxes">
     <div class="card">
-      <h2><span>Quản lý Box Chat</span></h2>
-      <div class="form-group"><label>Chọn tài khoản để nạp danh sách</label><select id="load-acc-select"><option value="">-- Chọn Acc --</option></select></div>
+      <h2><span>Quản Lý Cuộc Trò Chuyện</span></h2>
+      <div class="form-group"><label>Chọn tài khoản để nạp cuộc trò chuyện</label><select id="load-acc-select"><option value="">-- Chọn tài khoản --</option></select></div>
       <div style="display:flex; gap:6px; margin-bottom:10px;">
-        <button class="btn-pill dark" onclick="loadBoxes()">Nạp Box</button>
-        <button class="btn-pill light" onclick="selectAllBoxes()">Chọn hết</button>
-        <button class="btn-pill danger" onclick="clearAllBoxes()">Bỏ chọn</button>
+        <button class="btn-pill dark" onclick="loadBoxes()">Nạp Danh Sách</button>
+        <button class="btn-pill light" onclick="selectAllBoxes()">Chọn Tất Cả</button>
+        <button class="btn-pill danger" onclick="clearAllBoxes()">Bỏ Chọn</button>
       </div>
       <div>
-        <div style="font-size:9.5px; font-weight:800; color:var(--txt-2); margin-bottom:4px; text-transform:uppercase;">
-          Đã chọn: <span id="selected-count" style="color:var(--accent);">0</span> box
+        <div style="font-size:9.5px; font-weight:800; color:var(--txt-2); margin-bottom:4px;">
+          ĐÃ CHỌN: <span id="selected-count" style="color:var(--accent);">0</span>
         </div>
-        <div class="box-list" id="box-list"><div style="text-align:center; padding:18px; color:var(--txt-2); font-size:11px;">Chưa nạp box</div></div>
+        <div class="box-list" id="box-list"><div style="text-align:center; padding:18px; color:var(--txt-2); font-size:11px;">Chưa nạp dữ liệu</div></div>
       </div>
     </div>
   </div>
 
-  <!-- TAB 3: FILES -->
   <div class="panel" id="panel-files">
     <div class="card">
-      <h2><span>Upload File Tin Nhắn</span></h2>
+      <h2><span>Tải Lên Văn Bản</span></h2>
       <div class="form-group"><input type="file" id="file-input" accept=".txt" style="padding:6px;"></div>
-      <button class="btn-pill primary full" onclick="uploadFile()">Tải lên file</button>
+      <button class="btn-pill primary full" onclick="uploadFile()">Lưu Tập Tin</button>
     </div>
     <div class="card">
-      <h2><span>Tệp tin đã lưu</span></h2>
-      <div id="files-list"><div style="text-align:center; padding:18px; color:var(--txt-2); font-size:11px;">Chưa có tệp</div></div>
+      <h2><span>Tập Tin Đã Lưu</span></h2>
+      <div id="files-list"><div style="text-align:center; padding:18px; color:var(--txt-2); font-size:11px;">Chưa có tập tin</div></div>
     </div>
   </div>
 
-  <!-- TAB 4: SPAM ENGINE -->
   <div class="panel" id="panel-spam">
     <div class="card">
-      <h2><span>Cấu hình gửi tin</span></h2>
+      <h2><span>Thiết Lập Gửi Tin Tự Động</span></h2>
 
       <div class="form-group">
-        <label>Chế độ gửi tin</label>
+        <label>Chế độ gửi</label>
         <div class="chip-bar" id="mode-selector">
           <div class="chip-item active" data-mode="fast">Siêu Nhanh</div>
           <div class="chip-item" data-mode="treo_ngon">Treo Ngôn (N Dòng / 1 Tin)</div>
@@ -807,42 +805,41 @@ HTML_INDEX = """<!DOCTYPE html>
       </div>
 
       <div class="form-group">
-        <label>Chọn tệp đã tải lên</label>
-        <select id="spam-file-select"><option value="">-- Chọn file --</option></select>
+        <label>Chọn tập tin có sẵn</label>
+        <select id="spam-file-select"><option value="">-- Chọn tập tin --</option></select>
       </div>
 
       <div class="form-group">
         <label>Hoặc dán trực tiếp văn bản</label>
-        <textarea id="spam-messages" placeholder="Dán văn bản nhiều dòng vào đây... Nếu chọn Treo Ngôn, toàn bộ văn bản sẽ được gửi trong 1 tin nhắn duy nhất!"></textarea>
+        <textarea id="spam-messages" placeholder="Dán nội dung nhiều dòng vào đây... Nếu chọn Treo Ngôn, toàn bộ văn bản sẽ được gửi trong đúng 1 tin nhắn duy nhất!"></textarea>
       </div>
 
       <div class="form-group">
-        <label>Màu chữ Zalo</label>
+        <label>Tự động đổi màu chữ Zalo</label>
         <div class="chip-bar" id="color-mode-bar">
-          <div class="chip-item" data-cmode="none">Tắt</div>
-          <div class="chip-item active" data-cmode="random">Ngẫu nhiên</div>
-          <div class="chip-item" data-cmode="cycle">Xoay vòng</div>
-          <div class="chip-item" data-cmode="fixed">Cố định</div>
+          <div class="chip-item active" data-cmode="random">Đổi màu ngẫu nhiên</div>
+          <div class="chip-item" data-cmode="cycle">Đổi màu xoay vòng</div>
+          <div class="chip-item" data-cmode="fixed">Cố định một màu</div>
+          <div class="chip-item" data-cmode="none">Tắt màu</div>
         </div>
         <input type="hidden" id="color-mode" value="random">
         <div id="fixed-colors-wrap" style="display:none; margin-top:6px;" class="chip-bar"></div>
       </div>
 
       <div class="form-group">
-        <label>Delay giữa các lần gửi (giây)</label>
+        <label>Khoảng cách gửi (giây)</label>
         <div class="chip-bar" id="delay-bar">
           <div class="chip-item" data-delay="0.3">0.3s</div>
           <div class="chip-item" data-delay="0.5">0.5s</div>
           <div class="chip-item active" data-delay="1">1s</div>
           <div class="chip-item" data-delay="2">2s</div>
           <div class="chip-item" data-delay="3">3s</div>
-          <div class="chip-item" data-delay="5">5s</div>
         </div>
         <input type="hidden" id="spam-delay" value="1">
       </div>
 
       <div class="form-group">
-        <label>Số Icon cuối câu</label>
+        <label>Số biểu tượng cảm xúc cuối câu</label>
         <div class="chip-bar" id="icon-bar">
           <div class="chip-item" data-icon="0">0</div>
           <div class="chip-item" data-icon="2">2</div>
@@ -852,22 +849,21 @@ HTML_INDEX = """<!DOCTYPE html>
         <input type="hidden" id="icon-count" value="3">
       </div>
 
-      <!-- TOGGLES QUAN TRỌNG -->
       <div class="toggle-grid">
-        <div class="toggle-item active" id="tg-heading" onclick="tgFlag('heading')">🔤 Chữ To Heading (#)</div>
-        <div class="toggle-item active" id="tg-multi" onclick="tgFlag('multi')">🚀 Đa Acc Đồng Thời</div>
-        <div class="toggle-item" id="tg-all" onclick="tgFlag('all')">📢 Tag All Box</div>
-        <div class="toggle-item active" id="tg-emoji" onclick="tgFlag('emoji')">😈 Icon Sát Thương</div>
+        <div class="toggle-item active" id="tg-heading" onclick="tgFlag('heading')">Chữ To Tiêu Đề (#)</div>
+        <div class="toggle-item active" id="tg-multi" onclick="tgFlag('multi')">Chạy Tất Cả Acc Song Song</div>
+        <div class="toggle-item" id="tg-all" onclick="tgFlag('all')">Nhắc Cả Nhóm (@All)</div>
+        <div class="toggle-item active" id="tg-emoji" onclick="tgFlag('emoji')">Biểu Tượng Cảm Xúc</div>
       </div>
 
       <div class="form-group">
         <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:11px;">
           <input type="checkbox" id="tg-tag" onchange="tgTag()" style="width:auto;">
-          Quét và Tag theo tên thật Zalo (Không bị User/UUID)
+          Chọn từng thành viên theo họ tên thật
         </label>
         <div id="tag-wrap" style="display:none; margin-top:8px;">
-          <div class="form-group"><select id="member-acc-select"><option value="">-- Chọn Acc quét --</option></select></div>
-          <button class="btn-pill dark" onclick="loadMembers()">Quét danh sách thành viên</button>
+          <div class="form-group"><select id="member-acc-select"><option value="">-- Chọn tài khoản quét --</option></select></div>
+          <button class="btn-pill dark" onclick="loadMembers()">Nạp Danh Sách Thành Viên</button>
           <div class="box-list" id="tag-selector" style="margin-top:6px; max-height:220px; display:none;"></div>
           <input type="hidden" id="tag-selected" value="">
         </div>
@@ -876,36 +872,35 @@ HTML_INDEX = """<!DOCTYPE html>
 
     <div style="text-align:center; margin-bottom:14px;">
       <button class="btn-round action-start" onclick="startSpam()" title="Bắt đầu"><svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 20 12 6 21 6 3"/></svg></button>
-      <button class="btn-round action-stop" onclick="stopAll()" title="Dừng"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg></button>
+      <button class="btn-round action-stop" onclick="stopAll()" title="Dừng lại"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg></button>
     </div>
 
     <div class="card">
-      <h2><span>Tiến trình đang chạy</span></h2>
+      <h2><span>Tiến Trình Đang Chạy</span></h2>
       <div class="table-wrap">
-        <table class="table"><thead><tr><th>ID</th><th>Chế độ</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody id="tasks-tbody"></tbody></table>
+        <table class="table"><thead><tr><th>Mã</th><th>Chế độ</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody id="tasks-tbody"></tbody></table>
       </div>
     </div>
   </div>
 
 </div>
 
-<!-- BOTTOM FLOATING DOCK -->
 <div class="bottom-dock">
   <button class="dock-btn active" data-tab="accounts">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-    <span>Acc</span>
+    <span>Tài khoản</span>
   </button>
   <button class="dock-btn" data-tab="boxes">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
-    <span>Box</span>
+    <span>Hội thoại</span>
   </button>
   <button class="dock-btn" data-tab="files">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-    <span>File</span>
+    <span>Tập tin</span>
   </button>
   <button class="dock-btn" data-tab="spam">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
-    <span>Spam</span>
+    <span>Gửi tin</span>
   </button>
 </div>
 
@@ -920,9 +915,6 @@ var colorMode = "random";
 var fixedColor = "red";
 var ZALO_COLORS = [];
 
-// ==========================================
-// TOAST THÔNG MINH (VUỐT LÊN BIẾN MẤT, KHÔNG CHỒNG, 1.4S)
-// ==========================================
 var Toast = (function(){
   var stack = null;
   function ensure(){ if(!stack) stack = document.getElementById('toast-stack'); return stack; }
@@ -958,7 +950,6 @@ var Toast = (function(){
   };
 })();
 
-// TAB NAVIGATION
 document.querySelectorAll('.bottom-dock .dock-btn').forEach(b => {
   b.addEventListener('click', () => {
     document.querySelectorAll('.bottom-dock .dock-btn').forEach(x => x.classList.remove('active'));
@@ -971,7 +962,6 @@ document.querySelectorAll('.bottom-dock .dock-btn').forEach(b => {
   });
 });
 
-// SELECTORS
 document.querySelectorAll('#mode-selector .chip-item').forEach(c => {
   c.addEventListener('click', () => {
     document.querySelectorAll('#mode-selector .chip-item').forEach(x => x.classList.remove('active'));
@@ -1025,43 +1015,41 @@ async function api(url, opts = {}){
     }));
     return await r.json();
   } catch(e){
-    return { error: 'Lỗi mạng: ' + e.message };
+    return { error: 'Lỗi kết nối: ' + e.message };
   }
 }
 
-// UPLOAD LOGO WEB
 async function uploadLogo(){
   var inp = document.getElementById('logo-file-input');
-  if(!inp.files.length) return Toast.error('Chưa chọn ảnh logo');
+  if(!inp.files.length) return Toast.error('Vui lòng chọn hình ảnh logo');
   var fd = new FormData();
   fd.append('logo', inp.files[0]);
-  Toast.info('Đang tải lên logo...');
+  Toast.info('Đang cập nhật logo...');
   var r = await fetch('/api/upload_logo', { method: 'POST', body: fd }).then(x => x.json());
   if(r.ok){
     Toast.success('Cập nhật logo thành công!');
     document.getElementById('header-logo').src = '/static/logo.png?t=' + Date.now();
   } else {
-    Toast.error(r.error || 'Lỗi upload logo');
+    Toast.error(r.error || 'Lỗi tải ảnh');
   }
 }
 
-// QUẢN LÝ ACCOUNTS & CHECK LIVE TOKEN
 async function loadAccounts(){
   var accs = await api('/api/accounts');
   if(!Array.isArray(accs)) accs = [];
   var tb = document.getElementById('accounts-tbody');
   tb.innerHTML = accs.map(a => {
-    var realName = a.display_name || a.zalo_name || a.username || '—';
+    var realName = a.display_name || a.zalo_name || a.username || 'Chưa cập nhật';
     var isLive = (a.status === 'live');
-    var badge = isLive ? '<span class="status-badge live">● LIVE</span>' : '<span class="status-badge dead">● CHƯA RÕ</span>';
+    var badge = isLive ? '<span class="status-badge live">● HOẠT ĐỘNG</span>' : '<span class="status-badge dead">● NGẮT KẾT NỐI</span>';
     return `<tr>
       <td>${a.id}</td>
       <td><b>${a.label}</b></td>
-      <td><span style="color:var(--accent); font-weight:700;">${realName}</span></td>
+      <td><span style="color:var(--accent); font-weight:800;">${realName}</span></td>
       <td><code>…${String(a.uid||'').slice(-6)}</code></td>
       <td id="status-${a.id}">${badge}</td>
       <td>
-        <button class="btn-pill light" onclick="checkAccount(${a.id})" style="padding:4px 8px; font-size:9.5px;">Check</button>
+        <button class="btn-pill light" onclick="checkAccount(${a.id})" style="padding:4px 8px; font-size:9.5px;">Kiểm tra</button>
         <button class="btn-pill danger" onclick="delAcc(${a.id})" style="padding:4px 8px; font-size:9.5px;">Xóa</button>
       </td>
     </tr>`;
@@ -1069,27 +1057,27 @@ async function loadAccounts(){
 
   var s1 = document.getElementById('load-acc-select');
   var s2 = document.getElementById('member-acc-select');
-  var opts = '<option value="">-- Chọn Acc --</option>' + accs.map(a => `<option value="${a.id}">${a.label} (${a.display_name||'Zalo'})</option>`).join('');
+  var opts = '<option value="">-- Chọn tài khoản --</option>' + accs.map(a => `<option value="${a.id}">${a.label} (${a.display_name||'Zalo'})</option>`).join('');
   s1.innerHTML = opts; s2.innerHTML = opts;
 }
 
 async function checkAccount(aid){
-  Toast.info('Đang kiểm tra token...');
+  Toast.info('Đang kiểm tra kết nối...');
   var r = await api(`/api/accounts/${aid}/check`, { method: 'POST' });
   var el = document.getElementById(`status-${aid}`);
   if(r.ok){
-    if(el) el.innerHTML = '<span class="status-badge live">● LIVE</span>';
-    Toast.success('Token & IMEI Hoạt động tốt!');
+    if(el) el.innerHTML = '<span class="status-badge live">● HOẠT ĐỘNG</span>';
+    Toast.success('Tài khoản đang hoạt động tốt!');
   } else {
-    if(el) el.innerHTML = '<span class="status-badge dead">● DEAD</span>';
-    Toast.error('Token chết: ' + (r.error || 'Hết hạn'));
+    if(el) el.innerHTML = '<span class="status-badge dead">● NGẮT KẾT NỐI</span>';
+    Toast.error('Phiên đăng nhập đã hết hạn');
   }
 }
 
 async function checkAllAccounts(){
-  Toast.info('Đang kiểm tra toàn bộ Acc...');
+  Toast.info('Đang kiểm tra toàn bộ...');
   var r = await api('/api/accounts/check_all', { method: 'POST' });
-  Toast.success(`Check xong: ${r.live}/${r.total} Acc Live`);
+  Toast.success(`Hoàn tất: ${r.live}/${r.total} tài khoản hoạt động`);
   loadAccounts();
 }
 
@@ -1097,7 +1085,7 @@ async function addAccount(){
   var label = document.getElementById('add-label').value.trim();
   var imei = document.getElementById('add-imei').value.trim();
   var cookies = document.getElementById('add-cookies').value.trim();
-  if(!imei || !cookies) return Toast.error('Thiếu IMEI hoặc Cookie');
+  if(!imei || !cookies) return Toast.error('Vui lòng điền đủ IMEI và Cookie');
   Toast.info('Đang xác thực thông tin...');
   var r = await api('/api/accounts/add', { method: 'POST', body: JSON.stringify({ label, imei, cookies }) });
   if(r.error) return Toast.error(r.error);
@@ -1111,15 +1099,14 @@ async function addAccount(){
 async function delAcc(id){
   if(!confirm('Xác nhận xóa tài khoản #' + id + '?')) return;
   await api('/api/accounts/' + id, { method: 'DELETE' });
-  Toast.success('Đã xóa #' + id);
+  Toast.success('Đã xóa tài khoản');
   refreshAll();
 }
 
-// BOXES
 async function loadBoxes(){
   var aid = document.getElementById('load-acc-select').value;
-  if(!aid) return Toast.error('Chọn Acc nạp trước');
-  Toast.info('Đang nạp hội thoại Zalo...');
+  if(!aid) return Toast.error('Vui lòng chọn tài khoản trước');
+  Toast.info('Đang nạp danh sách cuộc trò chuyện...');
   var r = await api('/api/accounts/' + aid + '/load_boxes', { method: 'POST' });
   if(r.error) return Toast.error(r.error);
   var all = (r.groups||[]).concat(r.friends||[]);
@@ -1129,10 +1116,10 @@ async function loadBoxes(){
       <div class="check-mark">✓</div>
       <div><div class="b-title">${b.name}</div><div class="b-sub">${b.id} | ${b.type}</div></div>
     </div>
-  `).join('') || '<div style="text-align:center; padding:14px;">Không có box nào</div>';
+  `).join('') || '<div style="text-align:center; padding:14px;">Không tìm thấy cuộc trò chuyện</div>';
   _boxes = all; selectedBoxes = [];
   document.getElementById('selected-count').textContent = '0';
-  Toast.success('Đã nạp ' + all.length + ' box');
+  Toast.success('Đã nạp ' + all.length + ' cuộc trò chuyện');
 }
 
 function tgBox(el, idx){
@@ -1160,13 +1147,12 @@ function clearAllBoxes(){
   document.getElementById('selected-count').textContent = '0';
 }
 
-// MEMBERS (QUÉT TÊN THẬT 100%)
 async function loadMembers(){
   var aid = document.getElementById('member-acc-select').value;
-  if(!aid) return Toast.error('Chọn tài khoản quét');
+  if(!aid) return Toast.error('Vui lòng chọn tài khoản');
   var box = selectedBoxes.find(b => b.type === 'group');
-  if(!box) return Toast.error('Hãy chọn 1 nhóm ở Tab Box trước');
-  Toast.info('Đang quét tên thật thành viên...');
+  if(!box) return Toast.error('Cần chọn ít nhất 1 nhóm ở mục Hội Thoại');
+  Toast.info('Đang nạp danh sách họ tên thành viên...');
   var r = await api('/api/accounts/' + aid + '/members/' + box.id, { method: 'POST' });
   if(r.error) return Toast.error(r.error);
   var mem = r.members || [];
@@ -1179,7 +1165,7 @@ async function loadMembers(){
     </div>
   `).join('') || '<div style="padding:14px; text-align:center;">Không có thành viên</div>';
   _members = mem; selectedTags = [];
-  Toast.success('Quét xong ' + mem.length + ' thành viên');
+  Toast.success('Đã nạp ' + mem.length + ' thành viên đầy đủ họ tên');
 }
 
 function tgMember(el, idx){
@@ -1194,16 +1180,15 @@ function tgMember(el, idx){
   }
 }
 
-// FILES
 async function uploadFile(){
   var inp = document.getElementById('file-input');
-  if(!inp.files.length) return Toast.error('Chưa chọn tệp tin');
+  if(!inp.files.length) return Toast.error('Vui lòng chọn tập tin');
   var fd = new FormData();
   fd.append('file', inp.files[0]);
-  Toast.info('Đang tải file...');
+  Toast.info('Đang tải lên tập tin...');
   var r = await fetch('/api/files/upload', { method: 'POST', body: fd }).then(x => x.json());
   if(r.error) return Toast.error(r.error);
-  Toast.success('Đã tải lên ' + r.lines + ' khối tin');
+  Toast.success('Đã lưu ' + r.lines + ' khối văn bản');
   inp.value = ''; loadFiles();
 }
 
@@ -1215,14 +1200,13 @@ async function loadFiles(){
     <div class="box-item">
       <div><div class="b-title">📄 ${f.filename}</div><div class="b-sub">${f.lines} khối</div></div>
     </div>
-  `).join('') || '<div style="text-align:center; padding:14px; color:var(--txt-2);">Chưa có tệp</div>';
+  `).join('') || '<div style="text-align:center; padding:14px; color:var(--txt-2);">Chưa có tập tin</div>';
   var s = document.getElementById('spam-file-select');
-  s.innerHTML = '<option value="">-- Chọn file --</option>' + files.map(f => `<option value="${f.id}">${f.filename} (${f.lines} khối)</option>`).join('');
+  s.innerHTML = '<option value="">-- Chọn tập tin --</option>' + files.map(f => `<option value="${f.id}">${f.filename} (${f.lines} khối)</option>`).join('');
 }
 
-// BẮN TIN NHẮN (CHỮ TO HEADING #, ĐỔI MÀU, TREO NGÔN TRỌN KHỐI)
 async function startSpam(){
-  if(!selectedBoxes.length) return Toast.error('Chưa chọn Box chat mục tiêu');
+  if(!selectedBoxes.length) return Toast.error('Chưa chọn cuộc trò chuyện nhận tin');
   var fid = document.getElementById('spam-file-select').value;
   var direct = document.getElementById('spam-messages').value.trim();
   var blocks = [];
@@ -1232,13 +1216,13 @@ async function startSpam(){
     blocks = r.all || [];
   } else if(direct){
     if(currentMode === "treo_ngon"){
-      blocks = [direct]; // Treo ngôn: Giữ nguyên toàn bộ khối gửi 1 tin duy nhất!
+      blocks = [direct];
     } else {
       blocks = direct.includes(';') ? direct.split(';').map(m => m.trim()).filter(Boolean) : [direct];
     }
   }
 
-  if(!blocks.length) return Toast.error('Chưa có nội dung văn bản');
+  if(!blocks.length) return Toast.error('Vui lòng nhập hoặc chọn văn bản cần gửi');
   var delay = parseFloat(document.getElementById('spam-delay').value) || 1;
   var iconCount = flags.emoji ? (parseInt(document.getElementById('icon-count').value) || 3) : 0;
   var tagUsers = document.getElementById('tg-tag').checked ? selectedTags : [];
@@ -1260,13 +1244,13 @@ async function startSpam(){
 
   var res = await api('/api/tasks/start', { method: 'POST', body: JSON.stringify(payload) });
   if(res.error) return Toast.error(res.error);
-  Toast.success('Kích hoạt tiến trình thành công!');
+  Toast.success('Đã khởi chạy tiến trình thành công!');
   loadTasks();
 }
 
 async function stopAll(){
   await api('/api/tasks/stop_all', { method: 'POST' });
-  Toast.info('Đã gửi lệnh dừng tiến trình');
+  Toast.info('Đã dừng toàn bộ tiến trình');
   loadTasks();
 }
 
@@ -1279,7 +1263,7 @@ async function loadTasks(){
     return `<tr>
       <td><code>${t.id.slice(-6)}</code></td>
       <td><b>${t.type}</b></td>
-      <td>${running ? '<span class="status-badge live">Đang gửi</span>' : '<span class="status-badge dead">Đã dừng</span>'}</td>
+      <td>${running ? '<span class="status-badge live">Đang chạy</span>' : '<span class="status-badge dead">Đã dừng</span>'}</td>
       <td>${running ? `<button class="btn-pill danger" onclick="stopTask('${t.id}')" style="padding:2px 8px;">Dừng</button>` : ''}</td>
     </tr>`;
   }).join('') || '<tr><td colspan="4" style="text-align:center; padding:12px; color:var(--txt-2);">Không có tiến trình</td></tr>';
@@ -1287,7 +1271,7 @@ async function loadTasks(){
 
 async function stopTask(tid){
   await api('/api/tasks/' + tid + '/stop', { method: 'POST' });
-  Toast.info('Đã dừng ' + tid);
+  Toast.info('Đã dừng tiến trình ' + tid);
   loadTasks();
 }
 
@@ -1307,6 +1291,37 @@ function setFixedColor(cid){
 
 function refreshAll(){ loadAccounts(); loadFiles(); loadTasks(); }
 
+var canvas = document.getElementById('particles-canvas');
+var ctx = canvas.getContext('2d');
+var width = window.innerWidth;
+var height = window.innerHeight;
+canvas.width = width; canvas.height = height;
+
+var particles = Array.from({ length: 42 }, () => ({
+  x: Math.random() * width,
+  y: Math.random() * height,
+  r: Math.random() * 2.8 + 1,
+  speedY: Math.random() * 0.9 + 0.4,
+  speedX: (Math.random() - 0.5) * 0.5
+}));
+
+function animateParticles(){
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = 'rgba(225, 29, 72, 0.25)';
+  particles.forEach(p => {
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+    ctx.fill();
+    p.y += p.speedY;
+    p.x += p.speedX;
+    if(p.y > height){ p.y = 0; p.x = Math.random() * width; }
+    if(p.x > width){ p.x = 0; }
+    if(p.x < 0){ p.x = width; }
+  });
+  requestAnimationFrame(animateParticles);
+}
+animateParticles();
+
 loadColors();
 refreshAll();
 setInterval(loadTasks, 5000);
@@ -1316,9 +1331,6 @@ setInterval(loadTasks, 5000);
 """
 
 
-# ============================================================
-# CÁC ROUTE WEB & API ĐẦY ĐỦ
-# ============================================================
 def login_required(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
@@ -1358,7 +1370,7 @@ def login():
 
     if tracker["locked_until"] > now:
         rem = int(tracker["locked_until"] - now)
-        return render_template_string(HTML_LOGIN, error=f"IP bị khóa do sai quá 5 lần. Thử lại sau {rem}s.")
+        return render_template_string(HTML_LOGIN, error=f"Tạm khóa kết nối do nhập sai quá 5 lần. Thử lại sau {rem} giây.")
 
     if request.method == "POST":
         pw = request.form.get("password", "")
@@ -1370,9 +1382,9 @@ def login():
             tracker["count"] += 1
             if tracker["count"] >= LOGIN_MAX_FAILS:
                 tracker["locked_until"] = now + LOGIN_LOCKOUT_TIME
-                return render_template_string(HTML_LOGIN, error="Nhập sai 5 lần! IP bị khóa 15 phút.")
+                return render_template_string(HTML_LOGIN, error="Nhập sai 5 lần! Tạm khóa kết nối trong 15 phút.")
             rem = LOGIN_MAX_FAILS - tracker["count"]
-            return render_template_string(HTML_LOGIN, error=f"Sai mật khẩu! Còn {rem} lần thử.")
+            return render_template_string(HTML_LOGIN, error=f"Mật khẩu không chính xác! Còn {rem} lần thử.")
 
     return render_template_string(HTML_LOGIN)
 
@@ -1419,13 +1431,13 @@ def api_accounts_add():
     imei = d.get("imei", "").strip()
     ck = d.get("cookies", "").strip()
     if not imei or not ck:
-        return jsonify({"error": "Thiếu IMEI hoặc Cookie"}), 400
+        return jsonify({"error": "Vui lòng nhập đủ IMEI và Cookie"}), 400
     try:
         ck_obj = json.loads(ck)
         z = Zalo(imei, ck_obj)
         st = "live"
     except Exception as e:
-        return jsonify({"error": "Cookie hỏng hoặc hết hạn: " + str(e)}), 400
+        return jsonify({"error": "Không thể đăng nhập: " + str(e)}), 400
 
     conn = db()
     conn.execute("""
@@ -1456,7 +1468,7 @@ def api_accounts_check(aid):
     row = conn.execute("SELECT * FROM accounts WHERE id = ?", (aid,)).fetchone()
     if not row:
         conn.close()
-        return jsonify({"error": "Không tìm thấy Acc"}), 404
+        return jsonify({"error": "Không tìm thấy tài khoản"}), 404
     try:
         z = Zalo(row["imei"], json.loads(row["cookies"]))
         conn.execute("UPDATE accounts SET status = 'live' WHERE id = ?", (aid,))
@@ -1494,7 +1506,7 @@ def api_load_boxes(aid):
     conn = db()
     row = conn.execute("SELECT * FROM accounts WHERE id = ?", (aid,)).fetchone()
     conn.close()
-    if not row: return jsonify({"error": "Không tìm thấy Acc"}), 404
+    if not row: return jsonify({"error": "Không tìm thấy tài khoản"}), 404
     try:
         z = Zalo(row["imei"], json.loads(row["cookies"]))
         return jsonify({"ok": True, "groups": z.groups(), "friends": z.friends()})
@@ -1508,13 +1520,35 @@ def api_load_members(aid, group_id):
     conn = db()
     row = conn.execute("SELECT * FROM accounts WHERE id = ?", (aid,)).fetchone()
     conn.close()
-    if not row: return jsonify({"error": "Không tìm thấy Acc"}), 404
+    if not row: return jsonify({"error": "Không tìm thấy tài khoản"}), 404
     try:
         z = Zalo(row["imei"], json.loads(row["cookies"]))
         members = z.get_members_full(group_id)
         return jsonify({"ok": True, "members": members})
     except Exception as e:
         return jsonify({"error": str(e)}), 400
+
+
+def parse_blocks(filepath, max_blocks=5000):
+    blocks = []
+    current = []
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+        content = content.replace("\r\n", "\n").replace("\r", "\n")
+        for line in content.split("\n"):
+            if len(blocks) >= max_blocks: break
+            if line.strip() == "":
+                if current:
+                    blocks.append("\n".join(current))
+                    current = []
+            else:
+                current.append(line)
+        if current:
+            blocks.append("\n".join(current))
+    except Exception:
+        pass
+    return blocks
 
 
 @app.route("/api/files", methods=["GET"])
@@ -1531,7 +1565,7 @@ def api_files_list():
 def api_files_upload():
     f = request.files.get("file")
     if not f or not f.filename:
-        return jsonify({"error": "Không có tệp"}), 400
+        return jsonify({"error": "Tập tin rỗng"}), 400
     safe = str(int(time.time())) + "_" + f.filename
     fp = os.path.join(UPLOAD_DIR, safe)
     f.save(fp)
@@ -1550,7 +1584,7 @@ def api_files_preview(fid):
     conn = db()
     row = conn.execute("SELECT * FROM files WHERE id = ?", (fid,)).fetchone()
     conn.close()
-    if not row: return jsonify({"error": "Không tìm thấy file"}), 404
+    if not row: return jsonify({"error": "Không tìm thấy tập tin"}), 404
     return jsonify({"filename": row["filename"], "all": parse_blocks(row["filepath"])})
 
 
@@ -1563,13 +1597,9 @@ def api_tasks():
     return jsonify([dict(r) for r in rows])
 
 
-# ============================================================
-# RUNNER ĐA LUỒNG & BẮN TIN NHẮN CHUYÊN NGHIỆP
-# ============================================================
 def single_acc_worker(acc_dict, targets, blocks, delay, use_emoji, icon_count,
                       tag_users, tag_all, is_heading, mode, color_mode, fixed_color,
                       stop_ev, counter, lock):
-    aid = acc_dict["id"]
     imei = acc_dict["imei"]
     cookies = json.loads(acc_dict["cookies"])
     try:
@@ -1599,8 +1629,8 @@ def single_acc_worker(acc_dict, targets, blocks, delay, use_emoji, icon_count,
                 text = raw.replace("\r\n", "\n").replace("\r", "\n")
                 if use_emoji and icon_count > 0:
                     text = text + " " + " ".join([get_icon_hard() for _ in range(icon_count)])
-                r = z.send(text, target_id, color=color, is_group=is_group,
-                           mentions=tag_users, tag_all=tag_all, is_heading=is_heading)
+                z.send(text, target_id, color=color, is_group=is_group,
+                       mentions=tag_users, tag_all=tag_all, is_heading=is_heading)
                 with lock: counter["sent"] += 1
 
             elif mode == "treo_nhay":
@@ -1611,17 +1641,17 @@ def single_acc_worker(acc_dict, targets, blocks, delay, use_emoji, icon_count,
                     if use_emoji and icon_count > 0:
                         msg_line += " " + " ".join([get_icon_hard() for _ in range(icon_count)])
                     cur_col = random.choice(COLOR_IDS) if color_mode in ("random", "cycle") else color
-                    r = z.send(msg_line, target_id, color=cur_col, is_group=is_group,
-                               mentions=(tag_users if mi == 1 else None),
-                               tag_all=(tag_all if mi == 1 else False), is_heading=is_heading)
+                    z.send(msg_line, target_id, color=cur_col, is_group=is_group,
+                           mentions=(tag_users if mi == 1 else None),
+                           tag_all=(tag_all if mi == 1 else False), is_heading=is_heading)
                     with lock: counter["sent"] += 1
                     time.sleep(0.2)
             else:
                 text = raw
                 if use_emoji and icon_count > 0:
                     text = text + " " + " ".join([get_icon_hard() for _ in range(icon_count)])
-                r = z.send(text, target_id, color=color, is_group=is_group,
-                           mentions=tag_users, tag_all=tag_all, is_heading=is_heading)
+                z.send(text, target_id, color=color, is_group=is_group,
+                       mentions=tag_users, tag_all=tag_all, is_heading=is_heading)
                 with lock: counter["sent"] += 1
 
         except Exception:
@@ -1696,7 +1726,7 @@ def api_tasks_start():
     fixed_color = d.get("fixed_color", "red")
 
     if not targets or not blocks:
-        return jsonify({"error": "Chưa chọn Box hoặc chưa có nội dung"}), 400
+        return jsonify({"error": "Vui lòng chọn cuộc trò chuyện và nội dung"}), 400
 
     tid = new_tid("task")
     stop_ev = threading.Event()
@@ -1725,7 +1755,7 @@ def api_tasks_stop(tid):
     if tid in ACTIVE_TASKS:
         ACTIVE_TASKS[tid]["stop"].set()
         return jsonify({"ok": True})
-    return jsonify({"error": "Không tìm thấy task"}), 404
+    return jsonify({"error": "Không tìm thấy tiến trình"}), 404
 
 
 @app.route("/api/tasks/stop_all", methods=["POST"])
