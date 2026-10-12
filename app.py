@@ -1,7 +1,7 @@
 # ============================================================
 # Bản quyền thuộc về Phạm Anh Khôi
-# Hệ thống điều hành: ALB Forge — ThreeUI Sakura Edition 2026
-# Thiết kế & Phát triển giao diện cao cấp lấy cảm hứng từ ThreeUI (MengTo)
+# Hệ thống điều hành: ALB Forge — ThreeUI Sakura Edition 2026 (v2.5)
+# Giao diện ThreeUI (MengTo Style) • Tường Lửa Anti-DDoS WAF Pro
 # ============================================================
 import os
 import sys
@@ -37,21 +37,154 @@ STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 os.makedirs(STATIC_DIR, exist_ok=True)
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "phamanhkhoi-sakura-threeui-2026")
+app.secret_key = os.environ.get("SECRET_KEY", "phamanhkhoi-sakura-threeui-pro-2026")
 app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024
 
+# LOGO MẶC ĐỊNH VECTOR SVG DATA-URI (ĐẢM BẢO 100% KHÔNG BAO GIỜ BỊ VỠ HÌNH [?])
+DEFAULT_LOGO_DATA_URI = (
+    "data:image/svg+xml;utf8,"
+    "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'>"
+    "<defs>"
+    "<radialGradient id='petalGrad' cx='50%' cy='50%' r='50%'>"
+    "<stop offset='0%' stop-color='%23ffffff'/>"
+    "<stop offset='60%' stop-color='%23ffb7c5'/>"
+    "<stop offset='100%' stop-color='%23ff69b4'/>"
+    "</radialGradient>"
+    "<filter id='glow'><feGaussianBlur stdDeviation='3' result='blur'/>"
+    "<feMerge><feMergeNode in='blur'/><feMergeNode in='SourceGraphic'/></feMerge></filter>"
+    "</defs>"
+    "<circle cx='50' cy='50' r='48' fill='%23ffffff' stroke='%23ff69b4' stroke-width='2.5'/>"
+    "<circle cx='50' cy='50' r='43' fill='%23fff0f5'/>"
+    "<g filter='url(%23glow)'>"
+    "<circle cx='50' cy='28' r='14' fill='url(%23petalGrad)'/>"
+    "<circle cx='70' cy='43' r='14' fill='url(%23petalGrad)'/>"
+    "<circle cx='63' cy='68' r='14' fill='url(%23petalGrad)'/>"
+    "<circle cx='37' cy='68' r='14' fill='url(%23petalGrad)'/>"
+    "<circle cx='30' cy='43' r='14' fill='url(%23petalGrad)'/>"
+    "<circle cx='50' cy='50' r='9' fill='%23ff1493'/>"
+    "<circle cx='50' cy='50' r='4.5' fill='%23ffd700'/>"
+    "</g></svg>"
+)
+
 # ============================================================
-# BỘ LỌC BẢO MẬT & CHỐNG TẤN CÔNG DDOS CHUYÊN SÂU
+# HỆ THỐNG TƯỜNG LỬA BẢO MẬT & CHỐNG TẤN CÔNG DDOS / WAF CHUYÊN SÂU
 # ============================================================
-DDOS_LIMIT_PER_MINUTE = 150
-DDOS_BURST_PER_SEC = 30
+class AntiDdosFirewall:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.ip_history = defaultdict(list)
+        self.blocked_ips = {}
+        self.whitelist_paths = {
+            "/favicon.ico", "/health", "/healthz", "/robots.txt"
+        }
+        self.malicious_patterns = [
+            re.compile(r"\.(env|git|svn|bak|sql|config)", re.IGNORECASE),
+            re.compile(r"(wp-login|xmlrpc|phpmyadmin|cgi-bin|actuator|shell)", re.IGNORECASE),
+            re.compile(r"(\.\./|/etc/passwd|/proc/)", re.IGNORECASE),
+            re.compile(r"(union\s+select|select\s+from|<script|eval\()", re.IGNORECASE)
+        ]
+        self.total_blocked_requests = 0
+        self.total_allowed_requests = 0
+        self.mode = "standard"
+
+    def get_limits(self):
+        if self.mode == "maximum":
+            return {"burst": 15, "minute": 80, "ban_duration": 600}
+        elif self.mode == "strict":
+            return {"burst": 25, "minute": 120, "ban_duration": 300}
+        return {"burst": 35, "minute": 180, "ban_duration": 180}
+
+    def inspect(self, ip, path):
+        now = time.time()
+        if path.startswith("/static/") or path in self.whitelist_paths:
+            return True, None
+
+        with self.lock:
+            if ip in self.blocked_ips:
+                info = self.blocked_ips[ip]
+                if now < info["until"]:
+                    self.total_blocked_requests += 1
+                    rem = int(info["until"] - now)
+                    return False, f"IP bị khóa do {info['reason']}. Thử lại sau {rem}s."
+                else:
+                    del self.blocked_ips[ip]
+
+            for pat in self.malicious_patterns:
+                if pat.search(path):
+                    self.blocked_ips[ip] = {
+                        "until": now + 1800,
+                        "reason": f"Phát hiện quét mã độc ({path[:30]})",
+                        "count": 1
+                    }
+                    self.total_blocked_requests += 1
+                    return False, "Yêu cầu bị từ chối bởi Tường lửa WAF (Chữ ký độc hại)."
+
+            history = [t for t in self.ip_history[ip] if now - t < 60]
+            self.ip_history[ip] = history
+
+            limits = self.get_limits()
+            burst = sum(1 for t in history if now - t <= 1.0)
+
+            if burst > limits["burst"]:
+                self.blocked_ips[ip] = {
+                    "until": now + limits["ban_duration"],
+                    "reason": f"Tấn công dồn dập Burst ({burst} req/s)",
+                    "count": self.blocked_ips.get(ip, {}).get("count", 0) + 1
+                }
+                self.total_blocked_requests += 1
+                return False, f"Lưu lượng vượt ngưỡng an toàn. IP bị khóa {limits['ban_duration']}s."
+
+            if len(history) > limits["minute"]:
+                self.blocked_ips[ip] = {
+                    "until": now + limits["ban_duration"],
+                    "reason": f"Tần suất cao ({len(history)} req/phút)",
+                    "count": self.blocked_ips.get(ip, {}).get("count", 0) + 1
+                }
+                self.total_blocked_requests += 1
+                return False, f"Gửi quá nhiều yêu cầu trong 1 phút. IP bị khóa {limits['ban_duration']}s."
+
+            self.ip_history[ip].append(now)
+            self.total_allowed_requests += 1
+            return True, None
+
+    def unban(self, ip):
+        with self.lock:
+            if ip in self.blocked_ips:
+                del self.blocked_ips[ip]
+                return True
+        return False
+
+    def manual_ban(self, ip, duration=600, reason="Quản trị viên khóa thủ công"):
+        with self.lock:
+            self.blocked_ips[ip] = {
+                "until": time.time() + duration,
+                "reason": reason,
+                "count": 1
+            }
+
+    def get_stats(self):
+        with self.lock:
+            now = time.time()
+            active_bans = []
+            for ip, info in self.blocked_ips.items():
+                if info["until"] > now:
+                    active_bans.append({
+                        "ip": ip,
+                        "reason": info["reason"],
+                        "remaining": int(info["until"] - now)
+                    })
+            return {
+                "mode": self.mode,
+                "total_allowed": self.total_allowed_requests,
+                "total_blocked": self.total_blocked_requests,
+                "active_bans_count": len(active_bans),
+                "active_bans": active_bans
+            }
+
+firewall = AntiDdosFirewall()
+login_fail_tracker = defaultdict(lambda: {"count": 0, "locked_until": 0})
 LOGIN_MAX_FAILS = 5
 LOGIN_LOCKOUT_TIME = 900
-
-ip_request_history = defaultdict(list)
-ip_blocked_until = {}
-login_fail_tracker = defaultdict(lambda: {"count": 0, "locked_until": 0})
-security_lock = threading.Lock()
 system_logs = deque(maxlen=200)
 
 def log_event(level, msg):
@@ -74,40 +207,21 @@ def get_client_ip():
 
 @app.before_request
 def security_shield_middleware():
-    if request.path.startswith("/static") or request.endpoint == "static_files":
-        return
-
     ip = get_client_ip()
-    now = time.time()
+    path = request.path
 
-    with security_lock:
-        if ip in ip_blocked_until:
-            if now < ip_blocked_until[ip]:
-                return jsonify({
-                    "error": "IP của bạn đang bị chặn do gửi yêu cầu quá nhanh. Vui lòng quay lại sau.",
-                    "retry_after": int(ip_blocked_until[ip] - now)
-                }), 429
-            else:
-                del ip_blocked_until[ip]
+    passed, err = firewall.inspect(ip, path)
+    if not passed:
+        log_event("WARN", f"Chặn IP {ip}: {err}")
+        return jsonify({"error": err}), 429
 
-        history = [t for t in ip_request_history[ip] if now - t < 60]
-        ip_request_history[ip] = history
-
-        burst = sum(1 for t in history if now - t <= 1.0)
-        if burst > DDOS_BURST_PER_SEC or len(history) > DDOS_LIMIT_PER_MINUTE:
-            ip_blocked_until[ip] = now + 300
-            log_event("WARN", f"Chặn IP {ip} trong 5 phút do vượt ngưỡng tần suất ({burst}/s)")
-            return jsonify({"error": "Phát hiện lưu lượng bất thường. IP đã bị khóa trong 5 phút."}), 429
-
-        ip_request_history[ip].append(now)
-
-    if not session.get("human_verified") and request.endpoint not in ("verify_gate", "api_verify_human"):
-        if request.path.startswith("/api/"):
+    if not session.get("human_verified") and request.endpoint not in ("verify_gate", "api_verify_human", "static_files"):
+        if path.startswith("/api/"):
             return jsonify({"error": "Chưa hoàn tất kiểm tra an toàn danh tính"}), 403
         return redirect(url_for("verify_gate"))
 
 # ============================================================
-# CƠ SỞ DỮ LIỆU & QUẢN LÝ CÀI ĐẶT HỆ THỐNG
+# CƠ SỞ DỮ LIỆU & QUẢN LÝ CÀI ĐẶT
 # ============================================================
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -160,11 +274,10 @@ def init_db():
     """)
     conn.commit()
 
-    # Cài đặt mặc định nếu chưa có
     defaults = {
         "web_title": "I LOVE NGỌC HÂN 🌸",
         "designer_name": "Phạm Anh Khôi",
-        "logo_path": "/static/logo.png",
+        "logo_path": DEFAULT_LOGO_DATA_URI,
         "theme_mode": "sakura_threeui",
         "font_size_default": "heading",
         "tag_all_mode": "native"
@@ -212,16 +325,16 @@ def utf16_len(s):
 # BẢNG MÀU CHUẨN ZALO PALETTE (HEX SẠCH SẼ & ĐÚNG ĐỊNH DẠNG)
 # ============================================================
 ZALO_PALETTE = [
-    {"id": "red",     "name": "Đỏ Rực Rỡ",      "hex": "#e8453c", "clean": "e8453c"},
-    {"id": "yellow",  "name": "Vàng Ánh Kim",    "hex": "#f5c500", "clean": "f5c500"},
-    {"id": "green",   "name": "Xanh Ngọc Lục",  "hex": "#00b14f", "clean": "00b14f"},
-    {"id": "orange",  "name": "Cam Rực Lửa",    "hex": "#ff8c00", "clean": "ff8c00"},
-    {"id": "ocean",   "name": "Xanh Biển Sâu",  "hex": "#0091ff", "clean": "0091ff"},
-    {"id": "blue",    "name": "Xanh Dương Đậm", "hex": "#0068ff", "clean": "0068ff"},
-    {"id": "purple",  "name": "Tím Pha Lê",     "hex": "#a05eff", "clean": "a05eff"},
-    {"id": "pink",    "name": "Hồng Hoa Anh Đào","hex": "#ff47a8", "clean": "ff47a8"},
-    {"id": "cyan",    "name": "Xanh Neon",      "hex": "#00f0ff", "clean": "00f0ff"},
-    {"id": "crimson", "name": "Đỏ Thẫm",       "hex": "#d32f2f", "clean": "d32f2f"},
+    {"id": "red",     "name": "Đỏ Rực Rỡ",       "hex": "#e8453c", "clean": "e8453c"},
+    {"id": "yellow",  "name": "Vàng Ánh Kim",     "hex": "#f5c500", "clean": "f5c500"},
+    {"id": "green",   "name": "Xanh Ngọc Lục",   "hex": "#00b14f", "clean": "00b14f"},
+    {"id": "orange",  "name": "Cam Rực Lửa",     "hex": "#ff8c00", "clean": "ff8c00"},
+    {"id": "ocean",   "name": "Xanh Biển Sâu",   "hex": "#0091ff", "clean": "0091ff"},
+    {"id": "blue",    "name": "Xanh Dương Đậm",  "hex": "#0068ff", "clean": "0068ff"},
+    {"id": "purple",  "name": "Tím Pha Lê",      "hex": "#a05eff", "clean": "a05eff"},
+    {"id": "pink",    "name": "Hồng Hoa Anh Đào", "hex": "#ff47a8", "clean": "ff47a8"},
+    {"id": "cyan",    "name": "Xanh Neon Cyber", "hex": "#00f0ff", "clean": "00f0ff"},
+    {"id": "crimson", "name": "Đỏ Thẫm Quyền Lực","hex": "#d32f2f", "clean": "d32f2f"},
 ]
 
 COLOR_IDS = [c["id"] for c in ZALO_PALETTE]
@@ -250,13 +363,9 @@ def get_icon_hard():
     return random.choice(ZALO_ICON_UNICODE)
 
 # ============================================================
-# ĐỘNG CƠ ĐỌC TỆP TIN DUNG LƯỢNG LỚN (SIÊU NHANH, O(1) MEMORY)
+# BỘ ĐỌC TỆP TIN DUNG LƯỢNG LỚN (SIÊU NHANH O(1) MEMORY)
 # ============================================================
 class FileBlockReader:
-    """
-    Đọc tệp tin nhiều MB trực tiếp từ đĩa cứng theo cơ chế Stream/Generator.
-    Khắc phục triệt để tình trạng đơ lag hoặc tải chậm khi tệp lớn.
-    """
     @staticmethod
     def inspect_file(filepath):
         total_lines = 0
@@ -303,9 +412,6 @@ class FileBlockReader:
 
     @staticmethod
     def iterate_blocks_forever(filepath, mode="fast"):
-        """
-        Generator quay vòng vô tận, đọc từng khối trực tiếp từ tệp tin mà không giữ toàn bộ tệp trong RAM.
-        """
         while True:
             try:
                 with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
@@ -313,11 +419,9 @@ class FileBlockReader:
                     for line in f:
                         s = line.rstrip("\r\n")
                         if mode == "treo_nhay":
-                            # Chế độ Treo Nhây: gửi từng dòng đơn lẻ
                             if s.strip():
                                 yield s.strip()
                         else:
-                            # Chế độ Khối/Treo Ngôn: gom khối theo dòng trống
                             if not s.strip():
                                 if current:
                                     yield "\n".join(current)
@@ -329,7 +433,6 @@ class FileBlockReader:
             except Exception as e:
                 time.sleep(1)
                 yield f"[Lỗi luồng đọc tệp: {e}]"
-
 
 # ============================================================
 # GIAO THỨC ĐIỀU KHIỂN ZALO CHUYÊN SÂU (ZALO PROTOCOL CLIENT)
@@ -489,12 +592,6 @@ class Zalo:
         return out
 
     def build_colored_message(self, raw_text, color_mode, fixed_color, font_size_mode="heading", is_heading=True):
-        """
-        Khắc phục triệt để lỗi không in đậm to ra và không đổi được màu:
-        1. Sử dụng mã HEX sạch không có dấu '#' cho Zalo Web Client (c_e8453c thay vì c_#e8453c).
-        2. Tích hợp đồng thời cả Markdown (#, **) và các mã phong cách styles ('b', 'h1', 'font_24', 'large').
-        3. Thiết lập msgColor theo bảng màu Zalo chính thức để đổi màu bóng tin nhắn.
-        """
         lines = [l for l in str(raw_text).split("\n")]
         styled_lines = []
         styles = []
@@ -519,32 +616,26 @@ class Zalo:
                 current_u16_pos += 1
                 continue
 
-            # Xử lý định dạng chữ to / in đậm
             if font_size_mode == "giant":
-                # Khổng lồ: Tiêu đề H1 kết hợp In đậm
                 if not content.startswith("#"):
                     line_text = f"# **{content}**"
                 else:
                     line_text = f"**{content}**"
             elif font_size_mode == "heading" or is_heading:
-                # Tiêu đề lớn: Tiêu đề H1 Zalo
                 if not content.startswith("#"):
                     line_text = f"# {content}"
                 else:
                     line_text = content
             elif font_size_mode == "bold":
-                # In đậm chuẩn
                 line_text = f"**{content}**"
             else:
-                # Chuẩn bình thường
                 line_text = content
 
             styled_lines.append(line_text)
             l_len = utf16_len(line_text)
 
-            # Xác định màu sắc từng dòng
-            if color_mode in ("rainbow", "random"):
-                chosen = RAINBOW_PALETTE[i % len(RAINBOW_PALETTE)] if color_mode == "rainbow" else random.choice(RAINBOW_PALETTE)
+            if color_mode in ("rainbow", "random", "matrix_rainbow"):
+                chosen = RAINBOW_PALETTE[i % len(RAINBOW_PALETTE)] if color_mode != "random" else random.choice(RAINBOW_PALETTE)
                 c_clean = chosen["clean"]
                 c_id = chosen["id"]
             elif color_mode == "fixed" and fixed_color:
@@ -562,14 +653,11 @@ class Zalo:
             if i == 0 and c_id:
                 first_color = c_id
 
-            # Đóng gói phong cách kiểu Zalo Web & Desktop
             if c_clean:
-                # Mã phong cách màu Zalo chính thức (Bắt buộc không có dấu '#')
                 styles.append({"start": current_u16_pos, "len": l_len, "st": f"c_{c_clean}"})
                 styles.append({"offset": current_u16_pos, "len": l_len, "type": "color", "value": c_clean})
                 styles.append({"offset": current_u16_pos, "len": l_len, "type": "color", "value": f"#{c_clean}"})
 
-            # Bổ sung phong cách In đậm và To rõ vào styles
             if font_size_mode in ("giant", "heading", "bold") or is_heading:
                 styles.append({"start": current_u16_pos, "len": l_len, "st": "b"})
                 styles.append({"offset": current_u16_pos, "len": l_len, "type": "bold"})
@@ -585,12 +673,6 @@ class Zalo:
         return final_msg, styles, first_color
 
     def attach_mentions(self, msg, mentions, tag_all=False, group_members=None):
-        """
-        Khắc phục triệt để lỗi Tag All (@All):
-        1. Sử dụng đúng định dạng Zalo Mention All: uid='-1' và type=0 (hoặc 1).
-        2. Tự động chèn token '@All' vào nội dung tin nhắn.
-        3. Tùy chọn mở rộng: Tag toàn bộ danh sách thành viên nếu nhóm yêu cầu.
-        """
         final = msg
         m_arr = []
 
@@ -598,9 +680,18 @@ class Zalo:
             tag_token = "@All"
             pos = utf16_len(final) + (1 if final else 0)
             final = (final + " " + tag_token) if final else tag_token
-            # Truyền đồng thời cả type 0 và type 1 để tương thích mọi phiên bản máy chủ Zalo
             m_arr.append({"uid": "-1", "pos": pos, "len": utf16_len(tag_token), "type": 0})
             m_arr.append({"uid": "-1", "pos": pos, "len": utf16_len(tag_token), "type": 1})
+
+            if group_members and isinstance(group_members, list):
+                for gm in group_members[:15]:
+                    m_name = gm.get("name", "").strip()
+                    m_uid = str(gm.get("id", "")).strip()
+                    if m_name and m_uid:
+                        token = f"@{m_name}"
+                        m_pos = utf16_len(final) + 1
+                        final = final + " " + token
+                        m_arr.append({"uid": m_uid, "pos": m_pos, "len": utf16_len(token), "type": 0})
             return final, m_arr
 
         if mentions:
@@ -655,9 +746,9 @@ class Zalo:
         return self.s.post(url, params={"zpw_ver": 645, "zpw_type": 30},
                            data={"params": enc}, timeout=15)
 
-# ============================================================
-# CÁC LUỒNG TIẾN TRÌNH GỬI TIN & GIÁM SÁT HỆ THỐNG
-# ============================================================
+# ==========================================
+# CÁC LUỒNG TIẾN TRÌNH GỬI TIN ĐỘT PHÁ
+# ==========================================
 def single_acc_worker(acc_dict, targets, file_path, blocks, delay, use_emoji, icon_count,
                       tag_users, tag_all, font_size_mode, is_heading, mode, color_mode,
                       fixed_color, stop_ev, counter, lock):
@@ -668,17 +759,15 @@ def single_acc_worker(acc_dict, targets, file_path, blocks, delay, use_emoji, ic
         cookies = json.loads(acc_dict["cookies"])
         z = Zalo(imei, cookies)
     except Exception as e:
-        log_event("ERROR", f"Tài khoản {label} lỗi khởi tạo: {e}")
+        log_event("ERROR", f"Tài khoản {label} khởi tạo thất bại: {e}")
         return
 
-    log_event("INFO", f"Tài khoản {label} bắt đầu gửi tin nhắn...")
+    log_event("INFO", f"Tài khoản {label} bắt đầu gửi tin (Chế độ: {mode})")
     t_idx = 0
 
-    # Nếu có file_path thì dùng Stream Generator để không tốn RAM và không lag
     if file_path and os.path.exists(file_path):
         block_gen = FileBlockReader.iterate_blocks_forever(file_path, mode=mode)
     else:
-        # Dùng danh sách blocks truyền trực tiếp
         def mem_gen():
             idx = 0
             while True:
@@ -689,11 +778,22 @@ def single_acc_worker(acc_dict, targets, file_path, blocks, delay, use_emoji, ic
                     idx += 1
         block_gen = mem_gen()
 
+    group_members_cache = {}
+
     while not stop_ev.is_set():
         target = targets[t_idx % len(targets)]
         t_idx += 1
         is_group = (target.get("type") == "group")
         target_id = target.get("id")
+
+        group_mems = None
+        if is_group and (tag_all or mode == "tag_all_ultra"):
+            if target_id not in group_members_cache:
+                try:
+                    group_members_cache[target_id] = z.get_members_full(target_id)
+                except Exception:
+                    group_members_cache[target_id] = []
+            group_mems = group_members_cache.get(target_id)
 
         try:
             raw = next(block_gen)
@@ -701,18 +801,22 @@ def single_acc_worker(acc_dict, targets, file_path, blocks, delay, use_emoji, ic
             raw = "Nội dung gửi"
 
         try:
+            cur_color_mode = color_mode
+            if mode == "matrix_rainbow":
+                cur_color_mode = "rainbow"
+
             if mode == "treo_ngon":
                 text = raw.replace("\r\n", "\n").replace("\r", "\n")
                 if use_emoji and icon_count > 0:
                     text = text + " " + " ".join([get_icon_hard() for _ in range(icon_count)])
-                z.send_adv(text, target_id, color_mode=color_mode, fixed_color=fixed_color,
+                z.send_adv(text, target_id, color_mode=cur_color_mode, fixed_color=fixed_color,
                            is_group=is_group, mentions=tag_users, tag_all=tag_all,
-                           font_size_mode=font_size_mode, is_heading=is_heading)
+                           font_size_mode=font_size_mode, is_heading=is_heading,
+                           group_members=group_mems)
                 with lock:
                     counter["sent"] += 1
 
             elif mode == "treo_nhay":
-                # Gửi từng dòng nguyên văn, không kèm số thứ tự
                 lines = [ln.strip() for ln in raw.split("\n") if ln.strip()]
                 for ln in lines:
                     if stop_ev.is_set():
@@ -720,20 +824,21 @@ def single_acc_worker(acc_dict, targets, file_path, blocks, delay, use_emoji, ic
                     msg_line = ln
                     if use_emoji and icon_count > 0:
                         msg_line += " " + " ".join([get_icon_hard() for _ in range(icon_count)])
-                    z.send_adv(msg_line, target_id, color_mode=color_mode, fixed_color=fixed_color,
+                    z.send_adv(msg_line, target_id, color_mode=cur_color_mode, fixed_color=fixed_color,
                                is_group=is_group, mentions=tag_users, tag_all=tag_all,
-                               font_size_mode=font_size_mode, is_heading=is_heading)
+                               font_size_mode=font_size_mode, is_heading=is_heading,
+                               group_members=group_mems)
                     with lock:
                         counter["sent"] += 1
                     time.sleep(0.3)
             else:
-                # Chế độ Siêu nhanh (Fast)
                 text = raw
                 if use_emoji and icon_count > 0:
                     text = text + " " + " ".join([get_icon_hard() for _ in range(icon_count)])
-                z.send_adv(text, target_id, color_mode=color_mode, fixed_color=fixed_color,
+                z.send_adv(text, target_id, color_mode=cur_color_mode, fixed_color=fixed_color,
                            is_group=is_group, mentions=tag_users, tag_all=tag_all,
-                           font_size_mode=font_size_mode, is_heading=is_heading)
+                           font_size_mode=font_size_mode, is_heading=is_heading,
+                           group_members=group_mems)
                 with lock:
                     counter["sent"] += 1
 
@@ -742,7 +847,7 @@ def single_acc_worker(acc_dict, targets, file_path, blocks, delay, use_emoji, ic
 
         time.sleep(max(0.3, delay))
 
-    log_event("INFO", f"Tài khoản {label} đã dừng gửi tin.")
+    log_event("INFO", f"Tài khoản {label} đã dừng hoàn tất.")
 
 def task_supervisor(tid, targets, file_path, blocks, delay, use_emoji, icon_count,
                     tag_users, tag_all, font_size_mode, is_heading, multi_acc, mode,
@@ -751,14 +856,14 @@ def task_supervisor(tid, targets, file_path, blocks, delay, use_emoji, icon_coun
     accs = conn.execute("SELECT * FROM accounts WHERE status = 'live' OR status = 'unknown'").fetchall()
     conn.close()
     if not accs:
-        log_event("ERROR", f"Không có tài khoản nào sẵn sàng cho tiến trình {tid}")
+        log_event("ERROR", f"Không có tài khoản hoạt động nào cho tiến trình {tid}")
         return
 
     counter = {"sent": 0}
     lock = threading.Lock()
     threads = []
 
-    if multi_acc:
+    if multi_acc or mode == "swarm":
         for a in accs:
             t = threading.Thread(
                 target=single_acc_worker,
@@ -792,8 +897,7 @@ def task_supervisor(tid, targets, file_path, blocks, delay, use_emoji, icon_coun
     conn.commit()
     conn.close()
     ACTIVE_TASKS.pop(tid, None)
-    log_event("SUCCESS", f"Tiến trình {tid} đã dừng thành công. Tổng tin đã gửi: {counter['sent']}")
-
+    log_event("SUCCESS", f"Tiến trình {tid} đã dừng thành công. Tổng tin: {counter['sent']}")
 
 # ============================================================
 # HỆ THỐNG CSS PHONG CÁCH THREEUI (MENGTO) & HOA ANH ĐÀO CAO CẤP
@@ -801,7 +905,7 @@ def task_supervisor(tid, targets, file_path, blocks, delay, use_emoji, icon_coun
 CSS_SAKURA_THREEUI = """
 :root {
   --bg-page: #faf7f9;
-  --bg-card: rgba(255, 255, 255, 0.88);
+  --bg-card: rgba(255, 255, 255, 0.86);
   --border-color: rgba(255, 183, 197, 0.45);
   --border-glow: rgba(255, 105, 180, 0.35);
   --txt-0: #0f172a;
@@ -810,14 +914,13 @@ CSS_SAKURA_THREEUI = """
   --txt-muted: #94a3b8;
   --sakura: #ff69b4;
   --sakura-deep: #e11d48;
-  --sakura-glow: rgba(255, 105, 180, 0.4);
-  --leaf-green: #34d399;
+  --sakura-glow: rgba(255, 105, 180, 0.45);
+  --leaf-green: #10b981;
   --grad-sakura: linear-gradient(135deg, #ff758c 0%, #ff7eb3 50%, #f472b6 100%);
   --grad-dark: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-  --grad-glass: linear-gradient(135deg, rgba(255,255,255,0.92) 0%, rgba(255,245,247,0.75) 100%);
+  --grad-glass: linear-gradient(135deg, rgba(255,255,255,0.92) 0%, rgba(255,245,247,0.78) 100%);
   --grad-neon: linear-gradient(135deg, #ff69b4 0%, #00f0ff 100%);
   --shadow-soft: 0 10px 35px -5px rgba(255, 117, 140, 0.12), 0 0 0 1px rgba(255, 255, 255, 0.8) inset;
-  --shadow-glow: 0 0 25px rgba(255, 105, 180, 0.25);
   --shadow-dock: 0 15px 45px -5px rgba(255, 117, 140, 0.25);
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
 }
@@ -844,13 +947,12 @@ body {
   overflow-x: hidden;
 }
 
-/* HÌNH NỀN AMBIENT PHÁT SÁNG */
 body::before {
   content: '';
   position: fixed;
   inset: 0;
-  background: radial-gradient(circle at 85% 15%, rgba(255, 192, 203, 0.35) 0%, transparent 45%),
-              radial-gradient(circle at 15% 85%, rgba(255, 182, 193, 0.25) 0%, transparent 40%),
+  background: radial-gradient(circle at 85% 15%, rgba(255, 192, 203, 0.38) 0%, transparent 45%),
+              radial-gradient(circle at 15% 85%, rgba(255, 182, 193, 0.28) 0%, transparent 40%),
               radial-gradient(circle at 50% 50%, rgba(255, 240, 245, 0.5) 0%, transparent 70%);
   pointer-events: none !important;
   z-index: -2;
@@ -870,7 +972,6 @@ body::after {
   z-index: -1;
 }
 
-/* CANVAS HOA & LÁ ANH ĐÀO RƠI 60FPS */
 #sakura-canvas {
   position: fixed;
   inset: 0;
@@ -880,17 +981,16 @@ body::after {
   height: 100%;
 }
 
-/* CÀNH HOA ANH ĐÀO ĐẶC SẮC (NHIỀU LÁ, HOA NỞ, ĐUNG ĐƯA THEO GIÓ) */
 .cherry-blossom-tree-branch {
   position: fixed;
   top: -15px;
   right: -15px;
-  width: 320px;
+  width: 330px;
   max-width: 48vw;
   height: auto;
   pointer-events: none !important;
   z-index: 8;
-  filter: drop-shadow(0 12px 25px rgba(255, 105, 180, 0.22));
+  filter: drop-shadow(0 12px 25px rgba(255, 105, 180, 0.25));
   transform-origin: top right;
   animation: branchSway 6.5s ease-in-out infinite alternate;
 }
@@ -901,23 +1001,25 @@ body::after {
   100% { transform: rotate(-1.2deg) scale(0.995) translateY(-2px); }
 }
 
-/* PRELOADER MÀN HÌNH TẢI TRANG THREEUI (MENGTO STYLE) */
 #threeui-preloader {
   position: fixed;
   inset: 0;
   z-index: 999999;
-  background: rgba(250, 247, 249, 0.96);
+  background: rgba(250, 247, 249, 0.95);
   backdrop-filter: blur(35px);
+  -webkit-backdrop-filter: blur(35px);
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  transition: opacity 0.6s var(--ease), visibility 0.6s var(--ease);
+  transition: opacity 0.45s var(--ease), visibility 0.45s var(--ease);
+  cursor: pointer;
 }
 #threeui-preloader.loaded {
   opacity: 0;
   visibility: hidden;
-  pointer-events: none;
+  pointer-events: none !important;
+  display: none !important;
 }
 .preloader-emblem {
   position: relative;
@@ -932,7 +1034,7 @@ body::after {
   position: absolute;
   inset: 0;
   border-radius: 50%;
-  border: 2px dashed rgba(255, 105, 180, 0.4);
+  border: 2px dashed rgba(255, 105, 180, 0.45);
   animation: preloaderSpin 8s linear infinite;
 }
 .preloader-ring-inner {
@@ -942,7 +1044,7 @@ body::after {
   border: 2.5px solid transparent;
   border-top-color: var(--sakura);
   border-right-color: #00f0ff;
-  animation: preloaderSpinFast 1.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  animation: preloaderSpinFast 1.3s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
 .preloader-logo {
   width: 64px;
@@ -952,6 +1054,10 @@ body::after {
   border: 2px solid #fff;
   box-shadow: 0 0 25px rgba(255, 105, 180, 0.45);
   animation: pulsePreloader 2s ease-in-out infinite;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #fff;
 }
 .preloader-logo img { width: 100%; height: 100%; object-fit: cover; }
 @keyframes preloaderSpin { 100% { transform: rotate(360deg); } }
@@ -967,10 +1073,10 @@ body::after {
   margin-bottom: 8px;
 }
 .preloader-sub {
-  font-size: 11px;
+  font-size: 11.5px;
   color: var(--txt-2);
   font-weight: 600;
-  margin-bottom: 20px;
+  margin-bottom: 18px;
   min-height: 18px;
 }
 .preloader-bar-wrap {
@@ -986,7 +1092,7 @@ body::after {
   width: 0%;
   background: var(--grad-sakura);
   border-radius: 99px;
-  transition: width 0.3s ease;
+  transition: width 0.25s ease;
   box-shadow: 0 0 12px rgba(255, 105, 180, 0.6);
 }
 .preloader-pct {
@@ -996,8 +1102,12 @@ body::after {
   color: var(--sakura);
   margin-top: 10px;
 }
+.preloader-hint {
+  font-size: 10px;
+  color: var(--txt-muted);
+  margin-top: 14px;
+}
 
-/* THANH TIÊU ĐỀ HEADER THREEUI */
 .header {
   background: rgba(255, 255, 255, 0.88);
   backdrop-filter: blur(28px);
@@ -1092,7 +1202,6 @@ body::after {
   100% { transform: scale(2.4); opacity: 0; }
 }
 
-/* KHUNG CHỨA TOÀN BỘ NỘI DUNG */
 .container {
   max-width: 1080px;
   margin: 0 auto;
@@ -1110,11 +1219,10 @@ body::after {
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
-/* THẺ CARD PHONG CÁCH THREEUI GLASSMORPHISM */
 .card {
   background: var(--bg-card);
-  backdrop-filter: blur(28px);
-  -webkit-backdrop-filter: blur(28px);
+  backdrop-filter: blur(30px);
+  -webkit-backdrop-filter: blur(30px);
   padding: 22px;
   border-radius: 24px;
   border: 1px solid var(--border-color);
@@ -1128,7 +1236,7 @@ body::after {
   box-shadow: 0 14px 40px -5px rgba(255, 117, 140, 0.16), 0 0 0 1px rgba(255, 105, 180, 0.4) inset;
 }
 .card h2 {
-  font-size: 13px;
+  font-size: 13.5px;
   font-weight: 900;
   letter-spacing: 0.6px;
   margin-bottom: 16px;
@@ -1145,7 +1253,6 @@ body::after {
   gap: 8px;
 }
 
-/* NÚT BẤM DẠNG VIÊN THUỐC THREEUI CYBER PILL */
 .btn-pill {
   padding: 11px 18px;
   border-radius: 99px;
@@ -1212,10 +1319,9 @@ body::after {
   font-size: 12.5px;
 }
 
-/* NÚT HÀNH ĐỘNG TRÒN LỚN BẮT ĐẦU / DỪNG */
 .btn-round {
-  width: 56px;
-  height: 56px;
+  width: 58px;
+  height: 58px;
   border-radius: 50%;
   border: none;
   cursor: pointer;
@@ -1241,7 +1347,6 @@ body::after {
   box-shadow: 0 6px 20px rgba(239, 68, 68, 0.4);
 }
 
-/* KHU VỰC TÙY BIẾN VÀ QUẢN LÝ LOGO WEB */
 .logo-manager-grid {
   display: grid;
   grid-template-columns: 140px 1fr;
@@ -1278,7 +1383,6 @@ body::after {
 }
 .logo-preview-inner img { width: 100%; height: 100%; object-fit: cover; }
 
-/* KHU VỰC TẢI LÊN TẬP TIN DUNG LƯỢNG LỚN SIÊU NHANH */
 .file-upload-wrapper {
   position: relative;
   width: 100%;
@@ -1316,7 +1420,6 @@ body::after {
 .file-upload-content svg { width: 32px; height: 32px; color: var(--sakura); }
 .file-upload-content span { font-size: 12px; font-weight: 700; color: var(--txt-1); }
 
-/* THANH TIẾN ĐỘ TẢI LÊN XHR THỜI GIAN THỰC */
 .upload-progress-container {
   display: none;
   margin-top: 12px;
@@ -1334,7 +1437,6 @@ body::after {
   transition: width 0.15s linear;
 }
 
-/* CÁC PHẦN TỬ FORM */
 .form-group { margin-bottom: 14px; }
 .form-group label {
   display: block;
@@ -1368,7 +1470,6 @@ body::after {
   line-height: 1.5;
 }
 
-/* THANH CHỌN CHIP / THẺ TÙY CHỌN */
 .chip-bar {
   display: flex;
   flex-wrap: wrap;
@@ -1401,7 +1502,6 @@ body::after {
   box-shadow: 0 4px 12px rgba(255, 117, 140, 0.3);
 }
 
-/* LƯỚI BẬT TẮT CHỨC NĂNG (TOGGLES) */
 .toggle-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -1432,7 +1532,6 @@ body::after {
   box-shadow: 0 4px 14px rgba(255, 117, 140, 0.3);
 }
 
-/* BẢNG DỮ LIỆU HIỆN ĐẠI */
 .table-wrap {
   overflow-x: auto;
   border-radius: 18px;
@@ -1455,7 +1554,6 @@ body::after {
   letter-spacing: 0.5px;
 }
 
-/* DANH SÁCH HỘI THOẠI VÀ THÀNH VIÊN */
 .box-list {
   max-height: 290px;
   overflow-y: auto;
@@ -1503,7 +1601,6 @@ body::after {
 .box-item .b-title { font-weight: 800; font-size: 12.5px; color: var(--txt-0); }
 .box-item .b-sub { font-size: 10px; color: var(--txt-2); font-family: 'JetBrains Mono', monospace; }
 
-/* TRẠNG THÁI BADGE */
 .status-badge {
   display: inline-flex;
   align-items: center;
@@ -1516,14 +1613,13 @@ body::after {
 .status-badge.live { background: #d1fae5; color: #065f46; border: 1px solid rgba(16, 185, 129, 0.25); }
 .status-badge.dead { background: #fee2e2; color: #b91c1c; border: 1px solid rgba(239, 68, 68, 0.25); }
 
-/* KHUNG DOCK ĐIỀU HƯỚNG NỔI BO TRÒN PHONG CÁCH THREEUI */
 .bottom-dock {
   position: fixed;
   bottom: 16px;
   left: 50%;
   transform: translateX(-50%);
   width: calc(100% - 24px);
-  max-width: 620px;
+  max-width: 640px;
   background: rgba(255, 255, 255, 0.92);
   backdrop-filter: blur(30px);
   -webkit-backdrop-filter: blur(30px);
@@ -1561,7 +1657,6 @@ body::after {
   transform: translateY(-2px);
 }
 
-/* THÔNG BÁO TOAST THÔNG MINH */
 #toast-stack {
   position: fixed;
   top: 16px;
@@ -1597,7 +1692,6 @@ body::after {
 SVG_CHERRY_BRANCH = """
 <svg class="cherry-blossom-tree-branch" viewBox="0 0 500 360" fill="none" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <!-- GRADIENT GỖ VÀ CÀNH CÂY -->
     <linearGradient id="branchWoodGrad" x1="500" y1="0" x2="100" y2="280" gradientUnits="userSpaceOnUse">
       <stop offset="0%" stop-color="#3e2312"/>
       <stop offset="40%" stop-color="#603813"/>
@@ -1609,7 +1703,6 @@ SVG_CHERRY_BRANCH = """
       <stop offset="100%" stop-color="#7a421a"/>
     </linearGradient>
 
-    <!-- GRADIENT CÁNH HOA ANH ĐÀO HỒNG PHẤN -->
     <radialGradient id="sakuraPetalGrad1" cx="30%" cy="30%" r="70%">
       <stop offset="0%" stop-color="#ffffff"/>
       <stop offset="45%" stop-color="#ffb7c5"/>
@@ -1623,7 +1716,6 @@ SVG_CHERRY_BRANCH = """
       <stop offset="100%" stop-color="#db2777"/>
     </radialGradient>
 
-    <!-- GRADIENT LÁ ANH ĐÀO XANH NON TƯƠI SẮC -->
     <linearGradient id="leafGrad1" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0%" stop-color="#a7f3d0"/>
       <stop offset="40%" stop-color="#34d399"/>
@@ -1635,7 +1727,6 @@ SVG_CHERRY_BRANCH = """
       <stop offset="100%" stop-color="#047857"/>
     </linearGradient>
 
-    <!-- TÂM HOA VÀ NHỤY VÀNG -->
     <radialGradient id="centerCupGrad" cx="50%" cy="50%" r="50%">
       <stop offset="0%" stop-color="#fff1f2"/>
       <stop offset="60%" stop-color="#fda4af"/>
@@ -1664,7 +1755,6 @@ SVG_CHERRY_BRANCH = """
         stroke="url(#twigGrad)" stroke-width="4" stroke-linecap="round"/>
 
   <!-- HỆ THỐNG LÁ ANH ĐÀO TƯƠI TỐT XANH MƯỚT (NHIỀU LÁ VÀ GÂN LÁ) -->
-  <!-- Chùm lá 1 (Gốc cành) -->
   <g transform="translate(420, 25) rotate(-35)">
     <path d="M0 0 C-15 -35 15 -55 0 -80 C-15 -55 15 -35 0 0" fill="url(#leafGrad1)"/>
     <path d="M0 0 L0 -75" stroke="#047857" stroke-width="1.2" opacity="0.6"/>
@@ -1673,8 +1763,6 @@ SVG_CHERRY_BRANCH = """
     <path d="M0 0 C-12 -28 12 -45 0 -65 C-12 -45 12 -28 0 0" fill="url(#leafGrad2)"/>
     <path d="M0 0 L0 -60" stroke="#047857" stroke-width="1" opacity="0.6"/>
   </g>
-
-  <!-- Chùm lá 2 (Giữa cành) -->
   <g transform="translate(325, 85) rotate(-65)">
     <path d="M0 0 C-14 -32 14 -50 0 -72 C-14 -50 14 -32 0 0" fill="url(#leafGrad1)"/>
     <path d="M0 0 L0 -68" stroke="#047857" stroke-width="1.2" opacity="0.6"/>
@@ -1687,8 +1775,6 @@ SVG_CHERRY_BRANCH = """
     <path d="M0 0 C-13 -30 13 -48 0 -70 C-13 -48 13 -30 0 0" fill="url(#leafGrad1)"/>
     <path d="M0 0 L0 -65" stroke="#047857" stroke-width="1.1" opacity="0.6"/>
   </g>
-
-  <!-- Chùm lá 3 (Nhánh vươn trái) -->
   <g transform="translate(180, 80) rotate(-80)">
     <path d="M0 0 C-15 -32 15 -52 0 -75 C-15 -52 15 -32 0 0" fill="url(#leafGrad2)"/>
     <path d="M0 0 L0 -70" stroke="#047857" stroke-width="1.2" opacity="0.6"/>
@@ -1699,8 +1785,6 @@ SVG_CHERRY_BRANCH = """
   <g transform="translate(90, 85) rotate(-30)">
     <path d="M0 0 C-11 -24 11 -38 0 -55 C-11 -38 11 -24 0 0" fill="url(#leafGrad2)"/>
   </g>
-
-  <!-- Chùm lá 4 (Nhánh rủ xuống) -->
   <g transform="translate(240, 175) rotate(70)">
     <path d="M0 0 C-14 -30 14 -48 0 -68 C-14 -48 14 -30 0 0" fill="url(#leafGrad1)"/>
   </g>
@@ -1720,9 +1804,7 @@ SVG_CHERRY_BRANCH = """
     <path d="M0 0 C-10 -22 10 -35 0 -50 C-10 -35 10 -22 0 0" fill="url(#leafGrad2)"/>
   </g>
 
-  <!-- HỆ THỐNG HOA ANH ĐÀO NỞ RỰC RỠ (NHIỀU HOA & NHỤY VÀNG) -->
-  <!-- Macro tạo hoa 5 cánh -->
-  <!-- Hoa 1 (Trung tâm nhánh lớn) -->
+  <!-- HỆ THỐNG HOA ANH ĐÀO NỞ RỰC RỠ -->
   <g transform="translate(340, 85)">
     <circle cx="0" cy="-14" r="13" fill="url(#sakuraPetalGrad1)"/>
     <circle cx="13" cy="-4" r="13" fill="url(#sakuraPetalGrad1)"/>
@@ -1732,8 +1814,6 @@ SVG_CHERRY_BRANCH = """
     <circle cx="0" cy="0" r="8" fill="url(#centerCupGrad)"/>
     <circle cx="0" cy="0" r="3.5" fill="#f59e0b"/>
   </g>
-
-  <!-- Hoa 2 -->
   <g transform="translate(390, 50)">
     <circle cx="0" cy="-12" r="11" fill="url(#sakuraPetalGrad2)"/>
     <circle cx="11" cy="-3" r="11" fill="url(#sakuraPetalGrad2)"/>
@@ -1743,8 +1823,6 @@ SVG_CHERRY_BRANCH = """
     <circle cx="0" cy="0" r="6.5" fill="url(#centerCupGrad)"/>
     <circle cx="0" cy="0" r="3" fill="#fbbf24"/>
   </g>
-
-  <!-- Hoa 3 -->
   <g transform="translate(290, 110)">
     <circle cx="0" cy="-15" r="14" fill="url(#sakuraPetalGrad1)"/>
     <circle cx="14" cy="-4" r="14" fill="url(#sakuraPetalGrad1)"/>
@@ -1754,8 +1832,6 @@ SVG_CHERRY_BRANCH = """
     <circle cx="0" cy="0" r="8.5" fill="url(#centerCupGrad)"/>
     <circle cx="0" cy="0" r="3.5" fill="#f59e0b"/>
   </g>
-
-  <!-- Hoa 4 -->
   <g transform="translate(230, 90)">
     <circle cx="0" cy="-13" r="12" fill="url(#sakuraPetalGrad2)"/>
     <circle cx="12" cy="-4" r="12" fill="url(#sakuraPetalGrad2)"/>
@@ -1765,8 +1841,6 @@ SVG_CHERRY_BRANCH = """
     <circle cx="0" cy="0" r="7" fill="url(#centerCupGrad)"/>
     <circle cx="0" cy="0" r="3" fill="#f59e0b"/>
   </g>
-
-  <!-- Hoa 5 -->
   <g transform="translate(170, 115)">
     <circle cx="0" cy="-14" r="13" fill="url(#sakuraPetalGrad1)"/>
     <circle cx="13" cy="-4" r="13" fill="url(#sakuraPetalGrad1)"/>
@@ -1776,8 +1850,6 @@ SVG_CHERRY_BRANCH = """
     <circle cx="0" cy="0" r="8" fill="url(#centerCupGrad)"/>
     <circle cx="0" cy="0" r="3.5" fill="#f59e0b"/>
   </g>
-
-  <!-- Hoa 6 -->
   <g transform="translate(265, 170)">
     <circle cx="0" cy="-12" r="11" fill="url(#sakuraPetalGrad2)"/>
     <circle cx="11" cy="-3" r="11" fill="url(#sakuraPetalGrad2)"/>
@@ -1787,8 +1859,6 @@ SVG_CHERRY_BRANCH = """
     <circle cx="0" cy="0" r="6.5" fill="url(#centerCupGrad)"/>
     <circle cx="0" cy="0" r="3" fill="#f59e0b"/>
   </g>
-
-  <!-- Hoa 7 -->
   <g transform="translate(205, 195)">
     <circle cx="0" cy="-13" r="12" fill="url(#sakuraPetalGrad1)"/>
     <circle cx="12" cy="-4" r="12" fill="url(#sakuraPetalGrad1)"/>
@@ -1798,8 +1868,6 @@ SVG_CHERRY_BRANCH = """
     <circle cx="0" cy="0" r="7" fill="url(#centerCupGrad)"/>
     <circle cx="0" cy="0" r="3" fill="#f59e0b"/>
   </g>
-
-  <!-- Hoa 8 -->
   <g transform="translate(130, 205)">
     <circle cx="0" cy="-12" r="11" fill="url(#sakuraPetalGrad2)"/>
     <circle cx="11" cy="-3" r="11" fill="url(#sakuraPetalGrad2)"/>
@@ -1809,8 +1877,6 @@ SVG_CHERRY_BRANCH = """
     <circle cx="0" cy="0" r="6" fill="url(#centerCupGrad)"/>
     <circle cx="0" cy="0" r="2.8" fill="#f59e0b"/>
   </g>
-
-  <!-- Hoa 9 -->
   <g transform="translate(75, 235)">
     <circle cx="0" cy="-13" r="12" fill="url(#sakuraPetalGrad1)"/>
     <circle cx="12" cy="-4" r="12" fill="url(#sakuraPetalGrad1)"/>
@@ -1820,8 +1886,6 @@ SVG_CHERRY_BRANCH = """
     <circle cx="0" cy="0" r="7" fill="url(#centerCupGrad)"/>
     <circle cx="0" cy="0" r="3" fill="#f59e0b"/>
   </g>
-
-  <!-- Hoa 10 (Đầu cành mảnh) -->
   <g transform="translate(30, 220)">
     <circle cx="0" cy="-10" r="9" fill="url(#sakuraPetalGrad2)"/>
     <circle cx="9" cy="-3" r="9" fill="url(#sakuraPetalGrad2)"/>
@@ -1832,7 +1896,7 @@ SVG_CHERRY_BRANCH = """
     <circle cx="0" cy="0" r="2.5" fill="#f59e0b"/>
   </g>
 
-  <!-- Nụ hoa chớm nở ở các đầu nhánh -->
+  <!-- NỤ HOA ANH ĐÀO -->
   <circle cx="440" cy="20" r="6" fill="#f472b6"/>
   <circle cx="440" cy="20" r="3" fill="#e11d48"/>
   <circle cx="360" cy="15" r="5.5" fill="#f472b6"/>
@@ -1843,15 +1907,12 @@ SVG_CHERRY_BRANCH = """
 </svg>
 """
 
-# ============================================================
-# CỔNG BẢO MẬT & TRANG ĐĂNG NHẬP THREEUI
-# ============================================================
 HTML_GATE = """<!DOCTYPE html>
 <html lang="vi">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Hệ Thống An Toàn — ALB Forge</title>
+<title>Hệ Thống An Toàn — ALB Forge ThreeUI</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
@@ -1929,7 +1990,7 @@ body {
 
 <div class="gate-card">
   <div class="radar-scanner"><div class="radar-icon">🌸</div></div>
-  <h1 style="font-family:'Orbitron',sans-serif; font-size:18px; margin-bottom:8px; color:var(--txt-0);">KIỂM TRA AN TOÀN HỆ THỐNG</h1>
+  <h1 style="font-family:'Orbitron',sans-serif; font-size:18px; margin-bottom:8px; color:var(--txt-0);">BẢO MẬT & CHỐNG DDOS</h1>
   <p id="scan-status" style="font-size:12px; color:var(--txt-2); min-height:36px; line-height:1.5;">Vui lòng xác thực danh tính để vào trung tâm điều khiển.</p>
   <div class="progress-line" id="p-box"><div class="progress-fill" id="p-bar"></div></div>
   <button class="btn-pill primary full" id="start-btn" onclick="startVerification()" style="font-size:13px; padding:15px; margin-top:8px;">🌸 Bắt Đầu Xác Thực</button>
@@ -1967,7 +2028,6 @@ async function finishScan(){
   if(r.ok) window.location.href = '/login';
 }
 
-// CANVAS RƠI CÁNH HOA VÀ LÁ
 var sCanvas = document.getElementById('sakura-canvas');
 var sCtx = sCanvas.getContext('2d');
 var sW = window.innerWidth, sH = window.innerHeight;
@@ -2019,7 +2079,7 @@ HTML_LOGIN = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Đăng Nhập Quản Trị — ALB Forge</title>
+<title>Đăng Nhập Quản Trị — ALB Forge ThreeUI</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
@@ -2055,6 +2115,9 @@ body {
   border: 3px solid var(--sakura);
   box-shadow: 0 8px 25px rgba(255, 105, 180, 0.4);
   background: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 .login-logo img { width: 100%; height: 100%; object-fit: cover; }
 .err-msg {
@@ -2076,7 +2139,7 @@ body {
 
 <div class="login-card">
   <div class="login-logo">
-    <img src="{{ logo_url }}" onerror="this.src='/static/logo.png'">
+    <img src="{{ logo_url }}" onerror="this.src="""" + DEFAULT_LOGO_DATA_URI + """"">
   </div>
   <h1 style="font-family:'Orbitron',sans-serif; font-size:20px; margin-bottom:6px; color:var(--txt-0);">{{ web_title }}</h1>
   <p style="font-size:11px; color:var(--txt-2); font-weight:800; margin-bottom:24px; display:flex; align-items:center; justify-content:center; gap:5px;">
@@ -2142,7 +2205,7 @@ renderParticles();
 """
 
 # ============================================================
-# GIAO DIỆN BẢNG ĐIỀU KHIỂN CHÍNH THREEUI SAKURA
+# GIAO DIỆN BẢNG ĐIỀU KHIỂN CHÍNH THREEUI SAKURA V2
 # ============================================================
 HTML_INDEX = """<!DOCTYPE html>
 <html lang="vi">
@@ -2160,13 +2223,13 @@ HTML_INDEX = """<!DOCTYPE html>
 </head>
 <body>
 
-<!-- MÀN HÌNH TẢI TRANG THREEUI (PRELOADER) -->
-<div id="threeui-preloader">
+<!-- MÀN HÌNH TẢI TRANG THREEUI (CHỐNG TREO, BẤM VÀO ĐỂ BỎ QUA NGAY) -->
+<div id="threeui-preloader" onclick="this.classList.add('loaded')" title="Nhấn vào màn hình để vào ngay">
   <div class="preloader-emblem">
     <div class="preloader-ring-outer"></div>
     <div class="preloader-ring-inner"></div>
     <div class="preloader-logo">
-      <img id="preloader-logo-img" src="{{ logo_url }}" onerror="this.src='/static/logo.png'">
+      <img id="preloader-logo-img" src="{{ logo_url }}" onerror="this.src="""" + DEFAULT_LOGO_DATA_URI + """"">
     </div>
   </div>
   <div class="preloader-title">{{ web_title }}</div>
@@ -2175,6 +2238,7 @@ HTML_INDEX = """<!DOCTYPE html>
     <div class="preloader-bar-fill" id="preloader-bar"></div>
   </div>
   <div class="preloader-pct" id="preloader-pct">0%</div>
+  <div class="preloader-hint">✨ Nhấn bất kỳ đâu để vào giao diện ngay</div>
 </div>
 
 <!-- CANVAS CÁNH HOA & LÁ ANH ĐÀO RƠI 60FPS -->
@@ -2186,20 +2250,20 @@ HTML_INDEX = """<!DOCTYPE html>
 <!-- THANH TIÊU ĐỀ HEADER THREEUI CAO CẤP -->
 <div class="header">
   <div class="header-inner">
-    <div class="logo-box" onclick="switchTab('theme')" title="Nhấn để mở bộ quản lý Logo & Giao diện">
-      <img id="header-logo" src="{{ logo_url }}" onerror="this.src='/static/logo.png'">
+    <div class="logo-box" onclick="switchTab('theme')" title="Nhấn để mở Bộ Quản Lý Logo Web">
+      <img id="header-logo" src="{{ logo_url }}" onerror="this.src="""" + DEFAULT_LOGO_DATA_URI + """"">
     </div>
     <div class="header-meta">
       <h1 id="header-web-title">{{ web_title }}</h1>
       <p>
         Bản quyền: <span class="v-badge"><svg viewBox="0 0 24 24" width="14" height="14" fill="#0084ff"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg></span>
         <b id="header-designer">{{ designer_name }}</b>
-        <span class="status-pill-radar" id="radar-live-pill"><span class="radar-dot"></span> SẴN SÀNG</span>
+        <span class="status-pill-radar" id="radar-live-pill"><span class="radar-dot"></span> WAF BẢO VỆ</span>
         <span style="font-family:'JetBrains Mono',monospace; font-size:10px; color:var(--txt-muted); margin-left:6px;" id="live-clock">--:--:--</span>
       </p>
     </div>
     <div style="display:flex; gap:8px;">
-      <button class="btn-pill light" onclick="switchTab('theme')" style="padding:8px 14px; font-size:10.5px;">⚙️ Giao diện</button>
+      <button class="btn-pill light" onclick="switchTab('theme')" style="padding:8px 14px; font-size:10.5px;">🖼️ Đổi Logo</button>
       <button class="btn-pill dark" onclick="location.href='/logout'" style="padding:8px 14px; font-size:10.5px;">Đăng xuất</button>
     </div>
   </div>
@@ -2209,9 +2273,7 @@ HTML_INDEX = """<!DOCTYPE html>
 
 <div class="container">
 
-  <!-- ========================================== -->
-  <!-- TAB 1: TÀI KHOẢN ĐIỀU KHIỂN (ACCOUNTS) -->
-  <!-- ========================================== -->
+  <!-- TAB 1: ACCOUNTS -->
   <div class="panel active" id="panel-accounts">
     <div class="card">
       <h2>
@@ -2256,9 +2318,7 @@ HTML_INDEX = """<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- ========================================== -->
-  <!-- TAB 2: QUẢN LÝ HỘI THOẠI (BOXES) -->
-  <!-- ========================================== -->
+  <!-- TAB 2: BOXES -->
   <div class="panel" id="panel-boxes">
     <div class="card">
       <h2>
@@ -2285,16 +2345,14 @@ HTML_INDEX = """<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- ========================================== -->
-  <!-- TAB 3: TẬP TIN VĂN BẢN SIÊU TỐC (FILES) -->
-  <!-- ========================================== -->
+  <!-- TAB 3: FILES -->
   <div class="panel" id="panel-files">
     <div class="card">
       <h2>
-        <span class="card-header-icon">⚡ Tải Lên Tập Tin Văn Bản (Tối Ưu Siêu Nhanh)</span>
+        <span class="card-header-icon">⚡ Tải Lên Tập Tin Văn Bản (Tối Ưu Siêu Nhanh O(1))</span>
       </h2>
       <p style="font-size:11.5px; color:var(--txt-2); margin-bottom:14px; line-height:1.5;">
-        Hệ thống được nâng cấp thuật toán đọc <b>Stream O(1) Memory</b>. Hỗ trợ tệp tin văn bản từ vài KB đến <b>hàng trăm MB</b> mà không gây đơ lag máy chủ hay trình duyệt!
+        Động cơ Stream Generator không tốn RAM. Hỗ trợ tệp tin từ vài KB đến <b>hàng trăm MB</b> mà không gây đơ lag máy chủ hay trình duyệt!
       </p>
 
       <div class="file-upload-wrapper" onclick="document.getElementById('file-input').click()">
@@ -2309,7 +2367,6 @@ HTML_INDEX = """<!DOCTYPE html>
         <input type="file" id="file-input" accept=".txt,.log" onchange="handleFileSelect(this)">
       </div>
 
-      <!-- THANH TIẾN ĐỘ TẢI LÊN XHR -->
       <div class="upload-progress-container" id="upload-progress-wrap">
         <div class="upload-progress-bar" id="upload-progress-bar"></div>
       </div>
@@ -2330,31 +2387,32 @@ HTML_INDEX = """<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- ========================================== -->
-  <!-- TAB 4: ĐỘNG CƠ GỬI TIN TỰ ĐỘNG (SPAM ENGINE) -->
-  <!-- ========================================== -->
+  <!-- TAB 4: SPAM ENGINE -->
   <div class="panel" id="panel-spam">
     <div class="card">
       <h2>
-        <span class="card-header-icon">🔥 Thiết Lập Động Cơ Gửi Tin Tự Động</span>
+        <span class="card-header-icon">🔥 Thiết Lập Động Cơ Gửi Tin Tự Động Siêu Xịn</span>
       </h2>
 
-      <!-- 1. Chế độ gửi -->
+      <!-- 1. Chế độ gửi (6 Chế độ nâng cấp) -->
       <div class="form-group">
-        <label>1. Chế độ gửi tin nhắn</label>
+        <label>1. Chế độ gửi tin nhắn nâng cấp (Chọn 1 trong 6 chế độ)</label>
         <div class="chip-bar" id="mode-selector">
-          <div class="chip-item active" data-mode="fast">⚡ Siêu Nhanh (Fast)</div>
-          <div class="chip-item" data-mode="treo_ngon">📜 Treo Ngôn (Khối Dòng / 1 Tin)</div>
-          <div class="chip-item" data-mode="treo_nhay">🎯 Treo Nhây (Từng Dòng Riêng Lẻ)</div>
+          <div class="chip-item active" data-mode="fast">⚡ Siêu Tốc (Turbo Flash)</div>
+          <div class="chip-item" data-mode="treo_ngon">📜 Treo Ngôn Đa Tầng (Stacker)</div>
+          <div class="chip-item" data-mode="treo_nhay">🎯 Treo Nhây Độc Bản (Stealth)</div>
+          <div class="chip-item" data-mode="swarm">🌪️ Bão Tin Nhắn (Multi-Acc Swarm)</div>
+          <div class="chip-item" data-mode="tag_all_ultra">📢 Đột Kích Tag All (@All Ultra)</div>
+          <div class="chip-item" data-mode="matrix_rainbow">🌈 Cầu Vồng Ma Trận (Rainbow)</div>
         </div>
         <input type="hidden" id="spam-mode" value="fast">
       </div>
 
       <!-- 2. Chọn tập tin -->
       <div class="form-group">
-        <label>2. Sử dụng nội dung từ tập tin đã lưu</label>
+        <label>2. Sử dụng nội dung từ tập tin đã lưu (Chạy trực tiếp từ ổ cứng O(1))</label>
         <select id="spam-file-select" onchange="handleSpamFileChange()">
-          <option value="">-- Hoặc nhập trực tiếp bên dưới --</option>
+          <option value="">-- Hoặc nhập trực tiếp văn bản bên dưới --</option>
         </select>
         <div id="file-info-badge" style="font-size:10px; font-weight:700; color:var(--sakura); margin-top:4px; display:none;"></div>
       </div>
@@ -2365,11 +2423,11 @@ HTML_INDEX = """<!DOCTYPE html>
         <textarea id="spam-messages" placeholder="Dán văn bản nhiều dòng vào đây... Nếu chọn Treo Ngôn, toàn bộ văn bản sẽ được gửi trong 1 tin duy nhất. Nếu chọn Treo Nhây, mỗi dòng sẽ được gửi riêng biệt."></textarea>
       </div>
 
-      <!-- 4. Kích thước & Định dạng chữ (Khắc phục lỗi in đậm to ra) -->
+      <!-- 4. Kích thước & Định dạng chữ -->
       <div class="form-group">
-        <label>4. Cỡ chữ & Định dạng nổi bật (Khắc phục chữ nhỏ, không in đậm)</label>
+        <label>4. Cỡ chữ & Định dạng nổi bật (Khắc phục triệt để chữ chưa in đậm to)</label>
         <div class="chip-bar" id="font-size-bar">
-          <div class="chip-item" data-fsize="normal">Chuẩn (Thường)</div>
+          <div class="chip-item" data-fsize="normal">Chuẩn (Normal)</div>
           <div class="chip-item" data-fsize="bold">In Đậm (**Bold**)</div>
           <div class="chip-item active" data-fsize="heading">Tiêu Đề Lớn (# H1)</div>
           <div class="chip-item" data-fsize="giant">Khổng Lồ (# **H1 Bold**)</div>
@@ -2377,13 +2435,13 @@ HTML_INDEX = """<!DOCTYPE html>
         <input type="hidden" id="font-size-mode" value="heading">
       </div>
 
-      <!-- 5. Màu sắc chữ (Khắc phục lỗi không đổi màu) -->
+      <!-- 5. Màu sắc chữ -->
       <div class="form-group">
-        <label>5. Màu sắc chữ Zalo (Khắc phục lỗi không đổi màu gửi)</label>
+        <label>5. Màu sắc chữ Zalo (Khắc phục triệt để lỗi không đổi màu)</label>
         <div class="chip-bar" id="color-mode-bar">
-          <div class="chip-item active" data-cmode="rainbow">🌈 Trộn Màu Từng Dòng (Rainbow)</div>
-          <div class="chip-item" data-cmode="random">🎲 Đổi Màu Ngẫu Nhiên (Random)</div>
-          <div class="chip-item" data-cmode="fixed">🎨 Cố Định Một Màu (Fixed)</div>
+          <div class="chip-item active" data-cmode="rainbow">🌈 Trộn Màu Cầu Vồng Từng Dòng</div>
+          <div class="chip-item" data-cmode="random">🎲 Đổi Màu Ngẫu Nhiên</div>
+          <div class="chip-item" data-cmode="fixed">🎨 Cố Định Một Màu</div>
           <div class="chip-item" data-cmode="none">⚪ Tắt Màu Sắc</div>
         </div>
         <input type="hidden" id="color-mode" value="rainbow">
@@ -2392,14 +2450,14 @@ HTML_INDEX = """<!DOCTYPE html>
 
       <!-- 6. Khoảng cách thời gian -->
       <div class="form-group">
-        <label>6. Khoảng cách thời gian gửi giữa các tin (Delay)</label>
+        <label>6. Khoảng cách thời gian giữa các lần gửi (Delay)</label>
         <div class="chip-bar" id="delay-bar">
-          <div class="chip-item" data-delay="0.3">0.3 giây</div>
-          <div class="chip-item" data-delay="0.5">0.5 giây</div>
-          <div class="chip-item active" data-delay="1">1.0 giây</div>
-          <div class="chip-item" data-delay="2">2.0 giây</div>
-          <div class="chip-item" data-delay="3">3.0 giây</div>
-          <div class="chip-item" data-delay="5">5.0 giây</div>
+          <div class="chip-item" data-delay="0.3">0.3s (Cực nhanh)</div>
+          <div class="chip-item" data-delay="0.5">0.5s</div>
+          <div class="chip-item active" data-delay="1">1.0s (Mặc định)</div>
+          <div class="chip-item" data-delay="2">2.0s</div>
+          <div class="chip-item" data-delay="3">3.0s</div>
+          <div class="chip-item" data-delay="5">5.0s</div>
         </div>
         <input type="hidden" id="spam-delay" value="1">
       </div>
@@ -2475,44 +2533,42 @@ HTML_INDEX = """<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- ========================================== -->
-  <!-- TAB 5: BỘ QUẢN LÝ LOGO & GIAO DIỆN WEB (THEME) -->
-  <!-- ========================================== -->
+  <!-- TAB 5: LOGO MANAGER (TỰ ĐỘNG LƯU SERVER NGAY) -->
   <div class="panel" id="panel-theme">
     <div class="card">
       <h2>
-        <span class="card-header-icon">🌸 Tùy Biến Ảnh Logo & Thương Hiệu Web</span>
+        <span class="card-header-icon">🌸 Bộ Quản Lý Logo Web (Tự Lưu Lên Server Ngay)</span>
       </h2>
-      <p style="font-size:11.5px; color:var(--txt-2); margin-bottom:18px;">
-        Thêm hoặc thay đổi ảnh Logo trang web theo sở thích cá nhân. Logo mới sẽ được áp dụng ngay lập tức trên thanh tiêu đề, trang đăng nhập và biểu tượng trình duyệt!
+      <p style="font-size:12px; color:var(--txt-1); margin-bottom:18px; line-height:1.6;">
+        Tùy biến Logo trang web của bạn một cách nhanh chóng. <b>Chọn ảnh từ thiết bị là hệ thống tự động tải và lưu vĩnh viễn lên máy chủ ngay lập tức!</b>
       </p>
 
       <div class="logo-manager-grid">
         <div class="logo-preview-box">
           <div class="logo-preview-inner">
-            <img id="theme-logo-preview" src="{{ logo_url }}" onerror="this.src='/static/logo.png'">
+            <img id="theme-logo-preview" src="{{ logo_url }}" onerror="this.src="""" + DEFAULT_LOGO_DATA_URI + """"">
           </div>
         </div>
         <div>
-          <div style="font-size:13px; font-weight:900; color:var(--txt-0); margin-bottom:6px;">Logo Hiện Tại Của Trang Web</div>
-          <p style="font-size:11px; color:var(--txt-2); margin-bottom:12px;">Định dạng hỗ trợ: PNG, JPG, JPEG, SVG, WebP, GIF (khuyên dùng ảnh vuông 256x256)</p>
+          <div style="font-size:13.5px; font-weight:900; color:var(--txt-0); margin-bottom:6px;">Bản Xem Trước Logo Web 3D</div>
+          <p style="font-size:11px; color:var(--txt-2); margin-bottom:12px;">Hỗ trợ ảnh: PNG, JPG, JPEG, SVG, WebP, GIF (Tự động nén và lưu trữ vĩnh viễn)</p>
           <div style="display:flex; flex-wrap:wrap; gap:8px;">
-            <button class="btn-pill light" onclick="document.getElementById('logo-file-input').click()">📁 Chọn Tệp Ảnh Mới</button>
-            <button class="btn-pill danger" onclick="resetDefaultLogo()">↺ Đặt Lại Mặc Định</button>
+            <button class="btn-pill primary" onclick="document.getElementById('logo-file-input').click()">📁 Chọn Tệp Ảnh (Lưu Ngay)</button>
+            <button class="btn-pill danger" onclick="resetDefaultLogo()">↺ Đặt Lại Logo Gốc</button>
           </div>
           <input type="file" id="logo-file-input" accept="image/*" style="display:none;" onchange="handleLogoFileSelect(this)">
         </div>
       </div>
 
-      <div class="form-group" style="margin-top:16px;">
-        <label>Hoặc nhập trực tiếp đường dẫn URL ảnh Logo</label>
+      <div class="form-group" style="margin-top:20px; border-top:1px solid rgba(255,183,197,0.25); padding-top:16px;">
+        <label>Hoặc dán trực tiếp đường dẫn URL ảnh Logo</label>
         <div style="display:flex; gap:8px;">
-          <input type="text" id="logo-url-input" placeholder="https://example.com/my-logo.png">
-          <button class="btn-pill dark" onclick="applyLogoUrl()" style="white-space:nowrap;">Áp Dụng URL</button>
+          <input type="text" id="logo-url-input" placeholder="https://example.com/logo.png">
+          <button class="btn-pill dark" onclick="applyLogoUrl()" style="white-space:nowrap;">Lưu URL Lên Server</button>
         </div>
       </div>
 
-      <div class="form-group" style="margin-top:20px; border-top:1px solid rgba(255,183,197,0.25); padding-top:16px;">
+      <div class="form-group" style="margin-top:16px;">
         <label>Tiêu đề thương hiệu Web (Web Title)</label>
         <input type="text" id="setting-web-title" value="{{ web_title }}">
       </div>
@@ -2522,20 +2578,55 @@ HTML_INDEX = """<!DOCTYPE html>
         <input type="text" id="setting-designer-name" value="{{ designer_name }}">
       </div>
 
-      <button class="btn-pill primary full" onclick="saveWebSettings()">💾 Lưu Tất Cả Cài Đặt Giao Diện</button>
+      <button class="btn-pill primary full" onclick="saveWebSettings()">💾 Lưu Cài Đặt Giao Diện Web</button>
     </div>
   </div>
 
-  <!-- ========================================== -->
-  <!-- TAB 6: NHẬT KÝ HỆ THỐNG & HOẠT ĐỘNG (LOGS) -->
-  <!-- ========================================== -->
+  <!-- TAB 6: ANTI-DDOS & LOGS -->
   <div class="panel" id="panel-logs">
     <div class="card">
       <h2>
-        <span class="card-header-icon">📜 Nhật Ký Hoạt Động & Sự Kiện Hệ Thống</span>
-        <button class="btn-pill light" onclick="loadLogs()" style="padding:5px 12px; font-size:10px;">Làm mới nhật ký</button>
+        <span class="card-header-icon">🛡️ Trung Tâm Tường Lửa Anti-DDoS & WAF</span>
+        <button class="btn-pill light" onclick="loadSecurityStats()" style="padding:5px 12px; font-size:10px;">Làm mới số liệu</button>
       </h2>
-      <div class="box-list" id="logs-container" style="max-height:380px; font-family:'JetBrains Mono',monospace; font-size:11px; background:#1e293b; color:#f1f5f9;">
+      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(130px, 1fr)); gap:10px; margin-bottom:16px;">
+        <div style="background:#fff; padding:12px; border-radius:14px; border:1px solid var(--border-color); text-align:center;">
+          <div style="font-size:10px; font-weight:800; color:var(--txt-2);">YÊU CẦU HỢP LỆ</div>
+          <div style="font-size:18px; font-weight:900; color:#10b981;" id="stat-allowed">0</div>
+        </div>
+        <div style="background:#fff; padding:12px; border-radius:14px; border:1px solid var(--border-color); text-align:center;">
+          <div style="font-size:10px; font-weight:800; color:var(--txt-2);">YÊU CẦU BỊ CHẶN</div>
+          <div style="font-size:18px; font-weight:900; color:#ef4444;" id="stat-blocked">0</div>
+        </div>
+        <div style="background:#fff; padding:12px; border-radius:14px; border:1px solid var(--border-color); text-align:center;">
+          <div style="font-size:10px; font-weight:800; color:var(--txt-2);">IP ĐANG KHÓA</div>
+          <div style="font-size:18px; font-weight:900; color:var(--sakura);" id="stat-bancount">0</div>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Chế độ nhạy Tường Lửa Anti-DDoS</label>
+        <div class="chip-bar" id="waf-mode-bar">
+          <div class="chip-item active" data-wafmode="standard" onclick="setWafMode('standard')">Tiêu Chuẩn (Standard)</div>
+          <div class="chip-item" data-wafmode="strict" onclick="setWafMode('strict')">Nghiêm Ngặt (Strict)</div>
+          <div class="chip-item" data-wafmode="maximum" onclick="setWafMode('maximum')">Tối Đa (Maximum Security)</div>
+        </div>
+      </div>
+
+      <div class="form-group" style="margin-top:14px;">
+        <label>Danh sách các IP đang bị Tường lửa khóa:</label>
+        <div class="box-list" id="banned-ip-list" style="max-height:160px;">
+          <div style="text-align:center; padding:12px; color:var(--txt-2); font-size:11.5px;">Không có IP nào bị khóa</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>
+        <span class="card-header-icon">📜 Nhật Ký Hoạt Động Hệ Thống</span>
+        <button class="btn-pill light" onclick="loadLogs()" style="padding:5px 12px; font-size:10px;">Làm mới</button>
+      </h2>
+      <div class="box-list" id="logs-container" style="max-height:360px; font-family:'JetBrains Mono',monospace; font-size:11px; background:#1e293b; color:#f1f5f9;">
         <div style="padding:14px; text-align:center; color:#94a3b8;">Đang tải nhật ký...</div>
       </div>
     </div>
@@ -2566,8 +2657,8 @@ HTML_INDEX = """<!DOCTYPE html>
     <span>Logo & Giao diện</span>
   </button>
   <button class="dock-btn" data-tab="logs">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
-    <span>Nhật ký</span>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+    <span>Tường lửa & Nhật ký</span>
   </button>
 </div>
 
@@ -2576,7 +2667,7 @@ HTML_INDEX = """<!DOCTYPE html>
 // TRẠNG THÁI TOÀN CỤC & CẤU HÌNH
 // ==========================================
 var flags = {
-  all: true,      // Mặc định BẬT @All theo yêu cầu
+  all: true,
   multi: true,
   emoji: true
 };
@@ -2634,7 +2725,7 @@ var Toast = (function(){
 })();
 
 // ==========================================
-// PRELOADER MÀN HÌNH TẢI TRANG THREEUI
+// PRELOADER MÀN HÌNH TẢI TRANG THREEUI (CHỐNG TREO 100%)
 // ==========================================
 function initPreloader(){
   var bar = document.getElementById('preloader-bar');
@@ -2645,15 +2736,14 @@ function initPreloader(){
 
   var current = 0;
   var statusMsgs = [
-    { p: 20, t: 'Đang tải hoạt cảnh cành hoa anh đào ThreeUI...' },
-    { p: 45, t: 'Đang kết nối cơ sở dữ liệu SQLite...' },
-    { p: 70, t: 'Đang đồng bộ bảng màu chuẩn Zalo Palette...' },
-    { p: 90, t: 'Đang tối ưu động cơ đọc tệp tin O(1)...' },
+    { p: 25, t: 'Đang tải hoạt cảnh cành hoa anh đào ThreeUI...' },
+    { p: 50, t: 'Đang kết nối cơ sở dữ liệu SQLite...' },
+    { p: 75, t: 'Đang khởi động Tường Lửa Anti-DDoS WAF Pro...' },
     { p: 100, t: 'Hệ thống đã sẵn sàng điều khiển!' }
   ];
 
   var interval = setInterval(() => {
-    current += 5;
+    current += 10;
     if(bar) bar.style.width = current + '%';
     if(pct) pct.textContent = current + '%';
 
@@ -2663,13 +2753,21 @@ function initPreloader(){
     if(current >= 100){
       clearInterval(interval);
       setTimeout(() => {
-        wrap.classList.add('loaded');
-      }, 350);
+        if(wrap) wrap.classList.add('loaded');
+      }, 250);
     }
-  }, 40);
+  }, 35);
 }
 
-// ĐỒNG HỒ THỜI GIAN THỰC (GMT+7)
+// WATCHDOG FAILSAFE: BẢO ĐẢM TỰ ĐỘNG ẨN PRELOADER SAU 850MS (KHÔNG BAO GIỜ TREO 0%)
+setTimeout(function(){
+  var pl = document.getElementById('threeui-preloader');
+  if(pl && !pl.classList.contains('loaded')){
+    pl.classList.add('loaded');
+  }
+}, 850);
+
+// ĐỒNG HỒ THỜI GIAN THỰC
 function updateClock(){
   var now = new Date();
   var s = now.toLocaleTimeString('vi-VN', { hour12: false });
@@ -2679,7 +2777,7 @@ function updateClock(){
 setInterval(updateClock, 1000);
 updateClock();
 
-// ĐIỀU HƯỚNG TAB
+// CHUYỂN ĐỔI TAB NỔI BO TRÒN THREEUI
 function switchTab(tabName){
   document.querySelectorAll('.bottom-dock .dock-btn').forEach(b => {
     b.classList.toggle('active', b.dataset.tab === tabName);
@@ -2688,7 +2786,7 @@ function switchTab(tabName){
     p.classList.toggle('active', p.id === 'panel-' + tabName);
   });
   window.scrollTo({ top: 0, behavior: 'smooth' });
-  if(tabName === 'logs') loadLogs();
+  if(tabName === 'logs') { loadLogs(); loadSecurityStats(); }
   if(tabName === 'accounts') loadAccounts();
   if(tabName === 'files') loadFiles();
 }
@@ -2699,28 +2797,29 @@ document.querySelectorAll('.bottom-dock .dock-btn').forEach(b => {
   });
 });
 
-// THANH CHỌN CHẾ ĐỘ
+// CHỌN CHẾ ĐỘ SPAM (6 CHẾ ĐỘ)
 document.querySelectorAll('#mode-selector .chip-item').forEach(c => {
   c.addEventListener('click', () => {
     document.querySelectorAll('#mode-selector .chip-item').forEach(x => x.classList.remove('active'));
     c.classList.add('active');
     currentMode = c.dataset.mode;
     document.getElementById('spam-mode').value = currentMode;
+    Toast.info('Đã chọn chế độ: ' + c.textContent.trim());
   });
 });
 
-// THANH CHỌN CỠ CHỮ (KHẮC PHỤC CHỮ CHƯA IN ĐẬM TO RA)
+// CHỌN CỠ CHỮ & ĐỊNH DẠNG (KHẮC PHỤC CHỮ CHƯA IN ĐẬM TO)
 document.querySelectorAll('#font-size-bar .chip-item').forEach(c => {
   c.addEventListener('click', () => {
     document.querySelectorAll('#font-size-bar .chip-item').forEach(x => x.classList.remove('active'));
     c.classList.add('active');
     fontSizeMode = c.dataset.fsize;
     document.getElementById('font-size-mode').value = fontSizeMode;
-    Toast.info('Đã chọn cỡ chữ: ' + c.textContent.trim());
+    Toast.info('Cỡ chữ: ' + c.textContent.trim());
   });
 });
 
-// THANH CHỌN MÀU SẮC CHỮ
+// CHỌN MÀU SẮC CHỮ (KHẮC PHỤC LỖI KHÔNG ĐỔI MÀU)
 document.querySelectorAll('#color-mode-bar .chip-item').forEach(c => {
   c.addEventListener('click', () => {
     document.querySelectorAll('#color-mode-bar .chip-item').forEach(x => x.classList.remove('active'));
@@ -2731,7 +2830,7 @@ document.querySelectorAll('#color-mode-bar .chip-item').forEach(c => {
   });
 });
 
-// THANH CHỌN DELAY
+// CHỌN DELAY
 document.querySelectorAll('#delay-bar .chip-item').forEach(c => {
   c.addEventListener('click', () => {
     document.querySelectorAll('#delay-bar .chip-item').forEach(x => x.classList.remove('active'));
@@ -2740,7 +2839,7 @@ document.querySelectorAll('#delay-bar .chip-item').forEach(c => {
   });
 });
 
-// THANH CHỌN ICON
+// CHỌN ICON
 document.querySelectorAll('#icon-bar .chip-item').forEach(c => {
   c.addEventListener('click', () => {
     document.querySelectorAll('#icon-bar .chip-item').forEach(x => x.classList.remove('active'));
@@ -2755,7 +2854,7 @@ function tgFlag(name){
   var el = document.getElementById('tg-' + name);
   if(el) el.classList.toggle('active', flags[name]);
   if(name === 'all'){
-    Toast.info(flags.all ? 'ĐÃ BẬT @ALL TOÀN NHÓM' : 'ĐÃ TẮT @ALL');
+    Toast.info(flags.all ? '📢 ĐÃ BẬT @ALL TOÀN NHÓM' : 'ĐÃ TẮT @ALL');
   }
 }
 
@@ -2776,7 +2875,6 @@ function handleFileSelect(input){
   }
 }
 
-// API GỌI DỮ LIỆU CHUẨN
 async function api(url, opts = {}){
   try {
     var r = await fetch(url, Object.assign({}, opts, {
@@ -2789,7 +2887,7 @@ async function api(url, opts = {}){
 }
 
 // ==========================================
-// TÙY BIẾN LOGO & GIAO DIỆN (THEME & LOGO MANAGER)
+// TÙY BIẾN LOGO WEB (TỰ ĐỘNG LƯU LÊN SERVER NGAY)
 // ==========================================
 function handleLogoFileSelect(input){
   if(input.files && input.files.length > 0){
@@ -2806,36 +2904,40 @@ function handleLogoFileSelect(input){
 async function uploadLogoFile(file){
   var fd = new FormData();
   fd.append('logo', file);
-  Toast.info('Đang tải lên ảnh logo mới...');
+  Toast.info('Đang lưu Logo mới lên server...');
   try {
     var r = await fetch('/api/upload_logo', { method: 'POST', body: fd }).then(x => x.json());
     if(r.ok){
-      Toast.success('Cập nhật Logo Web thành công!');
-      var newUrl = r.url || ('/static/logo.png?t=' + Date.now());
+      Toast.success('Đã lưu Logo lên máy chủ thành công!');
+      var newUrl = r.url;
       document.getElementById('header-logo').src = newUrl;
       document.getElementById('theme-logo-preview').src = newUrl;
+      var plLogo = document.getElementById('preloader-logo-img');
+      if(plLogo) plLogo.src = newUrl;
       var f = document.getElementById('page-favicon');
       if(f) f.href = newUrl;
     } else {
-      Toast.error(r.error || 'Lỗi tải ảnh logo');
+      Toast.error(r.error || 'Lỗi lưu ảnh logo');
     }
   } catch(e){
-    Toast.error('Lỗi tải ảnh: ' + e.message);
+    Toast.error('Lỗi kết nối khi tải ảnh: ' + e.message);
   }
 }
 
 async function applyLogoUrl(){
   var url = document.getElementById('logo-url-input').value.trim();
   if(!url) return Toast.error('Vui lòng nhập đường dẫn URL ảnh Logo');
-  Toast.info('Đang kiểm tra & áp dụng URL logo...');
+  Toast.info('Đang lưu URL Logo lên máy chủ...');
   var r = await api('/api/set_logo_url', { method: 'POST', body: JSON.stringify({ url }) });
   if(r.ok){
-    Toast.success('Đã áp dụng ảnh Logo từ URL!');
+    Toast.success('Đã lưu URL Logo lên server!');
     var newUrl = r.url || url;
     document.getElementById('header-logo').src = newUrl;
     document.getElementById('theme-logo-preview').src = newUrl;
+    var plLogo = document.getElementById('preloader-logo-img');
+    if(plLogo) plLogo.src = newUrl;
   } else {
-    Toast.error(r.error || 'Không thể áp dụng URL ảnh');
+    Toast.error(r.error || 'Không thể lưu URL ảnh');
   }
 }
 
@@ -2844,9 +2946,11 @@ async function resetDefaultLogo(){
   var r = await api('/api/reset_logo', { method: 'POST' });
   if(r.ok){
     Toast.success('Đã đặt lại Logo mặc định');
-    var defaultUrl = '/static/logo.png?t=' + Date.now();
+    var defaultUrl = r.url;
     document.getElementById('header-logo').src = defaultUrl;
     document.getElementById('theme-logo-preview').src = defaultUrl;
+    var plLogo = document.getElementById('preloader-logo-img');
+    if(plLogo) plLogo.src = defaultUrl;
   }
 }
 
@@ -2859,12 +2963,63 @@ async function saveWebSettings(){
     body: JSON.stringify({ web_title: title, designer_name: designer })
   });
   if(r.ok){
-    Toast.success('Đã lưu cài đặt giao diện!');
+    Toast.success('Đã lưu cài đặt giao diện web!');
     document.getElementById('header-web-title').textContent = title;
     document.getElementById('header-designer').textContent = designer;
     document.title = title;
   } else {
     Toast.error(r.error || 'Lỗi lưu cài đặt');
+  }
+}
+
+// ==========================================
+// TRUNG TÂM TƯỜNG LỬA ANTI-DDOS & WAF CONTROLS
+// ==========================================
+async function loadSecurityStats(){
+  var r = await api('/api/security/stats');
+  if(!r.error){
+    document.getElementById('stat-allowed').textContent = r.total_allowed || 0;
+    document.getElementById('stat-blocked').textContent = r.total_blocked || 0;
+    document.getElementById('stat-bancount').textContent = r.active_bans_count || 0;
+
+    var list = document.getElementById('banned-ip-list');
+    var bans = r.active_bans || [];
+    if(bans.length === 0){
+      list.innerHTML = '<div style="text-align:center; padding:12px; color:var(--txt-2); font-size:11.5px;">Không có IP nào bị khóa (Hệ thống an toàn)</div>';
+    } else {
+      list.innerHTML = bans.map(b => `
+        <div class="box-item" style="cursor:default;">
+          <div style="flex:1;">
+            <div class="b-title" style="color:#ef4444;">🛡️ ${b.ip}</div>
+            <div class="b-sub">${b.reason} • Còn ${b.remaining} giây</div>
+          </div>
+          <button class="btn-pill success" onclick="unbanIp('${b.ip}')" style="padding:4px 10px; font-size:9.5px;">Mở khóa</button>
+        </div>
+      `).join('');
+    }
+
+    document.querySelectorAll('#waf-mode-bar .chip-item').forEach(c => {
+      c.classList.toggle('active', c.dataset.wafmode === r.mode);
+    });
+  }
+}
+
+async function unbanIp(ip){
+  Toast.info('Đang mở khóa IP ' + ip + '...');
+  var r = await api('/api/security/unban', { method: 'POST', body: JSON.stringify({ ip }) });
+  if(r.ok){
+    Toast.success('Đã mở khóa IP ' + ip);
+    loadSecurityStats();
+  } else {
+    Toast.error('Không tìm thấy IP để mở');
+  }
+}
+
+async function setWafMode(mode){
+  var r = await api('/api/security/set_mode', { method: 'POST', body: JSON.stringify({ mode }) });
+  if(r.ok){
+    Toast.success('Đã chuyển độ nhạy Tường Lửa: ' + mode);
+    loadSecurityStats();
   }
 }
 
@@ -3037,7 +3192,7 @@ function tgMember(el, idx){
 }
 
 // ==========================================
-// TẢI LÊN TẬP TIN DUNG LƯỢNG LỚN SIÊU NHANH (STREAM XHR)
+// TẢI LÊN TẬP TIN SIÊU NHANH (STREAM XHR)
 // ==========================================
 function uploadTextFileStream(){
   var inp = document.getElementById('file-input');
@@ -3072,7 +3227,7 @@ function uploadTextFileStream(){
     if(xhr.status === 200){
       var res = JSON.parse(xhr.responseText);
       if(res.ok){
-        Toast.success(`Lưu thành công! ${res.lines} khối, ${res.total_lines} dòng (${(res.size/1048576).toFixed(2)} MB)`);
+        Toast.success(`Lưu thành công! ${res.lines} khối (${(res.size/1048576).toFixed(2)} MB)`);
         inp.value = '';
         document.getElementById('upload-txt').textContent = "Kéo thả hoặc Nhấn để chọn tệp Văn bản (.txt, .log)";
         loadFiles();
@@ -3154,20 +3309,18 @@ async function startSpam(){
   var fid = document.getElementById('spam-file-select').value;
   var direct = document.getElementById('spam-messages').value.trim();
 
-  // Khắc phục triệt để việc lag khi tệp nhiều MB:
-  // Nếu chọn file, ta chỉ gửi file_id sang server, KHÔNG tải hàng chục MB JSON về client rồi gửi lại!
   var payload = {
     targets: selectedBoxes,
     delay: parseFloat(document.getElementById('spam-delay').value) || 1,
     use_emoji: flags.emoji,
     icon_count: flags.emoji ? (parseInt(document.getElementById('icon-count').value) || 3) : 0,
     tag_users: selectedTags,
-    tag_all: flags.all, // Luôn gửi cờ @All chuẩn
-    font_size_mode: fontSizeMode, // Sửa lỗi in đậm to ra
+    tag_all: flags.all,
+    font_size_mode: fontSizeMode,
     is_heading: (fontSizeMode === 'heading' || fontSizeMode === 'giant'),
     multi_acc: flags.multi,
     mode: currentMode,
-    color_mode: colorMode, // Sửa lỗi đổi màu chữ
+    color_mode: colorMode,
     fixed_color: fixedColor
   };
 
@@ -3261,7 +3414,7 @@ async function loadLogs(){
 }
 
 // ==========================================
-// CANVAS CÁNH HOA & LÁ ANH ĐÀO RƠI 60FPS VỚI HIỆU ỨNG TƯƠNG TÁC CHUỘT
+// CANVAS CÁNH HOA & LÁ ANH ĐÀO RƠI 60FPS
 // ==========================================
 (function(){
   var canvas = document.getElementById('sakura-canvas');
@@ -3304,14 +3457,12 @@ async function loadLogs(){
     ctx.scale(Math.cos(p.tilt), 1);
 
     if(p.isLeaf){
-      // Vẽ Lá Anh Đào xanh non
       ctx.fillStyle = `rgba(52, 211, 153, ${p.alpha})`;
       ctx.shadowBlur = 4;
       ctx.shadowColor = 'rgba(5, 150, 105, 0.3)';
       ctx.beginPath();
       ctx.ellipse(0, 0, p.size * 0.45, p.size, 0, 0, Math.PI * 2);
       ctx.fill();
-      // Gân lá
       ctx.strokeStyle = 'rgba(4, 120, 87, 0.4)';
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -3319,7 +3470,6 @@ async function loadLogs(){
       ctx.lineTo(0, p.size * 0.8);
       ctx.stroke();
     } else {
-      // Vẽ Cánh Hoa Anh Đào hồng phấn
       ctx.fillStyle = `rgba(255, 183, 197, ${p.alpha})`;
       ctx.shadowBlur = 5;
       ctx.shadowColor = 'rgba(255, 105, 180, 0.35)';
@@ -3335,7 +3485,6 @@ async function loadLogs(){
   function animate(){
     ctx.clearRect(0, 0, w, h);
     particles.forEach(p => {
-      // Tương tác gió khi chuột lướt qua
       var dx = p.x - mouseX;
       var dy = p.y - mouseY;
       var dist = Math.sqrt(dx * dx + dy * dy);
@@ -3371,19 +3520,27 @@ async function loadLogs(){
   });
 })();
 
-// KHỞI ĐỘNG HỆ THỐNG
+// KHỞI ĐỘNG HỆ THỐNG AN TOÀN
 function refreshAll(){
   loadAccounts();
   loadFiles();
   loadTasks();
   loadColors();
+  loadSecurityStats();
 }
 
-window.addEventListener('DOMContentLoaded', () => {
+function startApp(){
   initPreloader();
   refreshAll();
   setInterval(loadTasks, 4000);
-});
+  setInterval(loadSecurityStats, 10000);
+}
+
+if(document.readyState === 'loading'){
+  document.addEventListener('DOMContentLoaded', startApp);
+} else {
+  startApp();
+}
 </script>
 </body>
 </html>
@@ -3404,6 +3561,11 @@ def login_required(f):
 def static_files(filename):
     return send_from_directory(STATIC_DIR, filename)
 
+@app.route("/health")
+@app.route("/healthz")
+def health_check():
+    return jsonify({"status": "ok", "time": time.time()})
+
 @app.route("/verify_gate")
 def verify_gate():
     return render_template_string(HTML_GATE)
@@ -3418,7 +3580,7 @@ def api_verify_human():
 def index():
     web_title = get_setting("web_title", "I LOVE NGỌC HÂN 🌸")
     designer_name = get_setting("designer_name", "Phạm Anh Khôi")
-    logo_url = get_setting("logo_path", "/static/logo.png")
+    logo_url = get_setting("logo_path", DEFAULT_LOGO_DATA_URI)
     return render_template_string(
         HTML_INDEX,
         web_title=web_title,
@@ -3434,13 +3596,13 @@ def login():
 
     web_title = get_setting("web_title", "I LOVE NGỌC HÂN 🌸")
     designer_name = get_setting("designer_name", "Phạm Anh Khôi")
-    logo_url = get_setting("logo_path", "/static/logo.png")
+    logo_url = get_setting("logo_path", DEFAULT_LOGO_DATA_URI)
 
     if tracker["locked_until"] > now:
         rem = int(tracker["locked_until"] - now)
         return render_template_string(
             HTML_LOGIN,
-            error=f"Tạm khóa kết nối do nhập sai quá 5 lần. Vui lòng thử lại sau {rem} giây.",
+            error=f"Tạm khóa do nhập sai quá 5 lần. Vui lòng thử lại sau {rem} giây.",
             web_title=web_title,
             designer_name=designer_name,
             logo_url=logo_url
@@ -3460,7 +3622,7 @@ def login():
                 tracker["locked_until"] = now + LOGIN_LOCKOUT_TIME
                 return render_template_string(
                     HTML_LOGIN,
-                    error="Nhập sai 5 lần liên tiếp! Hệ thống tạm khóa IP này trong 15 phút.",
+                    error="Nhập sai 5 lần! Hệ thống tạm khóa IP này trong 15 phút.",
                     web_title=web_title,
                     designer_name=designer_name,
                     logo_url=logo_url
@@ -3468,7 +3630,7 @@ def login():
             rem = LOGIN_MAX_FAILS - tracker["count"]
             return render_template_string(
                 HTML_LOGIN,
-                error=f"Mật khẩu bảo mật không chính xác! Bạn còn {rem} lần thử.",
+                error=f"Mật khẩu bảo mật không đúng! Còn {rem} lần thử.",
                 web_title=web_title,
                 designer_name=designer_name,
                 logo_url=logo_url
@@ -3487,7 +3649,48 @@ def logout():
     return redirect(url_for("login"))
 
 # ============================================================
-# API QUẢN LÝ CÀI ĐẶT & LOGO WEB
+# API TƯỜNG LỬA ANTI-DDOS & WAF CONTROLS
+# ============================================================
+@app.route("/api/security/stats", methods=["GET"])
+@login_required
+def api_security_stats():
+    return jsonify(firewall.get_stats())
+
+@app.route("/api/security/unban", methods=["POST"])
+@login_required
+def api_security_unban():
+    d = request.json or {}
+    ip = d.get("ip", "").strip()
+    if ip and firewall.unban(ip):
+        log_event("SUCCESS", f"Quản trị viên đã mở khóa IP: {ip}")
+        return jsonify({"ok": True})
+    return jsonify({"error": "Không tìm thấy IP"}), 404
+
+@app.route("/api/security/ban", methods=["POST"])
+@login_required
+def api_security_ban():
+    d = request.json or {}
+    ip = d.get("ip", "").strip()
+    duration = int(d.get("duration", 600))
+    if ip:
+        firewall.manual_ban(ip, duration=duration)
+        log_event("WARN", f"Quản trị viên đã khóa IP: {ip} ({duration}s)")
+        return jsonify({"ok": True})
+    return jsonify({"error": "IP không hợp lệ"}), 400
+
+@app.route("/api/security/set_mode", methods=["POST"])
+@login_required
+def api_security_set_mode():
+    d = request.json or {}
+    mode = d.get("mode", "standard")
+    if mode in ["standard", "strict", "maximum"]:
+        firewall.mode = mode
+        log_event("INFO", f"Chuyển chế độ Tường Lửa sang: {mode}")
+        return jsonify({"ok": True, "mode": mode})
+    return jsonify({"error": "Chế độ không hợp lệ"}), 400
+
+# ============================================================
+# API QUẢN LÝ CÀI ĐẶT & LOGO WEB (LƯU LÊN SERVER NGAY)
 # ============================================================
 @app.route("/api/settings", methods=["GET"])
 @login_required
@@ -3517,14 +3720,14 @@ def api_upload_logo():
 
     ext = os.path.splitext(f.filename)[1].lower()
     if ext not in [".png", ".jpg", ".jpeg", ".webp", ".svg", ".gif"]:
-        return jsonify({"error": "Định dạng tệp không hợp lệ (hỗ trợ .png, .jpg, .webp, .svg)"}), 400
+        return jsonify({"error": "Định dạng không hỗ trợ (hỗ trợ .png, .jpg, .webp, .svg, .gif)"}), 400
 
     save_path = os.path.join(STATIC_DIR, "logo.png")
     try:
         f.save(save_path)
         new_url = f"/static/logo.png?t={int(time.time()*1000)}"
         set_setting("logo_path", new_url)
-        log_event("SUCCESS", "Đã thay đổi ảnh Logo Web mới thành công")
+        log_event("SUCCESS", "Đã lưu ảnh Logo Web mới vĩnh viễn lên máy chủ")
         return jsonify({"ok": True, "url": new_url})
     except Exception as e:
         return jsonify({"error": f"Lỗi lưu ảnh logo: {e}"}), 500
@@ -3537,16 +3740,15 @@ def api_set_logo_url():
     if not url:
         return jsonify({"error": "Đường dẫn URL ảnh rỗng"}), 400
     set_setting("logo_path", url)
-    log_event("SUCCESS", f"Đã cập nhật Logo Web từ URL: {url}")
+    log_event("SUCCESS", f"Đã lưu URL Logo Web lên máy chủ: {url}")
     return jsonify({"ok": True, "url": url})
 
 @app.route("/api/reset_logo", methods=["POST"])
 @login_required
 def api_reset_logo():
-    default_url = "/static/logo.png"
-    set_setting("logo_path", default_url)
-    log_event("INFO", "Đã đặt lại Logo Web về mặc định")
-    return jsonify({"ok": True, "url": default_url})
+    set_setting("logo_path", DEFAULT_LOGO_DATA_URI)
+    log_event("INFO", "Đã đặt lại Logo Web về mặc định hoa anh đào")
+    return jsonify({"ok": True, "url": DEFAULT_LOGO_DATA_URI})
 
 @app.route("/api/colors", methods=["GET"])
 @login_required
@@ -3589,7 +3791,7 @@ def api_accounts_add():
           z.uid, z.display_name or "", z.zalo_name or "", z.username or "", st))
     conn.commit()
     conn.close()
-    log_event("SUCCESS", f"Đã thêm tài khoản Zalo mới: {label} ({z.display_name})")
+    log_event("SUCCESS", f"Đã thêm tài khoản Zalo: {label} ({z.display_name})")
     return jsonify({"ok": True, "label": label})
 
 @app.route("/api/accounts/<int:aid>", methods=["DELETE"])
@@ -3678,7 +3880,7 @@ def api_load_members(aid, group_id):
         return jsonify({"error": str(e)}), 400
 
 # ============================================================
-# API QUẢN LÝ TẬP TIN DUNG LƯỢNG LỚN (SIÊU TỐC)
+# API QUẢN LÝ TẬP TIN SIÊU NHANH
 # ============================================================
 @app.route("/api/files", methods=["GET"])
 @login_required
@@ -3698,7 +3900,6 @@ def api_files_upload():
     safe_name = f"{int(time.time())}_{f.filename}"
     save_path = os.path.join(UPLOAD_DIR, safe_name)
 
-    # Ghi tệp tin trực tiếp xuống ổ cứng qua luồng bộ đệm 64KB (Stream write)
     try:
         with open(save_path, "wb") as dest:
             shutil.copyfileobj(f.stream, dest, length=64*1024)
@@ -3706,8 +3907,6 @@ def api_files_upload():
         return jsonify({"error": f"Lỗi lưu trữ tệp: {e}"}), 500
 
     file_size = os.path.getsize(save_path)
-
-    # Đếm số khối và số dòng bằng thuật toán Stream O(1) Memory
     total_blocks, total_lines = FileBlockReader.inspect_file(save_path)
 
     conn = db()
@@ -3718,7 +3917,7 @@ def api_files_upload():
     conn.commit()
     conn.close()
 
-    log_event("SUCCESS", f"Đã lưu tệp {f.filename} ({total_blocks} khối, {total_lines} dòng, {(file_size/1048576):.2f}MB)")
+    log_event("SUCCESS", f"Đã lưu tệp {f.filename} ({total_blocks} khối, {(file_size/1048576):.2f}MB)")
     return jsonify({
         "ok": True,
         "filename": f.filename,
@@ -3753,7 +3952,6 @@ def api_files_preview(fid):
     if not row:
         return jsonify({"error": "Không tìm thấy tập tin"}), 404
 
-    # Chỉ đọc mẫu 25 khối đầu tiên, hoàn toàn không nạp toàn bộ tệp vào RAM
     preview_blocks = FileBlockReader.get_preview(row["filepath"], max_blocks=25)
     return jsonify({
         "filename": row["filename"],
@@ -3784,7 +3982,7 @@ def api_tasks_start():
     use_emoji = bool(d.get("use_emoji", True))
     icon_count = int(d.get("icon_count", 3))
     tag_users = d.get("tag_users", [])
-    tag_all = bool(d.get("tag_all", True)) # Mặc định BẬT
+    tag_all = bool(d.get("tag_all", True))
     font_size_mode = d.get("font_size_mode", "heading")
     is_heading = bool(d.get("is_heading", True))
     multi_acc = bool(d.get("multi_acc", True))
@@ -3866,8 +4064,9 @@ def api_get_logs():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     print(f"\n=======================================================")
-    print(f"🌸 ALB FORGE — THREEUI SAKURA EDITION 2026")
+    print(f"🌸 ALB FORGE — THREEUI SAKURA EDITION 2026 (v2.5)")
     print(f"🌸 Bản quyền thiết kế: Phạm Anh Khôi")
+    print(f"🌸 Tường Lửa Anti-DDoS WAF Pro: KÍCH HOẠT")
     print(f"🌸 Máy chủ đang lắng nghe trên cổng: http://0.0.0.0:{port}")
     print(f"=======================================================\n")
     app.run(host="0.0.0.0", port=port, debug=False)
