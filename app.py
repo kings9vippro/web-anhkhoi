@@ -1,6 +1,6 @@
 # ============================================================
-# Copyright © 2026 Pham Anh Khoi • All Rights Reserved ⚡
-# System: ALB Forge — I Love Ngọc Hân Luxury Edition
+# Bản quyền thiết kế: Phạm Anh Khôi
+# Hệ thống: ALB Forge — I Love Ngọc Hân Edition
 # ============================================================
 import os
 import json
@@ -29,9 +29,12 @@ STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 os.makedirs(STATIC_DIR, exist_ok=True)
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "pak-ngoc-han-verified-2026")
+app.secret_key = os.environ.get("SECRET_KEY", "pak-ngoc-han-cherry-blossom")
 app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024
 
+# ============================================================
+# BẢO MẬT: CHỐNG DDOS VÀ GIỚI HẠN TRUY VẤN
+# ============================================================
 DDOS_LIMIT_PER_MINUTE = 100
 DDOS_BURST_PER_SEC = 20
 LOGIN_MAX_FAILS = 5
@@ -61,7 +64,7 @@ def security_shield_middleware():
         if ip in ip_blocked_until:
             if now < ip_blocked_until[ip]:
                 return jsonify({
-                    "error": "IP bị chặn do gửi yêu cầu quá nhanh. Vui lòng thử lại sau.",
+                    "error": "IP tạm thời bị chặn do gửi quá nhiều yêu cầu. Vui lòng thử lại sau.",
                     "retry_after": int(ip_blocked_until[ip] - now)
                 }), 429
             else:
@@ -73,16 +76,19 @@ def security_shield_middleware():
         burst = sum(1 for t in history if now - t <= 1.0)
         if burst > DDOS_BURST_PER_SEC or len(history) > DDOS_LIMIT_PER_MINUTE:
             ip_blocked_until[ip] = now + 300
-            return jsonify({"error": "Phát hiện lưu lượng bất thường. IP đã bị khóa trong 5 phút."}), 429
+            return jsonify({"error": "Phát hiện tần suất truy cập vượt ngưỡng. IP bị tạm dừng kết nối 5 phút."}), 429
 
         ip_request_history[ip].append(now)
 
     if not session.get("human_verified") and request.endpoint not in ("verify_gate", "api_verify_human"):
         if request.path.startswith("/api/"):
-            return jsonify({"error": "Chưa hoàn tất kiểm tra an toàn"}), 403
+            return jsonify({"error": "Yêu cầu hoàn tất kiểm tra an toàn danh tính"}), 403
         return redirect(url_for("verify_gate"))
 
 
+# ============================================================
+# CƠ SỞ DỮ LIỆU
+# ============================================================
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -153,8 +159,6 @@ ZALO_PALETTE = [
     {"id": "pink",   "name": "Hồng Ngọc Hân","hex": "#ff47a8"},
 ]
 
-COLOR_IDS = [c["id"] for c in ZALO_PALETTE]
-
 ZALO_ICON_HARD = [
     ";-A", ":-bd", "/-punch", "/-shit", "/-weak",
     ":-DIG", "8-|", ";-!", ":-t", "=d>", ":q",
@@ -179,6 +183,9 @@ def get_icon_hard():
     return random.choice(ZALO_ICON_UNICODE)
 
 
+# ============================================================
+# ZALO PROTOCOL CLIENT ENGINE
+# ============================================================
 class Zalo:
     def __init__(self, imei, cookies):
         self.imei = str(imei).strip()
@@ -340,51 +347,85 @@ class Zalo:
             })
         return out
 
-    def build_mentions(self, text, mentions, tag_all=False):
-        final = text
+    def build_colored_message(self, raw_text, color_mode, fixed_color, is_heading=True):
+        lines = [l for l in raw_text.split("\n")]
+        styled_lines = []
+        styles = []
+        current_u16_pos = 0
+
+        RAINBOW_HEX = ["#e8453c", "#f5c500", "#00b14f", "#ff8c00", "#0091ff", "#a05eff", "#ff47a8"]
+        first_color = "red"
+
+        for i, ln in enumerate(lines):
+            content = ln.strip()
+            if not content:
+                styled_lines.append("")
+                current_u16_pos += 1
+                continue
+
+            if is_heading and not content.startswith("#"):
+                line_text = f"# {content}"
+            else:
+                line_text = content
+
+            styled_lines.append(line_text)
+            l_len = utf16_len(line_text)
+
+            if color_mode in ("rainbow", "random"):
+                c_hex = RAINBOW_HEX[i % len(RAINBOW_HEX)]
+                c_id = ZALO_PALETTE[i % len(ZALO_PALETTE)]["id"]
+            elif color_mode == "fixed" and fixed_color:
+                c_hex = next((c["hex"] for c in ZALO_PALETTE if c["id"] == fixed_color), "#e8453c")
+                c_id = fixed_color
+            else:
+                c_hex = None
+                c_id = None
+
+            if i == 0 and c_id:
+                first_color = c_id
+
+            if c_hex:
+                styles.append({"offset": current_u16_pos, "len": l_len, "type": "color", "value": c_hex})
+                styles.append({"start": current_u16_pos, "len": l_len, "st": f"c_{c_hex}"})
+
+            current_u16_pos += l_len + 1
+
+        final_msg = "\n".join(styled_lines)
+        return final_msg, styles, first_color
+
+    def attach_mentions(self, msg, mentions, tag_all=False):
+        final = msg
         m_arr = []
         if tag_all:
-            tag_str = "@All"
+            tag_token = "@All"
             pos = utf16_len(final) + (1 if final else 0)
-            final = (final + " " + tag_str) if final else tag_str
-            m_arr.append({"uid": "0", "pos": pos, "len": utf16_len(tag_str), "type": 1})
+            final = (final + " " + tag_token) if final else tag_token
+            m_arr.append({"uid": "-1", "pos": pos, "len": utf16_len(tag_token), "type": 1})
             return final, m_arr
 
-        if not mentions:
-            return text, []
-
-        for m in mentions:
-            raw_name = str(m.get("name", "")).strip()
-            name = raw_name.split(" (")[0] if " (" in raw_name else raw_name
-            uid = str(m.get("uid") or m.get("id") or "").strip()
-            if not name or not uid: continue
-            tag_str = "@" + name
-            pos = utf16_len(final) + (1 if final else 0)
-            final = (final + " " + tag_str) if final else tag_str
-            m_arr.append({"uid": str(uid), "pos": pos, "len": utf16_len(tag_str), "type": 0})
+        if mentions:
+            for m in mentions:
+                raw_name = str(m.get("name", "")).strip()
+                name = raw_name.split(" (")[0] if " (" in raw_name else raw_name
+                uid = str(m.get("uid") or m.get("id") or "").strip()
+                if not name or not uid: continue
+                tag_token = f"@{name}"
+                pos = utf16_len(final) + (1 if final else 0)
+                final = (final + " " + tag_token) if final else tag_token
+                m_arr.append({"uid": uid, "pos": pos, "len": utf16_len(tag_token), "type": 0})
         return final, m_arr
 
-    def send(self, msg, thread_id, color_item=None, is_group=True, mentions=None, tag_all=False, is_heading=True):
+    def send_adv(self, raw_text, thread_id, color_mode="random", fixed_color="red",
+                 is_group=True, mentions=None, tag_all=False, is_heading=True):
         url = ("https://tt-group-wpa.chat.zalo.me/api/group/sendmsg"
                if is_group
                else "https://tt-chat2-wpa.chat.zalo.me/api/message/sms")
 
-        final_msg = msg.replace("\r\n", "\n").replace("\r", "\n")
+        final_msg, styles, first_color = self.build_colored_message(
+            raw_text, color_mode, fixed_color, is_heading=is_heading
+        )
 
-        if is_heading:
-            lines = final_msg.split("\n")
-            h_lines = []
-            for ln in lines:
-                ln_s = ln.strip()
-                if ln_s and not ln_s.startswith("#"):
-                    h_lines.append(f"# {ln_s}")
-                else:
-                    h_lines.append(ln)
-            final_msg = "\n".join(h_lines)
-
-        m_arr = []
-        if mentions or tag_all:
-            final_msg, m_arr = self.build_mentions(final_msg, mentions, tag_all=tag_all)
+        final_msg, m_arr = self.attach_mentions(final_msg, mentions, tag_all=tag_all)
 
         pl = {
             "message": final_msg,
@@ -394,18 +435,10 @@ class Zalo:
         if m_arr:
             pl["mentions"] = json.dumps(m_arr, ensure_ascii=False)
 
-        if color_item and isinstance(color_item, dict):
-            c_id = color_item.get("id", "red")
-            c_hex = color_item.get("hex", "#e8453c")
-            pl["msgColor"] = c_id
-            pl["color"] = c_hex
-            u16_length = utf16_len(final_msg)
-            styles = [
-                {"offset": 0, "len": u16_length, "type": "color", "value": c_hex},
-                {"offset": 0, "len": u16_length, "type": "color", "value": c_id},
-                {"start": 0, "len": u16_length, "st": f"c_{c_hex}"}
-            ]
-            pl["styles"] = json.dumps(styles)
+        if color_mode != "none":
+            pl["msgColor"] = first_color
+            if styles:
+                pl["styles"] = json.dumps(styles, ensure_ascii=False)
 
         if is_group:
             pl["visibility"] = 0
@@ -418,18 +451,22 @@ class Zalo:
                            data={"params": enc}, timeout=15)
 
 
+# ============================================================
+# CSS GIAO DIỆN HOA ANH ĐÀO & THIẾT KẾ ĐỘC QUYỀN
+# ============================================================
 CSS_STYLE = """
 :root {
-  --bg-page: #fbfbfd;
+  --bg-page: #fdfafb;
   --bg-card: rgba(255, 255, 255, 0.94);
-  --border-color: rgba(226, 232, 240, 0.85);
+  --border-color: rgba(244, 208, 218, 0.7);
   --txt-0: #0f172a;
   --txt-1: #334155;
   --txt-2: #64748b;
-  --accent: #e11d48;
-  --grad-primary: linear-gradient(135deg, #f43f5e 0%, #e11d48 100%);
+  --sakura: #ff69b4;
+  --sakura-soft: #ffb7c5;
+  --grad-sakura: linear-gradient(135deg, #ff758c 0%, #ff7eb3 100%);
   --grad-dark: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-  --shadow-soft: 0 10px 30px rgba(15, 23, 42, 0.05);
+  --shadow-soft: 0 10px 30px rgba(255, 117, 140, 0.08);
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
 }
 * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
@@ -443,36 +480,45 @@ body {
   position: relative;
   overflow-x: hidden;
 }
-#particles-canvas {
-  position: fixed; inset: 0; pointer-events: none; z-index: 90; width: 100%; height: 100%;
+
+/* CANVAS HOA ANH ĐÀO RƠI — POINTER EVENTS NONE TRÁNH CHẶN CLICK */
+#sakura-canvas {
+  position: fixed; inset: 0; pointer-events: none !important; z-index: 85; width: 100%; height: 100%;
 }
+
+/* CÀNH HOA ANH ĐÀO DECOR GÓC MÀN HÌNH */
+.cherry-branch {
+  position: fixed; top: 0; right: 0; width: 160px; height: 140px;
+  pointer-events: none !important; z-index: 86; opacity: 0.85;
+}
+
 body::before {
   content: ''; position: fixed; inset: 0;
   background-image: url('/static/bg.jpg');
   background-size: cover; background-position: center; background-repeat: no-repeat;
-  opacity: 0.16; filter: blur(3px); pointer-events: none; z-index: -1;
+  opacity: 0.15; filter: blur(3px); pointer-events: none !important; z-index: -1;
 }
 
 .header {
-  background: rgba(255, 255, 255, 0.92);
+  background: rgba(255, 255, 255, 0.94);
   backdrop-filter: blur(25px);
   padding: 10px 18px;
   border-bottom: 1px solid var(--border-color);
   position: sticky; top:0; z-index: 100;
-  box-shadow: 0 2px 12px rgba(15, 23, 42, 0.03);
+  box-shadow: 0 2px 14px rgba(255, 117, 140, 0.06);
 }
-.header-inner { max-width: 1050px; margin: 0 auto; display: flex; align-items: center; gap: 12px; }
+.header-inner { max-width: 1000px; margin: 0 auto; display: flex; align-items: center; gap: 12px; }
 .logo-box {
   width: 44px; height: 44px; border-radius: 50%;
   overflow: hidden; border: 2px solid #fff;
-  box-shadow: 0 4px 16px rgba(225, 29, 72, 0.3);
+  box-shadow: 0 4px 16px rgba(255, 105, 180, 0.35);
   background: #fff; flex-shrink: 0;
   animation: pulseLogo 3s ease-in-out infinite;
 }
 @keyframes pulseLogo { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.05); } }
 .logo-box img { width: 100%; height: 100%; object-fit: cover; }
 .header-meta { flex: 1; min-width: 0; }
-.header-meta h1 { font-family: 'Orbitron', sans-serif; font-size: 14px; font-weight: 900; color: var(--txt-0); }
+.header-meta h1 { font-family: 'Orbitron', sans-serif; font-size: 14.5px; font-weight: 900; color: var(--txt-0); }
 .header-meta p { font-size: 9.5px; color: var(--txt-2); font-weight: 700; margin-top: 2px; display: flex; align-items: center; gap: 4px; }
 
 .v-badge {
@@ -480,7 +526,7 @@ body::before {
   color: #0084ff; font-weight: 900; filter: drop-shadow(0 2px 4px rgba(0,132,255,0.3));
 }
 
-.container { max-width: 1050px; margin: 0 auto; padding: 14px; position: relative; z-index: 10; }
+.container { max-width: 1000px; margin: 0 auto; padding: 14px; position: relative; z-index: 90; }
 .panel { display: none; animation: fadeIn .28s var(--ease) both; }
 .panel.active { display: block; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
@@ -501,17 +547,11 @@ body::before {
   display: inline-flex; align-items: center; gap: 6px; transition: all .25s var(--ease);
   position: relative; overflow: hidden;
 }
-.btn-pill::after {
-  content: ''; position: absolute; top: -50%; left: -60%; width: 40%; height: 200%;
-  background: linear-gradient(60deg, transparent, rgba(255,255,255,0.4), transparent);
-  transform: rotate(25deg); transition: all 0.6s;
-}
-.btn-pill:hover::after { left: 130%; }
 .btn-pill:hover { transform: translateY(-2px); filter: brightness(1.05); }
 .btn-pill:active { transform: translateY(0) scale(0.96); }
-.btn-pill.primary { background: var(--grad-primary); color: #fff; box-shadow: 0 4px 14px rgba(225, 29, 72, 0.28); }
+.btn-pill.primary { background: var(--grad-sakura); color: #fff; box-shadow: 0 4px 14px rgba(255, 117, 140, 0.35); }
 .btn-pill.dark { background: var(--grad-dark); color: #fff; }
-.btn-pill.light { background: #f1f5f9; color: var(--txt-1); border: 1px solid var(--border-color); }
+.btn-pill.light { background: #fdf2f4; color: var(--txt-1); border: 1px solid var(--border-color); }
 .btn-pill.danger { background: #fee2e2; color: #b91c1c; }
 .btn-pill.full { width: 100%; justify-content: center; padding: 11px; }
 
@@ -532,7 +572,7 @@ body::before {
   font-size: 12px; background: #fff; color: var(--txt-0); transition: border-color .2s;
 }
 .form-group input:focus, .form-group textarea:focus, .form-group select:focus {
-  outline: none; border-color: var(--accent);
+  outline: none; border-color: var(--sakura);
 }
 .form-group textarea { min-height: 85px; font-family: 'JetBrains Mono', monospace; font-size: 11.5px; }
 
@@ -542,8 +582,8 @@ body::before {
   font-size: 10px; font-weight: 800; cursor: pointer; border: 1px solid var(--border-color);
   transition: all .2s;
 }
-.chip-item:hover { border-color: var(--accent); color: var(--accent); }
-.chip-item.active { background: var(--grad-primary); color: #fff; border-color: transparent; }
+.chip-item:hover { border-color: var(--sakura); color: var(--sakura); }
+.chip-item.active { background: var(--grad-sakura); color: #fff; border-color: transparent; }
 
 .toggle-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 6px; margin-bottom: 11px; }
 .toggle-item {
@@ -551,12 +591,12 @@ body::before {
   cursor: pointer; text-align: center; font-weight: 800; font-size: 10px;
   background: #fff; color: var(--txt-2); transition: all .2s;
 }
-.toggle-item.active { background: var(--grad-primary); color: #fff; border-color: transparent; box-shadow: 0 4px 10px rgba(225, 29, 72, 0.2); }
+.toggle-item.active { background: var(--grad-sakura); color: #fff; border-color: transparent; box-shadow: 0 4px 10px rgba(255, 117, 140, 0.25); }
 
 .table-wrap { overflow-x: auto; border-radius: 12px; border: 1px solid var(--border-color); background: #fff; }
 .table { width: 100%; border-collapse: collapse; }
-.table th, .table td { padding: 9px 8px; text-align: left; font-size: 10.5px; border-bottom: 1px solid #f1f5f9; white-space: nowrap; }
-.table th { background: #f8fafc; font-weight: 800; color: var(--txt-2); font-size: 8.5px; }
+.table th, .table td { padding: 9px 8px; text-align: left; font-size: 10.5px; border-bottom: 1px solid #fdf2f4; white-space: nowrap; }
+.table th { background: #fdf6f7; font-weight: 800; color: var(--txt-2); font-size: 8.5px; }
 
 .status-badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 99px; font-size: 9px; font-weight: 800; }
 .status-badge.live { background: #dcfce7; color: #15803d; }
@@ -564,26 +604,26 @@ body::before {
 
 .box-list { max-height: 280px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 12px; padding: 6px; background: #fff; }
 .box-item {
-  padding: 8px 10px; border-radius: 9px; background: #f8fafc; margin-bottom: 4px;
+  padding: 8px 10px; border-radius: 9px; background: #fdfafb; margin-bottom: 4px;
   cursor: pointer; border: 1px solid var(--border-color); display: flex; align-items: center; gap: 8px;
   transition: all .15s;
 }
-.box-item:hover { border-color: var(--accent); background: #fff; }
-.box-item.selected { border-color: var(--accent); background: #fff1f2; }
+.box-item:hover { border-color: var(--sakura); background: #fff; }
+.box-item.selected { border-color: var(--sakura); background: #fff0f3; }
 .box-item .check-mark {
   width: 16px; height: 16px; border: 1.5px solid var(--txt-2); border-radius: 4px;
   display: flex; align-items: center; justify-content: center; font-size: 9px; color: transparent; font-weight: 900;
 }
-.box-item.selected .check-mark { background: var(--accent); border-color: var(--accent); color: #fff; }
+.box-item.selected .check-mark { background: var(--sakura); border-color: var(--sakura); color: #fff; }
 .box-item .b-title { font-weight: 700; font-size: 11.5px; color: var(--txt-0); }
 .box-item .b-sub { font-size: 9px; color: var(--txt-2); font-family: 'JetBrains Mono', monospace; }
 
 .bottom-dock {
   position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%);
   width: calc(100% - 24px); max-width: 480px;
-  background: rgba(255, 255, 255, 0.94); backdrop-filter: blur(24px);
-  border: 1px solid rgba(226, 232, 240, 0.95);
-  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.1);
+  background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(24px);
+  border: 1px solid rgba(244, 208, 218, 0.9);
+  box-shadow: 0 10px 30px rgba(255, 117, 140, 0.15);
   border-radius: 99px; display: grid; grid-template-columns: repeat(4, 1fr);
   padding: 5px; gap: 4px; z-index: 999;
 }
@@ -593,13 +633,13 @@ body::before {
   gap: 2px; background: transparent; border: none; transition: all .2s;
 }
 .bottom-dock .dock-btn svg { width: 17px; height: 17px; }
-.bottom-dock .dock-btn.active { background: var(--grad-primary); color: #fff; }
+.bottom-dock .dock-btn.active { background: var(--grad-sakura); color: #fff; }
 
 #toast-stack { position: fixed; top: 12px; right: 12px; z-index: 99999; max-width: 320px; width: calc(100% - 24px); pointer-events: none; }
 .toast {
   pointer-events: auto; padding: 11px 14px; border-radius: 12px;
   background: rgba(255, 255, 255, 0.98); border: 1px solid var(--border-color);
-  box-shadow: 0 10px 25px rgba(15, 23, 42, 0.1); display: flex; flex-direction: column; gap: 2px;
+  box-shadow: 0 10px 25px rgba(255, 117, 140, 0.15); display: flex; flex-direction: column; gap: 2px;
   animation: toastIn .2s var(--ease) both;
 }
 .toast.swipe-up { animation: toastUp .18s ease-out forwards; }
@@ -609,12 +649,15 @@ body::before {
 .toast .t-body { font-size: 10px; font-weight: 600; color: var(--txt-2); }
 """
 
+# ============================================================
+# CỔNG BẢO MẬT: XÁC THỰC BẮT BUỘC 100%
+# ============================================================
 HTML_GATE = """<!DOCTYPE html>
 <html lang="vi">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Bảo Mật ALB Shield — Cổng Xác Thực</title>
+<title>Cổng Xác Thực An Toàn</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
 <style>
 """ + CSS_STYLE + """
@@ -622,42 +665,42 @@ body { display: flex; align-items: center; justify-content: center; min-height: 
 .gate-card {
   background: rgba(255, 255, 255, 0.98); border: 1px solid var(--border-color);
   border-radius: 24px; padding: 36px 26px; max-width: 390px; width: 100%; text-align: center;
-  box-shadow: 0 25px 60px rgba(15, 23, 42, 0.08); position: relative; overflow: hidden;
+  box-shadow: 0 25px 60px rgba(255, 117, 140, 0.12); position: relative; overflow: hidden;
 }
 .radar-scanner {
   width: 90px; height: 90px; margin: 0 auto 18px; border-radius: 50%;
   position: relative; display: flex; align-items: center; justify-content: center;
-  background: radial-gradient(circle, rgba(225,29,72,0.1) 0%, transparent 70%);
-  border: 2px dashed rgba(225,29,72,0.4);
+  background: radial-gradient(circle, rgba(255,105,180,0.15) 0%, transparent 70%);
+  border: 2px dashed rgba(255,105,180,0.5);
 }
 .radar-scanner::before {
   content: ''; position: absolute; inset: 0; border-radius: 50%;
-  border: 2px solid transparent; border-top-color: var(--accent);
+  border: 2px solid transparent; border-top-color: var(--sakura);
   animation: spin 1.2s linear infinite;
 }
 @keyframes spin { 100% { transform: rotate(360deg); } }
 .radar-icon { font-size: 32px; }
 .progress-line {
-  height: 4px; width: 100%; background: #f1f5f9; border-radius: 99px;
-  overflow: hidden; margin: 16px 0; display: none;
+  height: 5px; width: 100%; background: #fdf2f4; border-radius: 99px;
+  overflow: hidden; margin: 18px 0; display: none;
 }
 .progress-fill {
-  height: 100%; width: 0%; background: var(--grad-primary);
+  height: 100%; width: 0%; background: var(--grad-sakura);
   border-radius: 99px; transition: width 0.35s ease;
 }
-.copyright-tag { margin-top: 18px; font-size: 9.5px; color: var(--txt-2); font-weight: 800; }
+.copyright-tag { margin-top: 18px; font-size: 9.5px; color: var(--txt-2); font-weight: 800; display: flex; align-items: center; justify-content: center; gap: 4px; }
 </style>
 </head>
 <body>
 <div class="gate-card">
-  <div class="radar-scanner">
-    <div class="radar-icon">🛡️</div>
-  </div>
-  <h1 style="font-family:'Orbitron',sans-serif; font-size:16px; margin-bottom:6px;">CỔNG BẢO MẬT ANTI-DDOS</h1>
-  <p id="scan-status" style="font-size:11px; color:var(--txt-2); min-height:30px;">Hệ thống yêu cầu xác thực danh tính để ngăn chặn các lượt truy vấn ảo.</p>
+  <div class="radar-scanner"><div class="radar-icon">🛡️</div></div>
+  <h1 style="font-family:'Orbitron',sans-serif; font-size:16px; margin-bottom:6px;">CỔNG BẢO MẬT HỆ THỐNG</h1>
+  <p id="scan-status" style="font-size:11px; color:var(--txt-2); min-height:30px;">Vui lòng nhấn nút bên dưới để tiến hành kiểm tra bảo mật danh tính.</p>
   <div class="progress-line" id="p-box"><div class="progress-fill" id="p-bar"></div></div>
-  <button class="btn-pill primary full" id="start-btn" onclick="startVerification()">Bắt đầu quét bảo mật & Xác thực</button>
-  <div class="copyright-tag">Copyright © 2026 Pham Anh Khoi • All Rights Reserved ⚡</div>
+  <button class="btn-pill primary full" id="start-btn" onclick="startVerification()">Bắt đầu xác thực an toàn</button>
+  <div class="copyright-tag">
+    Bản quyền thiết kế: <span class="v-badge"><svg viewBox="0 0 24 24" width="13" height="13" fill="#0084ff"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg></span> <b>Phạm Anh Khôi</b>
+  </div>
 </div>
 <script>
 var pBox = document.getElementById('p-box');
@@ -666,8 +709,8 @@ var statusTxt = document.getElementById('scan-status');
 var startBtn = document.getElementById('start-btn');
 
 var steps = [
-  { p: 25, txt: 'Đang kiểm tra địa chỉ IP và tần suất truy vấn...' },
-  { p: 60, txt: 'Đang phân tích chứng chỉ trình duyệt bảo mật...' },
+  { p: 25, txt: 'Đang phân tích lưu lượng mạng và thiết bị...' },
+  { p: 60, txt: 'Đang kiểm tra an toàn danh tính trình duyệt...' },
   { p: 85, txt: 'Xác thực hoàn tất! Cấp quyền truy cập hệ thống...' },
   { p: 100, txt: 'Đang chuyển hướng vào bảng điều khiển...' }
 ];
@@ -699,12 +742,15 @@ async function finishScan(){
 </html>
 """
 
+# ============================================================
+# TRANG ĐĂNG NHẬP
+# ============================================================
 HTML_LOGIN = """<!DOCTYPE html>
 <html lang="vi">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Đăng Nhập Hệ Thống</title>
+<title>Đăng Nhập — I Love Ngọc Hân</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
 <style>
 """ + CSS_STYLE + """
@@ -712,9 +758,9 @@ body { display: flex; align-items: center; justify-content: center; min-height: 
 .login-card {
   background: rgba(255, 255, 255, 0.98); border: 1px solid var(--border-color);
   border-radius: 24px; padding: 36px 26px; max-width: 380px; width: 100%; text-align: center;
-  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.08);
+  box-shadow: 0 20px 50px rgba(255, 117, 140, 0.12);
 }
-.login-logo { width: 78px; height: 78px; border-radius: 50%; overflow: hidden; margin: 0 auto 14px; border: 2px solid var(--accent); }
+.login-logo { width: 78px; height: 78px; border-radius: 50%; overflow: hidden; margin: 0 auto 14px; border: 2px solid var(--sakura); }
 .login-logo img { width: 100%; height: 100%; object-fit: cover; }
 .err-msg { background: #fee2e2; color: #b91c1c; padding: 9px; border-radius: 10px; font-size: 11px; font-weight: 700; margin-bottom: 14px; text-align: left; }
 </style>
@@ -722,11 +768,11 @@ body { display: flex; align-items: center; justify-content: center; min-height: 
 <body>
 <div class="login-card">
   <div class="login-logo">
-    <img src="/static/logo.png" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\\'http://www.w3.org/2000/svg\\' viewBox=\\'0 0 100 100\\'><circle cx=\\'50\\' cy=\\'50\\' r=\\'50\\' fill=\\'%23e11d48\\'/><text x=\\'50\\' y=\\'58\\' text-anchor=\\'middle\\' font-size=\\'36\\' fill=\\'white\\'>❤</text></svg>'">
+    <img src="/static/logo.png" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\\'http://www.w3.org/2000/svg\\' viewBox=\\'0 0 100 100\\'><circle cx=\\'50\\' cy=\\'50\\' r=\\'50\\' fill=\\'%23ff69b4\\'/><text x=\\'50\\' y=\\'58\\' text-anchor=\\'middle\\' font-size=\\'36\\' fill=\\'white\\'>❤</text></svg>'">
   </div>
   <h1 style="font-family:'Orbitron',sans-serif; font-size:18px; margin-bottom:4px;">I LOVE NGỌC HÂN</h1>
   <p style="font-size:10px; color:var(--txt-2); font-weight:700; margin-bottom:20px; display:flex; align-items:center; justify-content:center; gap:4px;">
-    Bản quyền thiết kế: <span class="v-badge"><svg viewBox="0 0 24 24" width="14" height="14" fill="#0084ff"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg></span> Phạm Anh Khôi
+    Bản quyền thiết kế: <span class="v-badge"><svg viewBox="0 0 24 24" width="13" height="13" fill="#0084ff"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg></span> <b>Phạm Anh Khôi</b>
   </p>
   {% if error %}<div class="err-msg">⚠️ {{ error }}</div>{% endif %}
   <form method="POST">
@@ -735,18 +781,20 @@ body { display: flex; align-items: center; justify-content: center; min-height: 
     </div>
     <button type="submit" class="btn-pill primary full">💖 Đăng nhập hệ thống</button>
   </form>
-  <div style="margin-top:18px; font-size:9.5px; color:var(--txt-2); font-weight:800;">Copyright © 2026 Pham Anh Khoi • All Rights Reserved ⚡</div>
 </div>
 </body>
 </html>
 """
 
+# ============================================================
+# TRANG ĐIỀU KHIỂN CHÍNH (DOCK DƯỚI, HOA ANH ĐÀO)
+# ============================================================
 HTML_INDEX = """<!DOCTYPE html>
 <html lang="vi">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Bảng Điều Khiển — I Love Ngọc Hân</title>
+<title>Hệ Thống — I Love Ngọc Hân</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@500;700&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
@@ -755,15 +803,30 @@ HTML_INDEX = """<!DOCTYPE html>
 </style>
 </head>
 <body>
-<canvas id="particles-canvas"></canvas>
+<!-- CANVAS HOA ANH ĐÀO RƠI 60FPS -->
+<canvas id="sakura-canvas"></canvas>
+
+<!-- SVG CÀNH HOA ANH ĐÀO DECOR GÓC MÀN HÌNH -->
+<svg class="cherry-branch" viewBox="0 0 200 160" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path d="M200 10 C160 20 130 50 100 55 C70 60 40 40 10 45" stroke="#8b4513" stroke-width="3.5" stroke-linecap="round"/>
+  <path d="M130 50 C110 75 90 85 60 95" stroke="#8b4513" stroke-width="2.5" stroke-linecap="round"/>
+  <circle cx="100" cy="55" r="7" fill="#ffb7c5"/>
+  <circle cx="100" cy="55" r="3.5" fill="#ff1493"/>
+  <circle cx="130" cy="48" r="8" fill="#ffb7c5"/>
+  <circle cx="130" cy="48" r="4" fill="#ff1493"/>
+  <circle cx="65" cy="90" r="7.5" fill="#ffb7c5"/>
+  <circle cx="65" cy="90" r="3.5" fill="#ff1493"/>
+  <circle cx="160" cy="20" r="8" fill="#ffc0cb"/>
+  <circle cx="160" cy="20" r="4" fill="#ff1493"/>
+</svg>
 
 <div class="header">
   <div class="header-inner">
     <div class="logo-box">
-      <img id="header-logo" src="/static/logo.png" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\\'http://www.w3.org/2000/svg\\' viewBox=\\'0 0 100 100\\'><circle cx=\\'50\\' cy=\\'50\\' r=\\'50\\' fill=\\'%23e11d48\\'/><text x=\\'50\\' y=\\'58\\' text-anchor=\\'middle\\' font-size=\\'36\\' fill=\\'white\\'>❤</text></svg>'">
+      <img id="header-logo" src="/static/logo.png" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\\'http://www.w3.org/2000/svg\\' viewBox=\\'0 0 100 100\\'><circle cx=\\'50\\' cy=\\'50\\' r=\\'50\\' fill=\\'%23ff69b4\\'/><text x=\\'50\\' y=\\'58\\' text-anchor=\\'middle\\' font-size=\\'36\\' fill=\\'white\\'>❤</text></svg>'">
     </div>
     <div class="header-meta">
-      <h1>I LOVE NGỌC HÂN 💖</h1>
+      <h1>I LOVE NGỌC HÂN 🌸</h1>
       <p>
         Bản quyền thiết kế: <span class="v-badge"><svg viewBox="0 0 24 24" width="13" height="13" fill="#0084ff"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg></span> <b>Phạm Anh Khôi</b>
       </p>
@@ -776,6 +839,7 @@ HTML_INDEX = """<!DOCTYPE html>
 
 <div class="container">
 
+  <!-- TAB 1: ACCOUNTS -->
   <div class="panel active" id="panel-accounts">
     <div class="card">
       <h2>
@@ -789,7 +853,7 @@ HTML_INDEX = """<!DOCTYPE html>
     </div>
 
     <div class="card">
-      <h2><span>Tải Lên Logo Website</span></h2>
+      <h2><span>Tùy Biến Logo Website</span></h2>
       <div style="display:flex; gap:8px; align-items:center;">
         <input type="file" id="logo-file-input" accept="image/*" style="font-size:11px; padding:6px;">
         <button class="btn-pill dark" onclick="uploadLogo()">Cập Nhật Logo</button>
@@ -807,10 +871,11 @@ HTML_INDEX = """<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- TAB 2: BOXES -->
   <div class="panel" id="panel-boxes">
     <div class="card">
       <h2><span>Quản Lý Cuộc Trò Chuyện</span></h2>
-      <div class="form-group"><label>Chọn tài khoản để nạp cuộc trò chuyện</label><select id="load-acc-select"><option value="">-- Chọn tài khoản --</option></select></div>
+      <div class="form-group"><label>Chọn tài khoản để nạp hội thoại</label><select id="load-acc-select"><option value="">-- Chọn tài khoản --</option></select></div>
       <div style="display:flex; gap:6px; margin-bottom:10px;">
         <button class="btn-pill dark" onclick="loadBoxes()">Nạp Danh Sách</button>
         <button class="btn-pill light" onclick="selectAllBoxes()">Chọn Tất Cả</button>
@@ -818,13 +883,14 @@ HTML_INDEX = """<!DOCTYPE html>
       </div>
       <div>
         <div style="font-size:9.5px; font-weight:800; color:var(--txt-2); margin-bottom:4px;">
-          ĐÃ CHỌN: <span id="selected-count" style="color:var(--accent);">0</span>
+          ĐÃ CHỌN: <span id="selected-count" style="color:var(--sakura);">0</span>
         </div>
         <div class="box-list" id="box-list"><div style="text-align:center; padding:18px; color:var(--txt-2); font-size:11px;">Chưa nạp dữ liệu</div></div>
       </div>
     </div>
   </div>
 
+  <!-- TAB 3: FILES -->
   <div class="panel" id="panel-files">
     <div class="card">
       <h2><span>Tải Lên Văn Bản</span></h2>
@@ -837,12 +903,13 @@ HTML_INDEX = """<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- TAB 4: SPAM / ENGINE -->
   <div class="panel" id="panel-spam">
     <div class="card">
       <h2><span>Thiết Lập Gửi Tin Nâng Cao</span></h2>
 
       <div class="form-group">
-        <label>Chế độ gửi</label>
+        <label>Chế độ gửi tin</label>
         <div class="chip-bar" id="mode-selector">
           <div class="chip-item active" data-mode="fast">Siêu Nhanh</div>
           <div class="chip-item" data-mode="treo_ngon">Treo Ngôn (N Dòng / 1 Tin)</div>
@@ -864,12 +931,12 @@ HTML_INDEX = """<!DOCTYPE html>
       <div class="form-group">
         <label>Đổi màu chữ Zalo tự động</label>
         <div class="chip-bar" id="color-mode-bar">
-          <div class="chip-item active" data-cmode="random">Đổi màu ngẫu nhiên</div>
-          <div class="chip-item" data-cmode="cycle">Đổi màu xoay vòng</div>
-          <div class="chip-item" data-cmode="fixed">Cố định một màu</div>
-          <div class="chip-item" data-cmode="none">Tắt màu</div>
+          <div class="chip-item active" data-cmode="rainbow">Trộn Màu Từng Dòng</div>
+          <div class="chip-item" data-cmode="random">Ngẫu Nhiên</div>
+          <div class="chip-item" data-cmode="fixed">Cố Định Một Màu</div>
+          <div class="chip-item" data-cmode="none">Tắt Màu</div>
         </div>
-        <input type="hidden" id="color-mode" value="random">
+        <input type="hidden" id="color-mode" value="rainbow">
         <div id="fixed-colors-wrap" style="display:none; margin-top:6px;" class="chip-bar"></div>
       </div>
 
@@ -932,6 +999,7 @@ HTML_INDEX = """<!DOCTYPE html>
 
 </div>
 
+<!-- BOTTOM DOCK NỔI DƯỚI ĐÁY -->
 <div class="bottom-dock">
   <button class="dock-btn active" data-tab="accounts">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
@@ -958,7 +1026,7 @@ var selectedTags = [];
 var _boxes = [];
 var _members = [];
 var currentMode = "fast";
-var colorMode = "random";
+var colorMode = "rainbow";
 var fixedColor = "red";
 var ZALO_PALETTE = [];
 
@@ -997,6 +1065,7 @@ var Toast = (function(){
   };
 })();
 
+// CHUYỂN TAB DOCK DƯỚI
 document.querySelectorAll('.bottom-dock .dock-btn').forEach(b => {
   b.addEventListener('click', () => {
     document.querySelectorAll('.bottom-dock .dock-btn').forEach(x => x.classList.remove('active'));
@@ -1009,6 +1078,7 @@ document.querySelectorAll('.bottom-dock .dock-btn').forEach(b => {
   });
 });
 
+// CHỌN CHẾ ĐỘ
 document.querySelectorAll('#mode-selector .chip-item').forEach(c => {
   c.addEventListener('click', () => {
     document.querySelectorAll('#mode-selector .chip-item').forEach(x => x.classList.remove('active'));
@@ -1018,6 +1088,7 @@ document.querySelectorAll('#mode-selector .chip-item').forEach(c => {
   });
 });
 
+// CHỌN MÀU
 document.querySelectorAll('#color-mode-bar .chip-item').forEach(c => {
   c.addEventListener('click', () => {
     document.querySelectorAll('#color-mode-bar .chip-item').forEach(x => x.classList.remove('active'));
@@ -1092,7 +1163,7 @@ async function loadAccounts(){
     return `<tr>
       <td>${a.id}</td>
       <td><b>${a.label}</b></td>
-      <td><span style="color:var(--accent); font-weight:800;">${realName}</span></td>
+      <td><span style="color:var(--sakura); font-weight:800;">${realName}</span></td>
       <td><code>…${String(a.uid||'').slice(-6)}</code></td>
       <td id="status-${a.id}">${badge}</td>
       <td>
@@ -1340,36 +1411,56 @@ function setFixedColor(cid){
 
 function refreshAll(){ loadAccounts(); loadFiles(); loadTasks(); }
 
-var canvas = document.getElementById('particles-canvas');
-var ctx = canvas.getContext('2d');
-var width = window.innerWidth;
-var height = window.innerHeight;
-canvas.width = width; canvas.height = height;
+// ==========================================
+// HIỆU ỨNG HOA ANH ĐÀO RƠI 60FPS
+// ==========================================
+var sCanvas = document.getElementById('sakura-canvas');
+var sCtx = sCanvas.getContext('2d');
+var sW = window.innerWidth;
+var sH = window.innerHeight;
+sCanvas.width = sW;
+sCanvas.height = sH;
 
-var particles = Array.from({ length: 42 }, () => ({
-  x: Math.random() * width,
-  y: Math.random() * height,
-  r: Math.random() * 2.8 + 1,
-  speedY: Math.random() * 0.9 + 0.4,
-  speedX: (Math.random() - 0.5) * 0.5
+var petals = Array.from({ length: 36 }, () => ({
+  x: Math.random() * sW,
+  y: Math.random() * sH - sH,
+  size: Math.random() * 8 + 7,
+  speedY: Math.random() * 1.2 + 0.8,
+  speedX: Math.random() * 1.5 - 0.5,
+  angle: Math.random() * 360,
+  angVel: (Math.random() - 0.5) * 1.5
 }));
 
-function animateParticles(){
-  ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = 'rgba(225, 29, 72, 0.25)';
-  particles.forEach(p => {
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-    ctx.fill();
+function drawPetal(p) {
+  sCtx.save();
+  sCtx.translate(p.x, p.y);
+  sCtx.rotate((p.angle * Math.PI) / 180);
+  sCtx.fillStyle = 'rgba(255, 183, 197, 0.75)';
+  sCtx.beginPath();
+  sCtx.moveTo(0, 0);
+  sCtx.bezierCurveTo(p.size / 2, -p.size / 2, p.size, 0, 0, p.size);
+  sCtx.bezierCurveTo(-p.size, 0, -p.size / 2, -p.size / 2, 0, 0);
+  sCtx.fill();
+  sCtx.restore();
+}
+
+function renderSakura() {
+  sCtx.clearRect(0, 0, sW, sH);
+  petals.forEach(p => {
+    drawPetal(p);
     p.y += p.speedY;
     p.x += p.speedX;
-    if(p.y > height){ p.y = 0; p.x = Math.random() * width; }
-    if(p.x > width){ p.x = 0; }
-    if(p.x < 0){ p.x = width; }
+    p.angle += p.angVel;
+    if (p.y > sH + 20) {
+      p.y = -20;
+      p.x = Math.random() * sW;
+    }
+    if (p.x > sW + 20) p.x = -20;
+    if (p.x < -20) p.x = sW + 20;
   });
-  requestAnimationFrame(animateParticles);
+  requestAnimationFrame(renderSakura);
 }
-animateParticles();
+renderSakura();
 
 loadColors();
 refreshAll();
@@ -1380,6 +1471,9 @@ setInterval(loadTasks, 5000);
 """
 
 
+# ============================================================
+# CÁC ROUTE FLASK WEB VÀ API
+# ============================================================
 def login_required(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
@@ -1646,19 +1740,6 @@ def api_tasks():
     return jsonify([dict(r) for r in rows])
 
 
-def pick_color_item(color_mode, fixed_color, index):
-    if color_mode == "none":
-        return None
-    if color_mode == "fixed":
-        for c in ZALO_PALETTE:
-            if c["id"] == fixed_color:
-                return c
-        return ZALO_PALETTE[0]
-    if color_mode == "cycle":
-        return ZALO_PALETTE[index % len(ZALO_PALETTE)]
-    return random.choice(ZALO_PALETTE)
-
-
 def single_acc_worker(acc_dict, targets, blocks, delay, use_emoji, icon_count,
                       tag_users, tag_all, is_heading, mode, color_mode, fixed_color,
                       stop_ev, counter, lock):
@@ -1670,7 +1751,6 @@ def single_acc_worker(acc_dict, targets, blocks, delay, use_emoji, icon_count,
         return
 
     b_idx, t_idx = 0, 0
-    c_idx = random.randint(0, len(ZALO_PALETTE) - 1)
 
     while not stop_ev.is_set():
         target = targets[t_idx % len(targets)]
@@ -1681,16 +1761,13 @@ def single_acc_worker(acc_dict, targets, blocks, delay, use_emoji, icon_count,
         raw = blocks[b_idx % len(blocks)]
         b_idx += 1
 
-        color_item = pick_color_item(color_mode, fixed_color, c_idx)
-        c_idx += 1
-
         try:
             if mode == "treo_ngon":
                 text = raw.replace("\r\n", "\n").replace("\r", "\n")
                 if use_emoji and icon_count > 0:
                     text = text + " " + " ".join([get_icon_hard() for _ in range(icon_count)])
-                z.send(text, target_id, color_item=color_item, is_group=is_group,
-                       mentions=tag_users, tag_all=tag_all, is_heading=is_heading)
+                z.send_adv(text, target_id, color_mode=color_mode, fixed_color=fixed_color,
+                           is_group=is_group, mentions=tag_users, tag_all=tag_all, is_heading=is_heading)
                 with lock: counter["sent"] += 1
 
             elif mode == "treo_nhay":
@@ -1700,18 +1777,16 @@ def single_acc_worker(acc_dict, targets, blocks, delay, use_emoji, icon_count,
                     msg_line = ln
                     if use_emoji and icon_count > 0:
                         msg_line += " " + " ".join([get_icon_hard() for _ in range(icon_count)])
-                    sub_color = pick_color_item(color_mode, fixed_color, c_idx)
-                    c_idx += 1
-                    z.send(msg_line, target_id, color_item=sub_color, is_group=is_group,
-                           mentions=tag_users, tag_all=tag_all, is_heading=is_heading)
+                    z.send_adv(msg_line, target_id, color_mode=color_mode, fixed_color=fixed_color,
+                               is_group=is_group, mentions=tag_users, tag_all=tag_all, is_heading=is_heading)
                     with lock: counter["sent"] += 1
-                    time.sleep(0.2)
+                    time.sleep(0.25)
             else:
                 text = raw
                 if use_emoji and icon_count > 0:
                     text = text + " " + " ".join([get_icon_hard() for _ in range(icon_count)])
-                z.send(text, target_id, color_item=color_item, is_group=is_group,
-                       mentions=tag_users, tag_all=tag_all, is_heading=is_heading)
+                z.send_adv(text, target_id, color_mode=color_mode, fixed_color=fixed_color,
+                           is_group=is_group, mentions=tag_users, tag_all=tag_all, is_heading=is_heading)
                 with lock: counter["sent"] += 1
 
         except Exception:
@@ -1782,7 +1857,7 @@ def api_tasks_start():
     is_heading = bool(d.get("is_heading", True))
     multi_acc = bool(d.get("multi_acc", True))
     mode = d.get("mode", "fast")
-    color_mode = d.get("color_mode", "random")
+    color_mode = d.get("color_mode", "rainbow")
     fixed_color = d.get("fixed_color", "red")
 
     if not targets or not blocks:
