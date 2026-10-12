@@ -1,6 +1,6 @@
 # ============================================================
-# Bản quyền thiết kế: Phạm Anh Khôi
-# Hệ thống: ALB Forge — I Love Ngọc Hân Edition
+# Bản quyền thuộc về Phạm Anh Khôi
+# Hệ thống điều hành: ALB Forge — Giao diện Hoa Anh Đào
 # ============================================================
 import os
 import json
@@ -29,11 +29,11 @@ STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 os.makedirs(STATIC_DIR, exist_ok=True)
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "pak-ngoc-han-cherry-blossom")
+app.secret_key = os.environ.get("SECRET_KEY", "phamanhkhoi-sakura-2026")
 app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024
 
 # ============================================================
-# BẢO MẬT: CHỐNG DDOS VÀ GIỚI HẠN TRUY VẤN
+# BỘ LỌC BẢO MẬT & CHỐNG TẤN CÔNG DDOS
 # ============================================================
 DDOS_LIMIT_PER_MINUTE = 100
 DDOS_BURST_PER_SEC = 20
@@ -64,7 +64,7 @@ def security_shield_middleware():
         if ip in ip_blocked_until:
             if now < ip_blocked_until[ip]:
                 return jsonify({
-                    "error": "IP tạm thời bị chặn do gửi quá nhiều yêu cầu. Vui lòng thử lại sau.",
+                    "error": "IP của bạn đang bị chặn do gửi yêu cầu quá nhanh. Vui lòng quay lại sau.",
                     "retry_after": int(ip_blocked_until[ip] - now)
                 }), 429
             else:
@@ -76,13 +76,13 @@ def security_shield_middleware():
         burst = sum(1 for t in history if now - t <= 1.0)
         if burst > DDOS_BURST_PER_SEC or len(history) > DDOS_LIMIT_PER_MINUTE:
             ip_blocked_until[ip] = now + 300
-            return jsonify({"error": "Phát hiện tần suất truy cập vượt ngưỡng. IP bị tạm dừng kết nối 5 phút."}), 429
+            return jsonify({"error": "Phát hiện lưu lượng bất thường. IP đã bị khóa trong 5 phút."}), 429
 
         ip_request_history[ip].append(now)
 
     if not session.get("human_verified") and request.endpoint not in ("verify_gate", "api_verify_human"):
         if request.path.startswith("/api/"):
-            return jsonify({"error": "Yêu cầu hoàn tất kiểm tra an toàn danh tính"}), 403
+            return jsonify({"error": "Chưa hoàn tất kiểm tra an toàn danh tính"}), 403
         return redirect(url_for("verify_gate"))
 
 
@@ -156,8 +156,10 @@ ZALO_PALETTE = [
     {"id": "ocean",  "name": "Xanh Biển",    "hex": "#0091ff"},
     {"id": "blue",   "name": "Xanh Dương",   "hex": "#0068ff"},
     {"id": "purple", "name": "Tím Pha Lê",   "hex": "#a05eff"},
-    {"id": "pink",   "name": "Hồng Ngọc Hân","hex": "#ff47a8"},
+    {"id": "pink",   "name": "Hồng Đào",     "hex": "#ff47a8"},
 ]
+
+COLOR_IDS = [c["id"] for c in ZALO_PALETTE]
 
 ZALO_ICON_HARD = [
     ";-A", ":-bd", "/-punch", "/-shit", "/-weak",
@@ -184,7 +186,7 @@ def get_icon_hard():
 
 
 # ============================================================
-# ZALO PROTOCOL CLIENT ENGINE
+# ZALO PROTOCOL CLIENT
 # ============================================================
 class Zalo:
     def __init__(self, imei, cookies):
@@ -219,14 +221,14 @@ class Zalo:
         d = r.json()
         ud = d.get("data")
         if not isinstance(ud, dict):
-            raise Exception("Phiên đăng nhập hết hạn hoặc Cookie/IMEI không hợp lệ")
+            raise Exception("Phiên đăng nhập hết hạn hoặc Cookie không hợp lệ")
         self.uid = ud.get("send2me_id")
         self.secret_key = ud.get("zpw_enk")
         self.display_name = ud.get("displayName") or ud.get("zaloName")
         self.zalo_name = ud.get("zaloName")
         self.username = ud.get("username")
         if not self.secret_key:
-            raise Exception("Không thể lấy khóa xác thực")
+            raise Exception("Không thể lấy khóa giải mã bảo mật")
 
     def _enc(self, params):
         key = base64.b64decode(self.secret_key)
@@ -332,15 +334,9 @@ class Zalo:
             except Exception:
                 pass
 
-        friends = self.friends()
-        for f in friends:
-            fid = str(f.get("id"))
-            if fid in uids and fid not in members_dict:
-                members_dict[fid] = f.get("name")
-
         out = []
         for uid in uids:
-            real_name = members_dict.get(uid) or f"Thành viên {uid[-6:]}"
+            real_name = members_dict.get(uid) or f"Người dùng {uid[-6:]}"
             out.append({
                 "id": str(uid),
                 "name": real_name
@@ -400,7 +396,7 @@ class Zalo:
             tag_token = "@All"
             pos = utf16_len(final) + (1 if final else 0)
             final = (final + " " + tag_token) if final else tag_token
-            m_arr.append({"uid": "-1", "pos": pos, "len": utf16_len(tag_token), "type": 1})
+            m_arr.append({"uid": "0", "pos": pos, "len": utf16_len(tag_token), "type": 1})
             return final, m_arr
 
         if mentions:
@@ -415,7 +411,7 @@ class Zalo:
                 m_arr.append({"uid": uid, "pos": pos, "len": utf16_len(tag_token), "type": 0})
         return final, m_arr
 
-    def send_adv(self, raw_text, thread_id, color_mode="random", fixed_color="red",
+    def send_adv(self, raw_text, thread_id, color_mode="rainbow", fixed_color="red",
                  is_group=True, mentions=None, tag_all=False, is_heading=True):
         url = ("https://tt-group-wpa.chat.zalo.me/api/group/sendmsg"
                if is_group
@@ -452,18 +448,17 @@ class Zalo:
 
 
 # ============================================================
-# CSS GIAO DIỆN HOA ANH ĐÀO & THIẾT KẾ ĐỘC QUYỀN
+# CSS GIAO DIỆN HOA ANH ĐÀO SANG TRỌNG
 # ============================================================
-CSS_STYLE = """
+CSS_SAKURA = """
 :root {
-  --bg-page: #fdfafb;
-  --bg-card: rgba(255, 255, 255, 0.94);
-  --border-color: rgba(244, 208, 218, 0.7);
-  --txt-0: #0f172a;
+  --bg-page: #fcfafb;
+  --bg-card: rgba(255, 255, 255, 0.95);
+  --border-color: rgba(255, 183, 197, 0.6);
+  --txt-0: #1a1a24;
   --txt-1: #334155;
   --txt-2: #64748b;
   --sakura: #ff69b4;
-  --sakura-soft: #ffb7c5;
   --grad-sakura: linear-gradient(135deg, #ff758c 0%, #ff7eb3 100%);
   --grad-dark: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
   --shadow-soft: 0 10px 30px rgba(255, 117, 140, 0.08);
@@ -481,194 +476,193 @@ body {
   overflow-x: hidden;
 }
 
-/* CANVAS HOA ANH ĐÀO RƠI — POINTER EVENTS NONE TRÁNH CHẶN CLICK */
 #sakura-canvas {
-  position: fixed; inset: 0; pointer-events: none !important; z-index: 85; width: 100%; height: 100%;
+  position: fixed; inset: 0; pointer-events: none !important; z-index: 0; width: 100%; height: 100%;
 }
-
-/* CÀNH HOA ANH ĐÀO DECOR GÓC MÀN HÌNH */
 .cherry-branch {
-  position: fixed; top: 0; right: 0; width: 160px; height: 140px;
-  pointer-events: none !important; z-index: 86; opacity: 0.85;
+  position: fixed; top: -10px; right: -10px; width: 180px; height: 160px;
+  pointer-events: none !important; z-index: 5; opacity: 0.9;
 }
-
 body::before {
   content: ''; position: fixed; inset: 0;
   background-image: url('/static/bg.jpg');
   background-size: cover; background-position: center; background-repeat: no-repeat;
-  opacity: 0.15; filter: blur(3px); pointer-events: none !important; z-index: -1;
+  opacity: 0.15; filter: blur(4px); pointer-events: none !important; z-index: -1;
 }
 
 .header {
-  background: rgba(255, 255, 255, 0.94);
-  backdrop-filter: blur(25px);
-  padding: 10px 18px;
-  border-bottom: 1px solid var(--border-color);
-  position: sticky; top:0; z-index: 100;
-  box-shadow: 0 2px 14px rgba(255, 117, 140, 0.06);
+  background: rgba(255, 255, 255, 0.94); backdrop-filter: blur(25px);
+  padding: 12px 18px; border-bottom: 1px solid var(--border-color);
+  position: sticky; top:0; z-index: 100; box-shadow: 0 4px 15px rgba(255, 117, 140, 0.05);
 }
 .header-inner { max-width: 1000px; margin: 0 auto; display: flex; align-items: center; gap: 12px; }
 .logo-box {
-  width: 44px; height: 44px; border-radius: 50%;
-  overflow: hidden; border: 2px solid #fff;
-  box-shadow: 0 4px 16px rgba(255, 105, 180, 0.35);
-  background: #fff; flex-shrink: 0;
-  animation: pulseLogo 3s ease-in-out infinite;
+  width: 46px; height: 46px; border-radius: 50%; overflow: hidden;
+  border: 2px solid #fff; box-shadow: 0 4px 16px rgba(255, 105, 180, 0.35);
+  background: #fff; flex-shrink: 0; animation: pulseLogo 3.5s ease-in-out infinite;
 }
 @keyframes pulseLogo { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.05); } }
 .logo-box img { width: 100%; height: 100%; object-fit: cover; }
 .header-meta { flex: 1; min-width: 0; }
-.header-meta h1 { font-family: 'Orbitron', sans-serif; font-size: 14.5px; font-weight: 900; color: var(--txt-0); }
-.header-meta p { font-size: 9.5px; color: var(--txt-2); font-weight: 700; margin-top: 2px; display: flex; align-items: center; gap: 4px; }
+.header-meta h1 { font-family: 'Orbitron', sans-serif; font-size: 15px; font-weight: 900; color: var(--txt-0); }
+.header-meta p { font-size: 10px; color: var(--txt-2); font-weight: 700; margin-top: 2px; display: flex; align-items: center; gap: 4px; }
+.v-badge { display: inline-flex; align-items: center; justify-content: center; color: #0084ff; font-weight: 900; filter: drop-shadow(0 2px 4px rgba(0,132,255,0.3)); }
 
-.v-badge {
-  display: inline-flex; align-items: center; justify-content: center;
-  color: #0084ff; font-weight: 900; filter: drop-shadow(0 2px 4px rgba(0,132,255,0.3));
-}
-
-.container { max-width: 1000px; margin: 0 auto; padding: 14px; position: relative; z-index: 90; }
-.panel { display: none; animation: fadeIn .28s var(--ease) both; }
+.container { max-width: 1000px; margin: 0 auto; padding: 16px 14px; position: relative; z-index: 10; }
+.panel { display: none; animation: fadeIn .3s var(--ease) both; }
 .panel.active { display: block; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 
 .card {
-  background: var(--bg-card); backdrop-filter: blur(20px);
-  padding: 16px; border-radius: 18px; border: 1px solid var(--border-color);
-  box-shadow: var(--shadow-soft); margin-bottom: 12px;
+  background: var(--bg-card); backdrop-filter: blur(25px);
+  padding: 18px; border-radius: 20px; border: 1px solid var(--border-color);
+  box-shadow: var(--shadow-soft); margin-bottom: 14px;
 }
 .card h2 {
-  font-size: 11.5px; font-weight: 900; letter-spacing: .5px; margin-bottom: 12px;
+  font-size: 12px; font-weight: 900; letter-spacing: .5px; margin-bottom: 14px;
   display: flex; align-items: center; justify-content: space-between; color: var(--txt-0);
 }
 
 .btn-pill {
-  padding: 8px 14px; border-radius: 99px; border: none; cursor: pointer;
-  font-size: 10.5px; font-weight: 800; letter-spacing: .4px;
-  display: inline-flex; align-items: center; gap: 6px; transition: all .25s var(--ease);
-  position: relative; overflow: hidden;
+  padding: 10px 16px; border-radius: 99px; border: none; cursor: pointer;
+  font-size: 11px; font-weight: 800; letter-spacing: .4px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  transition: all .25s var(--ease); position: relative; overflow: hidden;
 }
+.btn-pill::after {
+  content: ''; position: absolute; top: -50%; left: -60%; width: 40%; height: 200%;
+  background: linear-gradient(60deg, transparent, rgba(255,255,255,0.4), transparent);
+  transform: rotate(25deg); transition: all 0.5s;
+}
+.btn-pill:hover::after { left: 130%; }
 .btn-pill:hover { transform: translateY(-2px); filter: brightness(1.05); }
 .btn-pill:active { transform: translateY(0) scale(0.96); }
 .btn-pill.primary { background: var(--grad-sakura); color: #fff; box-shadow: 0 4px 14px rgba(255, 117, 140, 0.35); }
 .btn-pill.dark { background: var(--grad-dark); color: #fff; }
-.btn-pill.light { background: #fdf2f4; color: var(--txt-1); border: 1px solid var(--border-color); }
+.btn-pill.light { background: #fff0f3; color: var(--sakura); border: 1px solid var(--border-color); }
 .btn-pill.danger { background: #fee2e2; color: #b91c1c; }
-.btn-pill.full { width: 100%; justify-content: center; padding: 11px; }
+.btn-pill.full { width: 100%; padding: 13px; font-size: 12px; }
 
 .btn-round {
-  width: 44px; height: 44px; border-radius: 50%; border: none; cursor: pointer;
+  width: 48px; height: 48px; border-radius: 50%; border: none; cursor: pointer;
   display: inline-flex; align-items: center; justify-content: center;
-  transition: all .25s var(--ease); margin: 3px;
+  transition: all .25s var(--ease); margin: 4px;
 }
-.btn-round svg { width: 18px; height: 18px; }
+.btn-round svg { width: 20px; height: 20px; }
 .btn-round:hover { transform: scale(1.08); }
 .btn-round.action-start { background: #10b981; color: #fff; box-shadow: 0 4px 14px rgba(16, 185, 129, 0.3); }
 .btn-round.action-stop { background: #ef4444; color: #fff; box-shadow: 0 4px 14px rgba(239, 68, 68, 0.3); }
 
-.form-group { margin-bottom: 11px; }
-.form-group label { display: block; margin-bottom: 5px; font-size: 9.5px; font-weight: 800; color: var(--txt-2); }
-.form-group input, .form-group textarea, .form-group select {
-  width: 100%; padding: 11px 13px; border: 1.5px solid var(--border-color); border-radius: 12px;
-  font-size: 12px; background: #fff; color: var(--txt-0); transition: border-color .2s;
+/* GIAO DIỆN UPLOAD FILE MỚI HIỆN ĐẠI */
+.file-upload-wrapper {
+  position: relative; width: 100%; height: 80px;
+  border: 2px dashed var(--sakura); border-radius: 16px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(255, 183, 197, 0.1); transition: all 0.3s var(--ease); cursor: pointer; overflow: hidden;
 }
-.form-group input:focus, .form-group textarea:focus, .form-group select:focus {
-  outline: none; border-color: var(--sakura);
-}
-.form-group textarea { min-height: 85px; font-family: 'JetBrains Mono', monospace; font-size: 11.5px; }
+.file-upload-wrapper:hover { background: rgba(255, 183, 197, 0.25); border-color: #e11d48; }
+.file-upload-wrapper input[type="file"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
+.file-upload-content { display: flex; flex-direction: column; align-items: center; gap: 6px; pointer-events: none; }
+.file-upload-content svg { width: 28px; height: 28px; color: var(--sakura); }
+.file-upload-content span { font-size: 11.5px; font-weight: 700; color: var(--txt-1); }
 
-.chip-bar { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 4px; }
+.form-group { margin-bottom: 12px; }
+.form-group label { display: block; margin-bottom: 6px; font-size: 10px; font-weight: 800; color: var(--txt-2); }
+.form-group input:not([type="file"]), .form-group textarea, .form-group select {
+  width: 100%; padding: 12px 14px; border: 1.5px solid var(--border-color); border-radius: 14px;
+  font-size: 12.5px; background: #fff; color: var(--txt-0); transition: border-color .2s;
+}
+.form-group input:focus, .form-group textarea:focus, .form-group select:focus { outline: none; border-color: var(--sakura); }
+.form-group textarea { min-height: 90px; font-family: 'JetBrains Mono', monospace; font-size: 11.5px; }
+
+.chip-bar { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 5px; }
 .chip-item {
-  padding: 6px 12px; background: #fff; color: var(--txt-2); border-radius: 99px;
-  font-size: 10px; font-weight: 800; cursor: pointer; border: 1px solid var(--border-color);
-  transition: all .2s;
+  padding: 8px 14px; background: #fff; color: var(--txt-2); border-radius: 99px;
+  font-size: 10.5px; font-weight: 800; cursor: pointer; border: 1px solid var(--border-color); transition: all .2s;
 }
-.chip-item:hover { border-color: var(--sakura); color: var(--sakura); }
-.chip-item.active { background: var(--grad-sakura); color: #fff; border-color: transparent; }
+.chip-item:hover { border-color: var(--sakura); color: var(--sakura); transform: translateY(-1px); }
+.chip-item.active { background: var(--grad-sakura); color: #fff; border-color: transparent; box-shadow: 0 4px 10px rgba(255, 117, 140, 0.25); }
 
-.toggle-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 6px; margin-bottom: 11px; }
+.toggle-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin-bottom: 12px; }
 .toggle-item {
-  padding: 9px; border: 1px solid var(--border-color); border-radius: 12px;
-  cursor: pointer; text-align: center; font-weight: 800; font-size: 10px;
+  padding: 11px; border: 1px solid var(--border-color); border-radius: 14px;
+  cursor: pointer; text-align: center; font-weight: 800; font-size: 10.5px;
   background: #fff; color: var(--txt-2); transition: all .2s;
 }
-.toggle-item.active { background: var(--grad-sakura); color: #fff; border-color: transparent; box-shadow: 0 4px 10px rgba(255, 117, 140, 0.25); }
+.toggle-item.active { background: var(--grad-sakura); color: #fff; border-color: transparent; box-shadow: 0 4px 12px rgba(255, 117, 140, 0.25); }
 
-.table-wrap { overflow-x: auto; border-radius: 12px; border: 1px solid var(--border-color); background: #fff; }
+.table-wrap { overflow-x: auto; border-radius: 14px; border: 1px solid var(--border-color); background: #fff; }
 .table { width: 100%; border-collapse: collapse; }
-.table th, .table td { padding: 9px 8px; text-align: left; font-size: 10.5px; border-bottom: 1px solid #fdf2f4; white-space: nowrap; }
-.table th { background: #fdf6f7; font-weight: 800; color: var(--txt-2); font-size: 8.5px; }
+.table th, .table td { padding: 11px 10px; text-align: left; font-size: 11px; border-bottom: 1px solid #fdf2f4; white-space: nowrap; }
+.table th { background: #fdf6f7; font-weight: 800; color: var(--txt-2); font-size: 9px; }
 
-.status-badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 99px; font-size: 9px; font-weight: 800; }
-.status-badge.live { background: #dcfce7; color: #15803d; }
-.status-badge.dead { background: #fee2e2; color: #b91c1c; }
-
-.box-list { max-height: 280px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 12px; padding: 6px; background: #fff; }
+.box-list { max-height: 280px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 14px; padding: 8px; background: #fff; }
 .box-item {
-  padding: 8px 10px; border-radius: 9px; background: #fdfafb; margin-bottom: 4px;
-  cursor: pointer; border: 1px solid var(--border-color); display: flex; align-items: center; gap: 8px;
-  transition: all .15s;
+  padding: 10px 12px; border-radius: 12px; background: #fdfafb; margin-bottom: 6px;
+  cursor: pointer; border: 1px solid var(--border-color); display: flex; align-items: center; gap: 10px; transition: all .15s;
 }
 .box-item:hover { border-color: var(--sakura); background: #fff; }
 .box-item.selected { border-color: var(--sakura); background: #fff0f3; }
 .box-item .check-mark {
-  width: 16px; height: 16px; border: 1.5px solid var(--txt-2); border-radius: 4px;
-  display: flex; align-items: center; justify-content: center; font-size: 9px; color: transparent; font-weight: 900;
+  width: 18px; height: 18px; border: 1.5px solid var(--txt-2); border-radius: 5px;
+  display: flex; align-items: center; justify-content: center; font-size: 10px; color: transparent; font-weight: 900;
 }
 .box-item.selected .check-mark { background: var(--sakura); border-color: var(--sakura); color: #fff; }
-.box-item .b-title { font-weight: 700; font-size: 11.5px; color: var(--txt-0); }
-.box-item .b-sub { font-size: 9px; color: var(--txt-2); font-family: 'JetBrains Mono', monospace; }
+.box-item .b-title { font-weight: 800; font-size: 12px; color: var(--txt-0); }
+.box-item .b-sub { font-size: 9.5px; color: var(--txt-2); font-family: 'JetBrains Mono', monospace; }
 
 .bottom-dock {
-  position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%);
-  width: calc(100% - 24px); max-width: 480px;
-  background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(24px);
-  border: 1px solid rgba(244, 208, 218, 0.9);
-  box-shadow: 0 10px 30px rgba(255, 117, 140, 0.15);
+  position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%);
+  width: calc(100% - 24px); max-width: 500px;
+  background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(28px);
+  border: 1px solid rgba(244, 208, 218, 0.95);
+  box-shadow: 0 14px 40px rgba(255, 117, 140, 0.15);
   border-radius: 99px; display: grid; grid-template-columns: repeat(4, 1fr);
-  padding: 5px; gap: 4px; z-index: 999;
+  padding: 6px; gap: 5px; z-index: 999; pointer-events: auto;
 }
 .bottom-dock .dock-btn {
-  padding: 8px 2px; border-radius: 99px; cursor: pointer; font-size: 9.5px; font-weight: 800;
+  padding: 10px 2px; border-radius: 99px; cursor: pointer; font-size: 10px; font-weight: 800;
   text-align: center; color: var(--txt-2); display: flex; flex-direction: column; align-items: center;
-  gap: 2px; background: transparent; border: none; transition: all .2s;
+  gap: 3px; background: transparent; border: none; transition: all .2s; pointer-events: auto;
 }
-.bottom-dock .dock-btn svg { width: 17px; height: 17px; }
-.bottom-dock .dock-btn.active { background: var(--grad-sakura); color: #fff; }
+.bottom-dock .dock-btn svg { width: 19px; height: 19px; transition: transform 0.2s; }
+.bottom-dock .dock-btn:hover svg { transform: scale(1.15) translateY(-2px); }
+.bottom-dock .dock-btn.active { background: var(--grad-sakura); color: #fff; box-shadow: 0 4px 12px rgba(255,105,180,0.3); transform: translateY(-2px); }
 
-#toast-stack { position: fixed; top: 12px; right: 12px; z-index: 99999; max-width: 320px; width: calc(100% - 24px); pointer-events: none; }
+#toast-stack { position: fixed; top: 14px; right: 14px; z-index: 99999; max-width: 320px; width: calc(100% - 28px); pointer-events: none; }
 .toast {
-  pointer-events: auto; padding: 11px 14px; border-radius: 12px;
+  pointer-events: auto; padding: 12px 16px; border-radius: 14px;
   background: rgba(255, 255, 255, 0.98); border: 1px solid var(--border-color);
-  box-shadow: 0 10px 25px rgba(255, 117, 140, 0.15); display: flex; flex-direction: column; gap: 2px;
-  animation: toastIn .2s var(--ease) both;
+  box-shadow: 0 12px 30px rgba(255, 117, 140, 0.15); display: flex; flex-direction: column; gap: 3px;
+  animation: toastIn .25s var(--ease) both;
 }
-.toast.swipe-up { animation: toastUp .18s ease-out forwards; }
-@keyframes toastIn { from { opacity: 0; transform: translateY(-15px); } to { opacity: 1; transform: translateY(0); } }
-@keyframes toastUp { to { opacity: 0; transform: translateY(-30px); } }
-.toast .t-head { font-size: 10.5px; font-weight: 900; color: var(--txt-0); }
-.toast .t-body { font-size: 10px; font-weight: 600; color: var(--txt-2); }
+.toast.swipe-up { animation: toastUp .2s ease-out forwards; }
+@keyframes toastIn { from { opacity: 0; transform: translateY(-20px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes toastUp { to { opacity: 0; transform: translateY(-40px); } }
+.toast .t-head { font-size: 11px; font-weight: 900; color: var(--txt-0); display:flex; align-items:center; gap:5px; }
+.toast .t-body { font-size: 10.5px; font-weight: 600; color: var(--txt-2); }
 """
 
 # ============================================================
-# CỔNG BẢO MẬT: XÁC THỰC BẮT BUỘC 100%
+# CỔNG BẢO MẬT & TRANG ĐĂNG NHẬP
 # ============================================================
 HTML_GATE = """<!DOCTYPE html>
 <html lang="vi">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Cổng Xác Thực An Toàn</title>
+<title>Hệ Thống An Toàn</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
 <style>
-""" + CSS_STYLE + """
+""" + CSS_SAKURA + """
 body { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
 .gate-card {
   background: rgba(255, 255, 255, 0.98); border: 1px solid var(--border-color);
-  border-radius: 24px; padding: 36px 26px; max-width: 390px; width: 100%; text-align: center;
-  box-shadow: 0 25px 60px rgba(255, 117, 140, 0.12); position: relative; overflow: hidden;
+  border-radius: 24px; padding: 40px 28px; max-width: 400px; width: 100%; text-align: center;
+  box-shadow: 0 25px 60px rgba(255, 117, 140, 0.15); position: relative; overflow: hidden;
 }
 .radar-scanner {
-  width: 90px; height: 90px; margin: 0 auto 18px; border-radius: 50%;
+  width: 96px; height: 96px; margin: 0 auto 20px; border-radius: 50%;
   position: relative; display: flex; align-items: center; justify-content: center;
   background: radial-gradient(circle, rgba(255,105,180,0.15) 0%, transparent 70%);
   border: 2px dashed rgba(255,105,180,0.5);
@@ -679,49 +673,38 @@ body { display: flex; align-items: center; justify-content: center; min-height: 
   animation: spin 1.2s linear infinite;
 }
 @keyframes spin { 100% { transform: rotate(360deg); } }
-.radar-icon { font-size: 32px; }
-.progress-line {
-  height: 5px; width: 100%; background: #fdf2f4; border-radius: 99px;
-  overflow: hidden; margin: 18px 0; display: none;
-}
-.progress-fill {
-  height: 100%; width: 0%; background: var(--grad-sakura);
-  border-radius: 99px; transition: width 0.35s ease;
-}
-.copyright-tag { margin-top: 18px; font-size: 9.5px; color: var(--txt-2); font-weight: 800; display: flex; align-items: center; justify-content: center; gap: 4px; }
+.radar-icon { font-size: 36px; animation: pulse 1.5s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.15); } }
+.progress-line { height: 5px; width: 100%; background: #fdf2f4; border-radius: 99px; overflow: hidden; margin: 20px 0; display: none; }
+.progress-fill { height: 100%; width: 0%; background: var(--grad-sakura); border-radius: 99px; transition: width 0.35s ease; }
 </style>
 </head>
 <body>
-<div class="gate-card">
+<canvas id="sakura-canvas"></canvas>
+<div class="gate-card" style="z-index:10;">
   <div class="radar-scanner"><div class="radar-icon">🛡️</div></div>
-  <h1 style="font-family:'Orbitron',sans-serif; font-size:16px; margin-bottom:6px;">CỔNG BẢO MẬT HỆ THỐNG</h1>
-  <p id="scan-status" style="font-size:11px; color:var(--txt-2); min-height:30px;">Vui lòng nhấn nút bên dưới để tiến hành kiểm tra bảo mật danh tính.</p>
+  <h1 style="font-family:'Orbitron',sans-serif; font-size:17px; margin-bottom:8px;">BẢO MẬT HỆ THỐNG</h1>
+  <p id="scan-status" style="font-size:11.5px; color:var(--txt-2); min-height:34px;">Vui lòng xác thực danh tính để vào hệ thống.</p>
   <div class="progress-line" id="p-box"><div class="progress-fill" id="p-bar"></div></div>
-  <button class="btn-pill primary full" id="start-btn" onclick="startVerification()">Bắt đầu xác thực an toàn</button>
-  <div class="copyright-tag">
-    Bản quyền thiết kế: <span class="v-badge"><svg viewBox="0 0 24 24" width="13" height="13" fill="#0084ff"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg></span> <b>Phạm Anh Khôi</b>
-  </div>
+  <button class="btn-pill primary full" id="start-btn" onclick="startVerification()" style="font-size:13px; padding:15px;">Bắt Đầu Xác Thực</button>
 </div>
 <script>
 var pBox = document.getElementById('p-box');
 var pBar = document.getElementById('p-bar');
 var statusTxt = document.getElementById('scan-status');
 var startBtn = document.getElementById('start-btn');
-
 var steps = [
-  { p: 25, txt: 'Đang phân tích lưu lượng mạng và thiết bị...' },
-  { p: 60, txt: 'Đang kiểm tra an toàn danh tính trình duyệt...' },
-  { p: 85, txt: 'Xác thực hoàn tất! Cấp quyền truy cập hệ thống...' },
-  { p: 100, txt: 'Đang chuyển hướng vào bảng điều khiển...' }
+  { p: 25, txt: 'Đang kiểm tra địa chỉ mạng...' },
+  { p: 55, txt: 'Đang phân tích chứng chỉ an toàn...' },
+  { p: 85, txt: 'Xác thực hoàn tất, đang cấp quyền...' },
+  { p: 100, txt: 'Đang chuyển hướng vào hệ thống...' }
 ];
 var idx = 0;
-
 function startVerification(){
   startBtn.style.display = 'none';
   pBox.style.display = 'block';
   runStep();
 }
-
 function runStep(){
   if(idx < steps.length){
     pBar.style.width = steps[idx].p + '%';
@@ -732,63 +715,98 @@ function runStep(){
     finishScan();
   }
 }
-
 async function finishScan(){
   var r = await fetch('/api/verify_human', { method: 'POST' }).then(x => x.json());
   if(r.ok) window.location.href = '/login';
 }
+
+var sCanvas = document.getElementById('sakura-canvas');
+var sCtx = sCanvas.getContext('2d');
+var sW = window.innerWidth, sH = window.innerHeight;
+sCanvas.width = sW; sCanvas.height = sH;
+var petals = Array.from({ length: 30 }, () => ({ x: Math.random() * sW, y: Math.random() * sH - sH, size: Math.random() * 8 + 6, speedY: Math.random() * 1.2 + 0.8, speedX: Math.random() * 1.5 - 0.5, angle: Math.random() * 360, angVel: (Math.random() - 0.5) * 1.5 }));
+function renderSakura() {
+  sCtx.clearRect(0, 0, sW, sH);
+  petals.forEach(p => {
+    sCtx.save(); sCtx.translate(p.x, p.y); sCtx.rotate(p.angle * Math.PI / 180);
+    sCtx.fillStyle = 'rgba(255, 183, 197, 0.7)'; sCtx.beginPath(); sCtx.moveTo(0, 0);
+    sCtx.bezierCurveTo(p.size / 2, -p.size / 2, p.size, 0, 0, p.size); sCtx.bezierCurveTo(-p.size, 0, -p.size / 2, -p.size / 2, 0, 0);
+    sCtx.fill(); sCtx.restore();
+    p.y += p.speedY; p.x += p.speedX; p.angle += p.angVel;
+    if (p.y > sH + 20) { p.y = -20; p.x = Math.random() * sW; }
+    if (p.x > sW + 20) p.x = -20; if (p.x < -20) p.x = sW + 20;
+  });
+  requestAnimationFrame(renderSakura);
+}
+renderSakura();
 </script>
 </body>
 </html>
 """
 
-# ============================================================
-# TRANG ĐĂNG NHẬP
-# ============================================================
 HTML_LOGIN = """<!DOCTYPE html>
 <html lang="vi">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Đăng Nhập — I Love Ngọc Hân</title>
+<title>Đăng Nhập Quản Trị</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
 <style>
-""" + CSS_STYLE + """
+""" + CSS_SAKURA + """
 body { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
 .login-card {
   background: rgba(255, 255, 255, 0.98); border: 1px solid var(--border-color);
-  border-radius: 24px; padding: 36px 26px; max-width: 380px; width: 100%; text-align: center;
-  box-shadow: 0 20px 50px rgba(255, 117, 140, 0.12);
+  border-radius: 24px; padding: 40px 28px; max-width: 400px; width: 100%; text-align: center;
+  box-shadow: 0 25px 60px rgba(255, 117, 140, 0.15); position: relative; z-index: 10;
 }
-.login-logo { width: 78px; height: 78px; border-radius: 50%; overflow: hidden; margin: 0 auto 14px; border: 2px solid var(--sakura); }
+.login-logo { width: 84px; height: 84px; border-radius: 50%; overflow: hidden; margin: 0 auto 16px; border: 2px solid var(--sakura); }
 .login-logo img { width: 100%; height: 100%; object-fit: cover; }
-.err-msg { background: #fee2e2; color: #b91c1c; padding: 9px; border-radius: 10px; font-size: 11px; font-weight: 700; margin-bottom: 14px; text-align: left; }
+.err-msg { background: #fee2e2; color: #b91c1c; padding: 11px; border-radius: 12px; font-size: 11.5px; font-weight: 800; margin-bottom: 16px; text-align: left; }
 </style>
 </head>
 <body>
+<canvas id="sakura-canvas"></canvas>
 <div class="login-card">
   <div class="login-logo">
     <img src="/static/logo.png" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\\'http://www.w3.org/2000/svg\\' viewBox=\\'0 0 100 100\\'><circle cx=\\'50\\' cy=\\'50\\' r=\\'50\\' fill=\\'%23ff69b4\\'/><text x=\\'50\\' y=\\'58\\' text-anchor=\\'middle\\' font-size=\\'36\\' fill=\\'white\\'>❤</text></svg>'">
   </div>
-  <h1 style="font-family:'Orbitron',sans-serif; font-size:18px; margin-bottom:4px;">I LOVE NGỌC HÂN</h1>
-  <p style="font-size:10px; color:var(--txt-2); font-weight:700; margin-bottom:20px; display:flex; align-items:center; justify-content:center; gap:4px;">
-    Bản quyền thiết kế: <span class="v-badge"><svg viewBox="0 0 24 24" width="13" height="13" fill="#0084ff"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg></span> <b>Phạm Anh Khôi</b>
+  <h1 style="font-family:'Orbitron',sans-serif; font-size:19px; margin-bottom:6px;">I LOVE NGỌC HÂN</h1>
+  <p style="font-size:10.5px; color:var(--txt-2); font-weight:800; margin-bottom:22px; display:flex; align-items:center; justify-content:center; gap:5px;">
+    Bản quyền thiết kế: <span class="v-badge"><svg viewBox="0 0 24 24" width="14" height="14" fill="#0084ff"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg></span> Phạm Anh Khôi
   </p>
   {% if error %}<div class="err-msg">⚠️ {{ error }}</div>{% endif %}
   <form method="POST">
     <div class="form-group" style="text-align:left;">
-      <input type="password" name="password" placeholder="Nhập mật khẩu truy cập..." required autofocus>
+      <input type="password" name="password" placeholder="Nhập mã bảo mật truy cập..." required autofocus>
     </div>
-    <button type="submit" class="btn-pill primary full">💖 Đăng nhập hệ thống</button>
+    <button type="submit" class="btn-pill primary full" style="font-size:13px; padding:14px;">💖 Truy Cập Hệ Thống</button>
   </form>
 </div>
+<script>
+var sCanvas = document.getElementById('sakura-canvas');
+var sCtx = sCanvas.getContext('2d');
+var sW = window.innerWidth, sH = window.innerHeight;
+sCanvas.width = sW; sCanvas.height = sH;
+var petals = Array.from({ length: 30 }, () => ({ x: Math.random() * sW, y: Math.random() * sH - sH, size: Math.random() * 8 + 6, speedY: Math.random() * 1.2 + 0.8, speedX: Math.random() * 1.5 - 0.5, angle: Math.random() * 360, angVel: (Math.random() - 0.5) * 1.5 }));
+function renderSakura() {
+  sCtx.clearRect(0, 0, sW, sH);
+  petals.forEach(p => {
+    sCtx.save(); sCtx.translate(p.x, p.y); sCtx.rotate(p.angle * Math.PI / 180);
+    sCtx.fillStyle = 'rgba(255, 183, 197, 0.7)'; sCtx.beginPath(); sCtx.moveTo(0, 0);
+    sCtx.bezierCurveTo(p.size / 2, -p.size / 2, p.size, 0, 0, p.size); sCtx.bezierCurveTo(-p.size, 0, -p.size / 2, -p.size / 2, 0, 0);
+    sCtx.fill(); sCtx.restore();
+    p.y += p.speedY; p.x += p.speedX; p.angle += p.angVel;
+    if (p.y > sH + 20) { p.y = -20; p.x = Math.random() * sW; }
+    if (p.x > sW + 20) p.x = -20; if (p.x < -20) p.x = sW + 20;
+  });
+  requestAnimationFrame(renderSakura);
+}
+renderSakura();
+</script>
 </body>
 </html>
 """
 
-# ============================================================
-# TRANG ĐIỀU KHIỂN CHÍNH (DOCK DƯỚI, HOA ANH ĐÀO)
-# ============================================================
 HTML_INDEX = """<!DOCTYPE html>
 <html lang="vi">
 <head>
@@ -799,14 +817,12 @@ HTML_INDEX = """<!DOCTYPE html>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@500;700&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
 <style>
-""" + CSS_STYLE + """
+""" + CSS_SAKURA + """
 </style>
 </head>
 <body>
-<!-- CANVAS HOA ANH ĐÀO RƠI 60FPS -->
+<!-- HIỆU ỨNG HOA ANH ĐÀO (KHÔNG CHẶN CLICK) -->
 <canvas id="sakura-canvas"></canvas>
-
-<!-- SVG CÀNH HOA ANH ĐÀO DECOR GÓC MÀN HÌNH -->
 <svg class="cherry-branch" viewBox="0 0 200 160" fill="none" xmlns="http://www.w3.org/2000/svg">
   <path d="M200 10 C160 20 130 50 100 55 C70 60 40 40 10 45" stroke="#8b4513" stroke-width="3.5" stroke-linecap="round"/>
   <path d="M130 50 C110 75 90 85 60 95" stroke="#8b4513" stroke-width="2.5" stroke-linecap="round"/>
@@ -831,7 +847,7 @@ HTML_INDEX = """<!DOCTYPE html>
         Bản quyền thiết kế: <span class="v-badge"><svg viewBox="0 0 24 24" width="13" height="13" fill="#0084ff"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg></span> <b>Phạm Anh Khôi</b>
       </p>
     </div>
-    <button class="btn-pill light" onclick="location.href='/logout'">Thoát</button>
+    <button class="btn-pill light" onclick="location.href='/logout'">Đăng xuất</button>
   </div>
 </div>
 
@@ -843,21 +859,13 @@ HTML_INDEX = """<!DOCTYPE html>
   <div class="panel active" id="panel-accounts">
     <div class="card">
       <h2>
-        <span>Tài Khoản Zalo</span>
+        <span>Tài Khoản Điều Khiển</span>
         <button class="btn-pill dark" onclick="checkAllAccounts()">Kiểm Tra Tất Cả</button>
       </h2>
       <div class="form-group"><label>Tên gợi nhớ</label><input id="add-label" placeholder="acc_1"></div>
       <div class="form-group"><label>IMEI thiết bị</label><input id="add-imei" placeholder="000000000000000"></div>
       <div class="form-group"><label>Cookie JSON</label><textarea id="add-cookies" placeholder='{"zpw_sek":"...","zpw_ver":"645","zpw_type":"30"}'></textarea></div>
       <button class="btn-pill primary full" onclick="addAccount()">Lưu Tài Khoản</button>
-    </div>
-
-    <div class="card">
-      <h2><span>Tùy Biến Logo Website</span></h2>
-      <div style="display:flex; gap:8px; align-items:center;">
-        <input type="file" id="logo-file-input" accept="image/*" style="font-size:11px; padding:6px;">
-        <button class="btn-pill dark" onclick="uploadLogo()">Cập Nhật Logo</button>
-      </div>
     </div>
 
     <div class="card">
@@ -874,18 +882,18 @@ HTML_INDEX = """<!DOCTYPE html>
   <!-- TAB 2: BOXES -->
   <div class="panel" id="panel-boxes">
     <div class="card">
-      <h2><span>Quản Lý Cuộc Trò Chuyện</span></h2>
+      <h2><span>Quản Lý Hội Thoại Nhận Tin</span></h2>
       <div class="form-group"><label>Chọn tài khoản để nạp hội thoại</label><select id="load-acc-select"><option value="">-- Chọn tài khoản --</option></select></div>
-      <div style="display:flex; gap:6px; margin-bottom:10px;">
+      <div style="display:flex; gap:6px; margin-bottom:12px;">
         <button class="btn-pill dark" onclick="loadBoxes()">Nạp Danh Sách</button>
         <button class="btn-pill light" onclick="selectAllBoxes()">Chọn Tất Cả</button>
         <button class="btn-pill danger" onclick="clearAllBoxes()">Bỏ Chọn</button>
       </div>
       <div>
-        <div style="font-size:9.5px; font-weight:800; color:var(--txt-2); margin-bottom:4px;">
-          ĐÃ CHỌN: <span id="selected-count" style="color:var(--sakura);">0</span>
+        <div style="font-size:10.5px; font-weight:800; color:var(--txt-2); margin-bottom:6px;">
+          ĐÃ CHỌN: <span id="selected-count" style="color:var(--sakura);">0</span> HỘI THOẠI
         </div>
-        <div class="box-list" id="box-list"><div style="text-align:center; padding:18px; color:var(--txt-2); font-size:11px;">Chưa nạp dữ liệu</div></div>
+        <div class="box-list" id="box-list"><div style="text-align:center; padding:18px; color:var(--txt-2); font-size:11.5px;">Chưa nạp dữ liệu hội thoại</div></div>
       </div>
     </div>
   </div>
@@ -893,55 +901,64 @@ HTML_INDEX = """<!DOCTYPE html>
   <!-- TAB 3: FILES -->
   <div class="panel" id="panel-files">
     <div class="card">
-      <h2><span>Tải Lên Văn Bản</span></h2>
-      <div class="form-group"><input type="file" id="file-input" accept=".txt" style="padding:6px;"></div>
-      <button class="btn-pill primary full" onclick="uploadFile()">Lưu Tập Tin</button>
+      <h2><span>Tải Lên Văn Bản Hoặc Logo Web</span></h2>
+      <div class="file-upload-wrapper" onclick="document.getElementById('file-input').click()">
+        <div class="file-upload-content">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          <span id="upload-txt">Nhấn để chọn tệp Văn bản (.txt) hoặc Ảnh Logo</span>
+        </div>
+        <input type="file" id="file-input" onchange="handleFileSelect(this)">
+      </div>
+      <div style="display:flex; gap:8px; margin-top:12px;">
+        <button class="btn-pill primary full" onclick="uploadFile()">Lưu Tệp Văn Bản</button>
+        <button class="btn-pill dark full" onclick="uploadLogo()">Cập Nhật Logo Web</button>
+      </div>
     </div>
     <div class="card">
-      <h2><span>Tập Tin Đã Lưu</span></h2>
-      <div id="files-list"><div style="text-align:center; padding:18px; color:var(--txt-2); font-size:11px;">Chưa có tập tin</div></div>
+      <h2><span>Tập Tin Văn Bản Đã Lưu</span></h2>
+      <div id="files-list"><div style="text-align:center; padding:18px; color:var(--txt-2); font-size:11.5px;">Chưa có tập tin</div></div>
     </div>
   </div>
 
-  <!-- TAB 4: SPAM / ENGINE -->
+  <!-- TAB 4: SPAM ENGINE -->
   <div class="panel" id="panel-spam">
     <div class="card">
-      <h2><span>Thiết Lập Gửi Tin Nâng Cao</span></h2>
+      <h2><span>Thiết Lập Động Cơ Gửi Tin Tự Động</span></h2>
 
       <div class="form-group">
-        <label>Chế độ gửi tin</label>
+        <label>1. Chế độ gửi tin nhắn</label>
         <div class="chip-bar" id="mode-selector">
           <div class="chip-item active" data-mode="fast">Siêu Nhanh</div>
-          <div class="chip-item" data-mode="treo_ngon">Treo Ngôn (N Dòng / 1 Tin)</div>
-          <div class="chip-item" data-mode="treo_nhay">Treo Nhây (Từng Dòng Không Số)</div>
+          <div class="chip-item" data-mode="treo_ngon">Treo Ngôn (N Dòng / 1 Tin Duy Nhất)</div>
+          <div class="chip-item" data-mode="treo_nhay">Treo Nhây (Từng Dòng Riêng Lẻ)</div>
         </div>
         <input type="hidden" id="spam-mode" value="fast">
       </div>
 
       <div class="form-group">
-        <label>Chọn tập tin có sẵn</label>
-        <select id="spam-file-select"><option value="">-- Chọn tập tin --</option></select>
+        <label>2. Chọn tập tin có sẵn</label>
+        <select id="spam-file-select"><option value="">-- Chọn tập tin văn bản --</option></select>
       </div>
 
       <div class="form-group">
-        <label>Hoặc dán trực tiếp văn bản</label>
-        <textarea id="spam-messages" placeholder="Dán văn bản nhiều dòng vào đây... Nếu chọn Treo Ngôn, toàn bộ văn bản sẽ được gửi trong 1 tin duy nhất. Nếu chọn Treo Nhây, mỗi dòng sẽ được gửi riêng biệt (không đánh số)."></textarea>
+        <label>3. Hoặc nhập trực tiếp văn bản</label>
+        <textarea id="spam-messages" placeholder="Dán văn bản nhiều dòng vào đây... Nếu chọn Treo Ngôn, toàn bộ văn bản sẽ được gửi trong 1 tin duy nhất. Nếu chọn Treo Nhây, mỗi dòng sẽ được gửi riêng biệt."></textarea>
       </div>
 
       <div class="form-group">
-        <label>Đổi màu chữ Zalo tự động</label>
+        <label>4. Màu sắc chữ (Hoạt động tốt nhất trên Zalo)</label>
         <div class="chip-bar" id="color-mode-bar">
           <div class="chip-item active" data-cmode="rainbow">Trộn Màu Từng Dòng</div>
-          <div class="chip-item" data-cmode="random">Ngẫu Nhiên</div>
+          <div class="chip-item" data-cmode="random">Đổi Màu Ngẫu Nhiên</div>
           <div class="chip-item" data-cmode="fixed">Cố Định Một Màu</div>
           <div class="chip-item" data-cmode="none">Tắt Màu</div>
         </div>
         <input type="hidden" id="color-mode" value="rainbow">
-        <div id="fixed-colors-wrap" style="display:none; margin-top:6px;" class="chip-bar"></div>
+        <div id="fixed-colors-wrap" style="display:none; margin-top:8px;" class="chip-bar"></div>
       </div>
 
       <div class="form-group">
-        <label>Khoảng cách gửi (giây)</label>
+        <label>5. Khoảng cách thời gian (giây)</label>
         <div class="chip-bar" id="delay-bar">
           <div class="chip-item" data-delay="0.3">0.3s</div>
           <div class="chip-item" data-delay="0.5">0.5s</div>
@@ -953,7 +970,7 @@ HTML_INDEX = """<!DOCTYPE html>
       </div>
 
       <div class="form-group">
-        <label>Số biểu tượng cảm xúc cuối câu</label>
+        <label>6. Biểu tượng cảm xúc cuối câu (Sát thương tâm lý)</label>
         <div class="chip-bar" id="icon-bar">
           <div class="chip-item" data-icon="0">0</div>
           <div class="chip-item" data-icon="2">2</div>
@@ -964,27 +981,27 @@ HTML_INDEX = """<!DOCTYPE html>
       </div>
 
       <div class="toggle-grid">
-        <div class="toggle-item active" id="tg-heading" onclick="tgFlag('heading')">Chữ To Tiêu Đề (#)</div>
+        <div class="toggle-item active" id="tg-heading" onclick="tgFlag('heading')">Chữ To Tiêu Đề Zalo (#)</div>
         <div class="toggle-item active" id="tg-multi" onclick="tgFlag('multi')">Chạy Tất Cả Acc Song Song</div>
         <div class="toggle-item" id="tg-all" onclick="tgFlag('all')">Nhắc Cả Nhóm (@All)</div>
-        <div class="toggle-item active" id="tg-emoji" onclick="tgFlag('emoji')">Biểu Tượng Cảm Xúc</div>
+        <div class="toggle-item active" id="tg-emoji" onclick="tgFlag('emoji')">Sử Dụng Icon Đặc Trưng</div>
       </div>
 
       <div class="form-group">
-        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:11px;">
-          <input type="checkbox" id="tg-tag" onchange="tgTag()" style="width:auto;">
-          Chọn từng thành viên theo họ tên thật
+        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:11.5px; color:var(--txt-0);">
+          <input type="checkbox" id="tg-tag" onchange="tgTag()" style="width:16px; height:16px;">
+          Bật chọn từng thành viên theo tên thật
         </label>
-        <div id="tag-wrap" style="display:none; margin-top:8px;">
+        <div id="tag-wrap" style="display:none; margin-top:10px;">
           <div class="form-group"><select id="member-acc-select"><option value="">-- Chọn tài khoản quét --</option></select></div>
-          <button class="btn-pill dark" onclick="loadMembers()">Nạp Danh Sách Thành Viên</button>
-          <div class="box-list" id="tag-selector" style="margin-top:6px; max-height:220px; display:none;"></div>
+          <button class="btn-pill dark" onclick="loadMembers()">Nạp Danh Sách Tên Thật</button>
+          <div class="box-list" id="tag-selector" style="margin-top:8px; max-height:220px; display:none;"></div>
           <input type="hidden" id="tag-selected" value="">
         </div>
       </div>
     </div>
 
-    <div style="text-align:center; margin-bottom:14px;">
+    <div style="text-align:center; margin-bottom:18px;">
       <button class="btn-round action-start" onclick="startSpam()" title="Bắt đầu"><svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 20 12 6 21 6 3"/></svg></button>
       <button class="btn-round action-stop" onclick="stopAll()" title="Dừng lại"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg></button>
     </div>
@@ -999,7 +1016,7 @@ HTML_INDEX = """<!DOCTYPE html>
 
 </div>
 
-<!-- BOTTOM DOCK NỔI DƯỚI ĐÁY -->
+<!-- BOTTOM DOCK KHÔNG BỊ ĐƠ -->
 <div class="bottom-dock">
   <button class="dock-btn active" data-tab="accounts">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
@@ -1030,6 +1047,9 @@ var colorMode = "rainbow";
 var fixedColor = "red";
 var ZALO_PALETTE = [];
 
+// ==========================================
+// TOAST THÔNG MINH (VUỐT LÊN BIẾN MẤT, KHÔNG CHỒNG, 1.4S)
+// ==========================================
 var Toast = (function(){
   var stack = null;
   function ensure(){ if(!stack) stack = document.getElementById('toast-stack'); return stack; }
@@ -1041,7 +1061,7 @@ var Toast = (function(){
 
     var el = document.createElement('div');
     el.className = 'toast';
-    el.innerHTML = '<div class="t-head">' + (title || 'Thông báo') + '</div>' +
+    el.innerHTML = '<div class="t-head">🌸 ' + (title || 'Hệ Thống') + '</div>' +
       '<div class="t-body">' + msg + '</div>';
     s.appendChild(el);
 
@@ -1078,7 +1098,6 @@ document.querySelectorAll('.bottom-dock .dock-btn').forEach(b => {
   });
 });
 
-// CHỌN CHẾ ĐỘ
 document.querySelectorAll('#mode-selector .chip-item').forEach(c => {
   c.addEventListener('click', () => {
     document.querySelectorAll('#mode-selector .chip-item').forEach(x => x.classList.remove('active'));
@@ -1088,7 +1107,6 @@ document.querySelectorAll('#mode-selector .chip-item').forEach(c => {
   });
 });
 
-// CHỌN MÀU
 document.querySelectorAll('#color-mode-bar .chip-item').forEach(c => {
   c.addEventListener('click', () => {
     document.querySelectorAll('#color-mode-bar .chip-item').forEach(x => x.classList.remove('active'));
@@ -1126,6 +1144,13 @@ function tgTag(){
   document.getElementById('tag-wrap').style.display = c.checked ? 'block' : 'none';
 }
 
+function handleFileSelect(input){
+  if(input.files && input.files.length > 0){
+    document.getElementById('upload-txt').textContent = "Đã chọn: " + input.files[0].name;
+    document.getElementById('upload-txt').style.color = "var(--sakura)";
+  }
+}
+
 async function api(url, opts = {}){
   try {
     var r = await fetch(url, Object.assign({}, opts, {
@@ -1138,8 +1163,8 @@ async function api(url, opts = {}){
 }
 
 async function uploadLogo(){
-  var inp = document.getElementById('logo-file-input');
-  if(!inp.files.length) return Toast.error('Vui lòng chọn hình ảnh logo');
+  var inp = document.getElementById('file-input');
+  if(!inp.files.length) return Toast.error('Vui lòng chọn hình ảnh logo ở khung bên trên');
   var fd = new FormData();
   fd.append('logo', inp.files[0]);
   Toast.info('Đang cập nhật logo...');
@@ -1147,6 +1172,7 @@ async function uploadLogo(){
   if(r.ok){
     Toast.success('Cập nhật logo thành công!');
     document.getElementById('header-logo').src = '/static/logo.png?t=' + Date.now();
+    inp.value = ''; document.getElementById('upload-txt').textContent = "Nhấn để chọn tệp Văn bản (.txt) hoặc Ảnh Logo";
   } else {
     Toast.error(r.error || 'Lỗi tải ảnh');
   }
@@ -1167,8 +1193,8 @@ async function loadAccounts(){
       <td><code>…${String(a.uid||'').slice(-6)}</code></td>
       <td id="status-${a.id}">${badge}</td>
       <td>
-        <button class="btn-pill light" onclick="checkAccount(${a.id})" style="padding:4px 8px; font-size:9.5px;">Kiểm tra</button>
-        <button class="btn-pill danger" onclick="delAcc(${a.id})" style="padding:4px 8px; font-size:9.5px;">Xóa</button>
+        <button class="btn-pill light" onclick="checkAccount(${a.id})" style="padding:5px 10px; font-size:9.5px;">Kiểm tra</button>
+        <button class="btn-pill danger" onclick="delAcc(${a.id})" style="padding:5px 10px; font-size:9.5px;">Xóa</button>
       </td>
     </tr>`;
   }).join('') || '<tr><td colspan="6" style="text-align:center; color:var(--txt-2); padding:16px;">Chưa có tài khoản</td></tr>';
@@ -1224,7 +1250,7 @@ async function delAcc(id){
 async function loadBoxes(){
   var aid = document.getElementById('load-acc-select').value;
   if(!aid) return Toast.error('Vui lòng chọn tài khoản trước');
-  Toast.info('Đang nạp danh sách cuộc trò chuyện...');
+  Toast.info('Đang nạp danh sách hội thoại...');
   var r = await api('/api/accounts/' + aid + '/load_boxes', { method: 'POST' });
   if(r.error) return Toast.error(r.error);
   var all = (r.groups||[]).concat(r.friends||[]);
@@ -1234,10 +1260,10 @@ async function loadBoxes(){
       <div class="check-mark">✓</div>
       <div><div class="b-title">${b.name}</div><div class="b-sub">${b.id} | ${b.type}</div></div>
     </div>
-  `).join('') || '<div style="text-align:center; padding:14px;">Không tìm thấy cuộc trò chuyện</div>';
+  `).join('') || '<div style="text-align:center; padding:14px;">Không tìm thấy hội thoại</div>';
   _boxes = all; selectedBoxes = [];
   document.getElementById('selected-count').textContent = '0';
-  Toast.success('Đã nạp ' + all.length + ' cuộc trò chuyện');
+  Toast.success('Đã nạp ' + all.length + ' hội thoại');
 }
 
 function tgBox(el, idx){
@@ -1254,23 +1280,23 @@ function tgBox(el, idx){
 }
 
 function selectAllBoxes(){
-  document.querySelectorAll('.box-item').forEach(el => el.classList.add('selected'));
+  document.querySelectorAll('#box-list .box-item').forEach(el => el.classList.add('selected'));
   selectedBoxes = _boxes.slice();
   document.getElementById('selected-count').textContent = selectedBoxes.length;
 }
 
 function clearAllBoxes(){
-  document.querySelectorAll('.box-item').forEach(el => el.classList.remove('selected'));
+  document.querySelectorAll('#box-list .box-item').forEach(el => el.classList.remove('selected'));
   selectedBoxes = [];
   document.getElementById('selected-count').textContent = '0';
 }
 
 async function loadMembers(){
   var aid = document.getElementById('member-acc-select').value;
-  if(!aid) return Toast.error('Vui lòng chọn tài khoản');
+  if(!aid) return Toast.error('Vui lòng chọn tài khoản quét');
   var box = selectedBoxes.find(b => b.type === 'group');
   if(!box) return Toast.error('Cần chọn ít nhất 1 nhóm ở mục Hội Thoại');
-  Toast.info('Đang nạp danh sách họ tên thành viên...');
+  Toast.info('Đang nạp tên thật thành viên...');
   var r = await api('/api/accounts/' + aid + '/members/' + box.id, { method: 'POST' });
   if(r.error) return Toast.error(r.error);
   var mem = r.members || [];
@@ -1300,14 +1326,15 @@ function tgMember(el, idx){
 
 async function uploadFile(){
   var inp = document.getElementById('file-input');
-  if(!inp.files.length) return Toast.error('Vui lòng chọn tập tin');
+  if(!inp.files.length) return Toast.error('Vui lòng chọn tập tin văn bản .txt');
   var fd = new FormData();
   fd.append('file', inp.files[0]);
   Toast.info('Đang tải lên tập tin...');
   var r = await fetch('/api/files/upload', { method: 'POST', body: fd }).then(x => x.json());
   if(r.error) return Toast.error(r.error);
   Toast.success('Đã lưu ' + r.lines + ' khối văn bản');
-  inp.value = ''; loadFiles();
+  inp.value = ''; document.getElementById('upload-txt').textContent = "Nhấn để chọn tệp Văn bản (.txt) hoặc Ảnh Logo";
+  loadFiles();
 }
 
 async function loadFiles(){
@@ -1315,16 +1342,24 @@ async function loadFiles(){
   if(!Array.isArray(files)) files = [];
   var list = document.getElementById('files-list');
   list.innerHTML = files.map(f => `
-    <div class="box-item">
-      <div><div class="b-title">📄 ${f.filename}</div><div class="b-sub">${f.lines} khối</div></div>
+    <div class="box-item" style="cursor:default;">
+      <div style="flex:1;"><div class="b-title">📄 ${f.filename}</div><div class="b-sub">${f.lines} khối</div></div>
+      <button class="btn-pill danger" onclick="delFile(${f.id})" style="padding:4px 10px; font-size:9.5px;">Xóa</button>
     </div>
   `).join('') || '<div style="text-align:center; padding:14px; color:var(--txt-2);">Chưa có tập tin</div>';
   var s = document.getElementById('spam-file-select');
   s.innerHTML = '<option value="">-- Chọn tập tin --</option>' + files.map(f => `<option value="${f.id}">${f.filename} (${f.lines} khối)</option>`).join('');
 }
 
+async function delFile(id){
+  if(!confirm('Xác nhận xóa tệp tin này?')) return;
+  await api('/api/files/' + id, { method: 'DELETE' });
+  Toast.success('Đã xóa tệp tin');
+  loadFiles();
+}
+
 async function startSpam(){
-  if(!selectedBoxes.length) return Toast.error('Chưa chọn cuộc trò chuyện nhận tin');
+  if(!selectedBoxes.length) return Toast.error('Chưa chọn hội thoại nhận tin');
   var fid = document.getElementById('spam-file-select').value;
   var direct = document.getElementById('spam-messages').value.trim();
   var blocks = [];
@@ -1336,13 +1371,13 @@ async function startSpam(){
     if(currentMode === "treo_ngon"){
       blocks = [direct];
     } else if(currentMode === "treo_nhay"){
-      blocks = direct.split('\n').map(m => m.trim()).filter(Boolean);
+      blocks = [direct]; // Treo nhây: Sẽ được tách dòng ở phía server backend
     } else {
       blocks = direct.includes(';') ? direct.split(';').map(m => m.trim()).filter(Boolean) : [direct];
     }
   }
 
-  if(!blocks.length) return Toast.error('Vui lòng nhập hoặc chọn văn bản cần gửi');
+  if(!blocks.length) return Toast.error('Vui lòng nhập văn bản cần gửi');
   var delay = parseFloat(document.getElementById('spam-delay').value) || 1;
   var iconCount = flags.emoji ? (parseInt(document.getElementById('icon-count').value) || 3) : 0;
   var tagUsers = document.getElementById('tg-tag').checked ? selectedTags : [];
@@ -1364,13 +1399,13 @@ async function startSpam(){
 
   var res = await api('/api/tasks/start', { method: 'POST', body: JSON.stringify(payload) });
   if(res.error) return Toast.error(res.error);
-  Toast.success('Đã khởi chạy tiến trình thành công!');
+  Toast.success('Khởi chạy tiến trình thành công!');
   loadTasks();
 }
 
 async function stopAll(){
   await api('/api/tasks/stop_all', { method: 'POST' });
-  Toast.info('Đã dừng toàn bộ tiến trình');
+  Toast.info('Đã ra lệnh dừng tiến trình');
   loadTasks();
 }
 
@@ -1383,15 +1418,15 @@ async function loadTasks(){
     return `<tr>
       <td><code>${t.id.slice(-6)}</code></td>
       <td><b>${t.type}</b></td>
-      <td>${running ? '<span class="status-badge live">Đang chạy</span>' : '<span class="status-badge dead">Đã dừng</span>'}</td>
-      <td>${running ? `<button class="btn-pill danger" onclick="stopTask('${t.id}')" style="padding:2px 8px;">Dừng</button>` : ''}</td>
+      <td>${running ? '<span class="status-badge live">Đang gửi</span>' : '<span class="status-badge dead">Đã dừng</span>'}</td>
+      <td>${running ? `<button class="btn-pill danger" onclick="stopTask('${t.id}')" style="padding:4px 10px; font-size:9.5px;">Dừng</button>` : ''}</td>
     </tr>`;
   }).join('') || '<tr><td colspan="4" style="text-align:center; padding:12px; color:var(--txt-2);">Không có tiến trình</td></tr>';
 }
 
 async function stopTask(tid){
   await api('/api/tasks/' + tid + '/stop', { method: 'POST' });
-  Toast.info('Đã dừng tiến trình ' + tid);
+  Toast.info('Đã dừng tiến trình');
   loadTasks();
 }
 
@@ -1412,30 +1447,31 @@ function setFixedColor(cid){
 function refreshAll(){ loadAccounts(); loadFiles(); loadTasks(); }
 
 // ==========================================
-// HIỆU ỨNG HOA ANH ĐÀO RƠI 60FPS
+// HIỆU ỨNG HOA ANH ĐÀO RƠI SIÊU MƯỢT 60FPS
 // ==========================================
 var sCanvas = document.getElementById('sakura-canvas');
 var sCtx = sCanvas.getContext('2d');
 var sW = window.innerWidth;
 var sH = window.innerHeight;
-sCanvas.width = sW;
-sCanvas.height = sH;
+sCanvas.width = sW; sCanvas.height = sH;
 
-var petals = Array.from({ length: 36 }, () => ({
+var petals = Array.from({ length: 45 }, () => ({
   x: Math.random() * sW,
   y: Math.random() * sH - sH,
-  size: Math.random() * 8 + 7,
-  speedY: Math.random() * 1.2 + 0.8,
-  speedX: Math.random() * 1.5 - 0.5,
+  size: Math.random() * 8 + 6,
+  speedY: Math.random() * 1.5 + 0.5,
+  speedX: Math.random() * 2 - 1,
   angle: Math.random() * 360,
-  angVel: (Math.random() - 0.5) * 1.5
+  angVel: (Math.random() - 0.5) * 2
 }));
 
 function drawPetal(p) {
   sCtx.save();
   sCtx.translate(p.x, p.y);
-  sCtx.rotate((p.angle * Math.PI) / 180);
-  sCtx.fillStyle = 'rgba(255, 183, 197, 0.75)';
+  sCtx.rotate(p.angle * Math.PI / 180);
+  sCtx.fillStyle = 'rgba(255, 183, 197, 0.85)';
+  sCtx.shadowBlur = 4;
+  sCtx.shadowColor = 'rgba(255, 105, 180, 0.3)';
   sCtx.beginPath();
   sCtx.moveTo(0, 0);
   sCtx.bezierCurveTo(p.size / 2, -p.size / 2, p.size, 0, 0, p.size);
@@ -1451,16 +1487,20 @@ function renderSakura() {
     p.y += p.speedY;
     p.x += p.speedX;
     p.angle += p.angVel;
-    if (p.y > sH + 20) {
-      p.y = -20;
-      p.x = Math.random() * sW;
-    }
+    if (p.y > sH + 20) { p.y = -20; p.x = Math.random() * sW; }
     if (p.x > sW + 20) p.x = -20;
     if (p.x < -20) p.x = sW + 20;
   });
   requestAnimationFrame(renderSakura);
 }
 renderSakura();
+
+window.addEventListener('resize', () => {
+  sW = window.innerWidth;
+  sH = window.innerHeight;
+  sCanvas.width = sW;
+  sCanvas.height = sH;
+});
 
 loadColors();
 refreshAll();
@@ -1471,9 +1511,6 @@ setInterval(loadTasks, 5000);
 """
 
 
-# ============================================================
-# CÁC ROUTE FLASK WEB VÀ API
-# ============================================================
 def login_required(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
@@ -1672,28 +1709,6 @@ def api_load_members(aid, group_id):
         return jsonify({"error": str(e)}), 400
 
 
-def parse_blocks(filepath, max_blocks=5000):
-    blocks = []
-    current = []
-    try:
-        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-            content = f.read()
-        content = content.replace("\r\n", "\n").replace("\r", "\n")
-        for line in content.split("\n"):
-            if len(blocks) >= max_blocks: break
-            if line.strip() == "":
-                if current:
-                    blocks.append("\n".join(current))
-                    current = []
-            else:
-                current.append(line)
-        if current:
-            blocks.append("\n".join(current))
-    except Exception:
-        pass
-    return blocks
-
-
 @app.route("/api/files", methods=["GET"])
 @login_required
 def api_files_list():
@@ -1712,13 +1727,42 @@ def api_files_upload():
     safe = str(int(time.time())) + "_" + f.filename
     fp = os.path.join(UPLOAD_DIR, safe)
     f.save(fp)
-    blocks = parse_blocks(fp)
+    
+    blocks = []
+    current = []
+    try:
+        with open(fp, "r", encoding="utf-8", errors="ignore") as file_read:
+            content = file_read.read()
+        content = content.replace("\r\n", "\n").replace("\r", "\n")
+        for line in content.split("\n"):
+            if len(blocks) >= 5000: break
+            if line.strip() == "":
+                if current:
+                    blocks.append("\n".join(current))
+                    current = []
+            else:
+                current.append(line)
+        if current:
+            blocks.append("\n".join(current))
+    except Exception:
+        pass
+
     conn = db()
     conn.execute("INSERT INTO files (filename, filepath, lines, size, uploaded_at) VALUES (?, ?, ?, ?, ?)",
                  (f.filename, fp, len(blocks), os.path.getsize(fp), time.time()))
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "filename": f.filename, "lines": len(blocks)})
+
+
+@app.route("/api/files/<int:fid>", methods=["DELETE"])
+@login_required
+def api_files_delete(fid):
+    conn = db()
+    conn.execute("DELETE FROM files WHERE id = ?", (fid,))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
 
 
 @app.route("/api/files/<int:fid>/preview", methods=["GET"])
@@ -1728,7 +1772,27 @@ def api_files_preview(fid):
     row = conn.execute("SELECT * FROM files WHERE id = ?", (fid,)).fetchone()
     conn.close()
     if not row: return jsonify({"error": "Không tìm thấy tập tin"}), 404
-    return jsonify({"filename": row["filename"], "all": parse_blocks(row["filepath"])})
+    
+    blocks = []
+    current = []
+    try:
+        with open(row["filepath"], "r", encoding="utf-8", errors="ignore") as file_read:
+            content = file_read.read()
+        content = content.replace("\r\n", "\n").replace("\r", "\n")
+        for line in content.split("\n"):
+            if len(blocks) >= 5000: break
+            if line.strip() == "":
+                if current:
+                    blocks.append("\n".join(current))
+                    current = []
+            else:
+                current.append(line)
+        if current:
+            blocks.append("\n".join(current))
+    except Exception:
+        pass
+
+    return jsonify({"filename": row["filename"], "all": blocks})
 
 
 @app.route("/api/tasks", methods=["GET"])
@@ -1771,6 +1835,7 @@ def single_acc_worker(acc_dict, targets, blocks, delay, use_emoji, icon_count,
                 with lock: counter["sent"] += 1
 
             elif mode == "treo_nhay":
+                # Chỉnh sửa: Gửi nguyên văn từng dòng, KHÔNG đánh số
                 lines = [ln.strip() for ln in raw.split("\n") if ln.strip()]
                 for ln in lines:
                     if stop_ev.is_set(): break
@@ -1780,7 +1845,7 @@ def single_acc_worker(acc_dict, targets, blocks, delay, use_emoji, icon_count,
                     z.send_adv(msg_line, target_id, color_mode=color_mode, fixed_color=fixed_color,
                                is_group=is_group, mentions=tag_users, tag_all=tag_all, is_heading=is_heading)
                     with lock: counter["sent"] += 1
-                    time.sleep(0.25)
+                    time.sleep(0.3)
             else:
                 text = raw
                 if use_emoji and icon_count > 0:
