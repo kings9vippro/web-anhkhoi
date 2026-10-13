@@ -1,5 +1,6 @@
 # ==============================================================================
-# Bản quyền © Phạm Anh Khôi (Verified ) — Ricki Vip
+# Bản quyền © Phạm Anh Khôi (Verified ✔) — Ricki Vip
+# Tác giả: Phạm Anh Khôi ✔
 # Mọi quyền được bảo hộ. Nghiêm cấm sao chép hoặc phân phối trái phép.
 # ==============================================================================
 
