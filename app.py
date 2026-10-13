@@ -1,7 +1,6 @@
 # ==============================================================================
-# Bản quyền © ✔️ Phạm Anh Khôi — Ricki Vip
-# Hệ thống tự động hóa & gửi tin nhắn đa nền tảng Zalo & Discord cao cấp
-# Tác giả: Phạm Anh Khôi ✔️
+# Bản quyền © Phạm Anh Khôi (Verified ✔) — Ricki Vip
+# Tác giả: Phạm Anh Khôi ✔
 # Mọi quyền được bảo hộ. Nghiêm cấm sao chép hoặc phân phối trái phép.
 # ==============================================================================
 
@@ -47,7 +46,7 @@ class WebSecurityArmor:
         self.failed_logins = defaultdict(list)
         self.blocked_ips = {}
 
-    def check_rate_limit(self, ip, max_reqs=240, window=60):
+    def check_rate_limit(self, ip, max_reqs=250, window=60):
         now = time.time()
         with self.lock:
             if ip in self.blocked_ips:
@@ -84,7 +83,7 @@ SECURITY_ARMOR = WebSecurityArmor()
 
 @app.before_request
 def security_firewall_check():
-    if request.path.startswith("/static"):
+    if request.path.startswith("/static") or request.path == "/logo":
         return None
     ip = request.headers.get("X-Forwarded-For", request.remote_addr).split(",")[0].strip()
     allowed, err = SECURITY_ARMOR.check_rate_limit(ip)
@@ -134,6 +133,12 @@ def init_db():
         size INTEGER,
         lines INTEGER,
         created_at REAL
+    )
+    """)
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
     )
     """)
     conn.commit()
@@ -209,7 +214,7 @@ def apply_antiband_zalo_v4(text):
         processed_lines.append(line_str)
 
     result = "\n".join(processed_lines)
-    tail_len = random.randint(4, 8)
+    tail_len = random.randint(3, 6)
     tail = "".join(random.choice(SAFE_TAIL_CHARS) for _ in range(tail_len))
     result += tail
     return result
@@ -270,10 +275,12 @@ class FastFileBlockReader:
             pass
 
 def utf16_len(s):
+    if not s:
+        return 0
     return len(s.encode("utf-16-le")) // 2
 
 # ---------------------------------------------------------
-# GIAO THỨC ZALO WEB CLIENT
+# GIAO THỨC ZALO WEB CLIENT NÂNG CAO
 # ---------------------------------------------------------
 class Zalo:
     def __init__(self, imei, cookies):
@@ -419,6 +426,7 @@ class Zalo:
         return boxes
 
     def get_group_members(self, grid):
+        """Lấy danh sách thành viên nhóm với đầy đủ UID và Tên thật từ memInfoMap"""
         members = []
         fmap = self.get_friend_map()
         try:
@@ -431,13 +439,18 @@ class Zalo:
                 info = json.loads(plain)
                 gdata = info.get("data", {})
                 mem_list = gdata.get("memList", []) or gdata.get("members", [])
+                mem_info_map = gdata.get("memInfoMap", {})
+
                 for m in mem_list:
                     if isinstance(m, dict):
                         uid = str(m.get("uid") or m.get("id") or m.get("userId") or "")
-                        raw_name = m.get("dName") or m.get("displayName") or m.get("name")
+                        info_item = mem_info_map.get(uid, {}) if isinstance(mem_info_map, dict) else {}
+                        raw_name = m.get("dName") or m.get("displayName") or m.get("name") or info_item.get("dName") or info_item.get("displayName")
                     else:
                         uid = str(m)
-                        raw_name = None
+                        info_item = mem_info_map.get(uid, {}) if isinstance(mem_info_map, dict) else {}
+                        raw_name = info_item.get("dName") or info_item.get("displayName") or info_item.get("name")
+
                     if not uid:
                         continue
                     final_name = fmap.get(uid) or raw_name or f"Thành viên {uid[-4:]}"
@@ -446,20 +459,27 @@ class Zalo:
             pass
         return members
 
-    def build_colored_message(self, raw_text, color_mode, fixed_color, is_heading=True, color_offset=0, use_badge=True):
-        lines = [l for l in raw_text.split("\n")]
-        styled_lines = []
-        styles = []
-        current_u16_pos = 0
-        first_color = "red"
+    def build_colored_message(self, raw_text, color_mode="rainbow", fixed_color="red",
+                              is_heading=True, color_offset=0, use_badge=True,
+                              tag_header="", antiband=True):
+        """
+        Xây dựng tin nhắn màu Zalo chuẩn xác 100% với đơn vị đo UTF-16 code units.
+        Đảm bảo không bao giờ bị lệch vị trí màu khi chèn tag hoặc ký tự đặc biệt.
+        """
+        raw_lines = raw_text.split("\n")
+        processed_lines = []
 
-        for idx, line in enumerate(lines):
+        # 1. Chuẩn hóa từng dòng nội dung (áp dụng anti-ban trước để không làm lệch style)
+        for idx, line in enumerate(raw_lines):
             clean_line = line.strip()
             if not clean_line:
-                styled_lines.append("")
-                current_u16_pos += 1
+                processed_lines.append("")
                 continue
 
+            if antiband:
+                clean_line = apply_antiband_zalo_v4(clean_line)
+
+            # Chọn màu
             if color_mode == "rainbow":
                 color_idx = (idx + color_offset) % len(ZALO_PALETTE)
                 col = ZALO_PALETTE[color_idx]
@@ -470,9 +490,6 @@ class Zalo:
             else:
                 col = ZALO_PALETTE[0]
 
-            if idx == 0:
-                first_color = col["id"]
-
             prefix = ""
             if use_badge:
                 prefix += col["badge"] + " "
@@ -480,24 +497,42 @@ class Zalo:
                 prefix = "# " + prefix
 
             display_line = prefix + clean_line
-            styled_lines.append(display_line)
+            processed_lines.append((display_line, col))
 
-            clean_hex = col["hex"].lstrip("#")
-            l_len = utf16_len(display_line)
+        # 2. Tính toán chính xác vị trí bắt đầu theo UTF-16
+        current_u16_pos = utf16_len(tag_header) if tag_header else 0
+        first_hex = ZALO_PALETTE[0]["hex"]
+        styles = []
+        body_lines_text = []
 
-            styles.append({"start": current_u16_pos, "len": l_len, "st": f"c_{clean_hex}"})
-            styles.append({"start": current_u16_pos, "len": l_len, "st": f"c_#{clean_hex}"})
-            styles.append({"offset": current_u16_pos, "len": l_len, "type": "color", "value": f"#{clean_hex}"})
+        for idx, item in enumerate(processed_lines):
+            if isinstance(item, tuple):
+                display_line, col = item
+                clean_hex = col["hex"].lstrip("#").lower()
+                if idx == 0:
+                    first_hex = clean_hex
 
-            current_u16_pos += l_len + 1
+                line_len = utf16_len(display_line)
+                # Style màu sắc chuẩn của Zalo Web API
+                styles.append({
+                    "start": current_u16_pos,
+                    "len": line_len,
+                    "st": f"c_{clean_hex}"
+                })
+                body_lines_text.append(display_line)
+                current_u16_pos += line_len + 1  # tính cả ký tự xuống dòng '\n'
+            else:
+                body_lines_text.append("")
+                current_u16_pos += 1
 
-        final_msg = "\n".join(styled_lines)
-        return final_msg, styles, first_color
+        body_text = "\n".join(body_lines_text)
+        final_message = tag_header + body_text if tag_header else body_text
 
-    def attach_mentions(self, msg, mentions=None, tag_all=False, tag_mode="rotate", mention_index=0, tag_pos="head"):
-        m_arr = []
+        return final_message, styles, "#" + first_hex
+
+    def build_mentions_payload(self, mentions=None, tag_all=False, tag_mode="rotate", mention_index=0):
+        """Tạo tag tokens và mảng mentions payload chuẩn xác 100% cho Zalo"""
         tag_tokens = []
-
         if tag_all:
             tag_tokens.append({"token": "@All", "uid": "-1", "type": 1})
 
@@ -512,62 +547,57 @@ class Zalo:
                 tag_tokens.append({"token": f"@{uname}", "uid": str(target_user.get("id")), "type": 0})
 
         if not tag_tokens:
-            return msg, []
+            return "", []
 
-        if tag_pos == "head":
-            tags_str = " ".join([t["token"] for t in tag_tokens])
-            curr_pos = 0
-            for t in tag_tokens:
-                tlen = utf16_len(t["token"])
-                m_arr.append({
-                    "uid": t["uid"],
-                    "pos": curr_pos,
-                    "offset": curr_pos,
-                    "len": tlen,
-                    "length": tlen,
-                    "type": t["type"]
-                })
-                curr_pos += tlen + 1
-            final_msg = tags_str + "\n" + msg
-        else:
-            base = msg.rstrip()
-            curr_pos = utf16_len(base) + 1
-            for t in tag_tokens:
-                tlen = utf16_len(t["token"])
-                m_arr.append({
-                    "uid": t["uid"],
-                    "pos": curr_pos,
-                    "offset": curr_pos,
-                    "len": tlen,
-                    "length": tlen,
-                    "type": t["type"]
-                })
-                curr_pos += tlen + 1
-            final_msg = base + " " + " ".join([t["token"] for t in tag_tokens])
+        tags_str = " ".join([t["token"] for t in tag_tokens])
+        m_arr = []
+        curr_pos = 0
+        for t in tag_tokens:
+            tlen = utf16_len(t["token"])
+            m_arr.append({
+                "uid": t["uid"],
+                "pos": curr_pos,
+                "len": tlen,
+                "type": t["type"]
+            })
+            curr_pos += tlen + 1  # khoảng trắng giữa các tag
 
-        return final_msg, m_arr
+        return tags_str, m_arr
 
     def send_adv(self, raw_text, target_id, color_mode="rainbow", fixed_color="red",
                  is_group=True, mentions=None, tag_all=False, tag_mode="rotate",
                  mention_index=0, is_heading=True, color_offset=0, use_badge=True,
                  antiband=True, tag_pos="head"):
 
-        content, styles, chosen_col = self.build_colored_message(
+        # 1. Tạo chuỗi tag và mảng mentions
+        tags_str, m_arr = self.build_mentions_payload(
+            mentions=mentions, tag_all=tag_all, tag_mode=tag_mode,
+            mention_index=mention_index
+        )
+
+        tag_header = (tags_str + "\n") if (tags_str and tag_pos == "head") else ""
+
+        # 2. Xây dựng tin nhắn màu và tính toán offset UTF-16 tuyệt đối
+        final_msg, styles, hex_color = self.build_colored_message(
             raw_text, color_mode=color_mode, fixed_color=fixed_color,
-            is_heading=is_heading, color_offset=color_offset, use_badge=use_badge
+            is_heading=is_heading, color_offset=color_offset, use_badge=use_badge,
+            tag_header=tag_header, antiband=antiband
         )
 
-        final_msg, m_arr = self.attach_mentions(
-            content, mentions=mentions, tag_all=tag_all, tag_mode=tag_mode,
-            mention_index=mention_index, tag_pos=tag_pos
-        )
-
-        if antiband:
-            final_msg = apply_antiband_zalo_v4(final_msg)
+        # Nếu tag ở cuối tin nhắn, gắn vào sau và cập nhật vị trí mention
+        if tags_str and tag_pos == "tail":
+            base_len = utf16_len(final_msg)
+            final_msg += " " + tags_str
+            m_arr_tail = []
+            c_pos = base_len + 1
+            for m in m_arr:
+                m_copy = dict(m)
+                m_copy["pos"] = c_pos
+                m_arr_tail.append(m_copy)
+                c_pos += m["len"] + 1
+            m_arr = m_arr_tail
 
         ts = int(time.time() * 1000)
-        c_item = next((c for c in ZALO_PALETTE if c["id"] == chosen_col), ZALO_PALETTE[0])
-        hex_color = "#" + c_item["hex"].lstrip("#")
 
         if is_group:
             url = "https://tt-group-wpa.chat.zalo.me/api/group/sendmsg"
@@ -593,8 +623,6 @@ class Zalo:
                 "clientId": ts,
                 "client_id": ts,
                 "msgType": 1,
-                "styles": styles,
-                "msgColor": hex_color,
                 "imei": self.imei
             }
 
@@ -607,7 +635,7 @@ class Zalo:
         return False, res
 
 # ---------------------------------------------------------
-# DISCORD USER CLIENT
+# DISCORD USER CLIENT NÂNG CAO
 # ---------------------------------------------------------
 class DiscordUserClient:
     def __init__(self, token):
@@ -730,7 +758,7 @@ class DiscordUserClient:
     def simulate_typing(self, channel_id):
         try:
             self.session.post(f"https://discord.com/api/v9/channels/{channel_id}/typing", timeout=5)
-            time.sleep(random.uniform(0.5, 1.0))
+            time.sleep(random.uniform(0.5, 0.9))
         except Exception:
             pass
 
@@ -772,27 +800,28 @@ class DiscordUserClient:
         return False, {"error": r.text, "status": r.status_code}
 
 # ---------------------------------------------------------
-# GIAO DIỆN SIÊU HIỆN ĐẠI (CYBER SLATE DARK & GLASSMORPHISM)
+# GIAO DIỆN SIÊU CẤP CYBER SLATE DARK & GLASSMORPHISM
 # ---------------------------------------------------------
 CSS_MODERN = """
 :root {
-  --bg-page: #070a13;
-  --bg-surface: #0e1526;
-  --bg-card: rgba(16, 24, 43, 0.92);
-  --bg-card-hover: rgba(22, 33, 58, 0.96);
+  --bg-page: #080c16;
+  --bg-surface: #0e1628;
+  --bg-card: rgba(16, 24, 44, 0.92);
+  --bg-card-hover: rgba(22, 34, 62, 0.98);
   --accent-primary: #3b82f6;
   --accent-cyan: #06b6d4;
   --accent-indigo: #6366f1;
   --accent-green: #10b981;
   --accent-red: #ef4444;
   --accent-gold: #f59e0b;
+  --accent-purple: #a855f7;
   --txt-0: #ffffff;
   --txt-1: #e2e8f0;
   --txt-2: #94a3b8;
   --txt-dim: #64748b;
-  --border-card: rgba(99, 102, 241, 0.16);
-  --border-active: rgba(59, 130, 246, 0.55);
-  --glow-primary: 0 0 20px rgba(59, 130, 246, 0.35);
+  --border-card: rgba(99, 102, 241, 0.18);
+  --border-active: rgba(59, 130, 246, 0.6);
+  --glow-primary: 0 0 24px rgba(59, 130, 246, 0.35);
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -802,103 +831,112 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Inter', sans-serif;
   background-color: var(--bg-page);
   background-image:
-    radial-gradient(circle at 15% 15%, rgba(99, 102, 241, 0.08) 0%, transparent 40%),
-    radial-gradient(circle at 85% 75%, rgba(6, 182, 212, 0.06) 0%, transparent 45%);
+    radial-gradient(circle at 10% 10%, rgba(99, 102, 241, 0.1) 0%, transparent 40%),
+    radial-gradient(circle at 90% 80%, rgba(6, 182, 212, 0.08) 0%, transparent 45%);
   color: var(--txt-1);
   min-height: 100vh;
-  padding-bottom: 70px;
+  padding-bottom: 75px;
   position: relative;
   overflow-x: hidden;
 }
 
-/* HEADER THANH LỊCH VỚI TICK XANH & PHẠM ANH KHÔI */
+/* HEADER CỰC SANG TRỌNG VỚI LOGO WEBPAGE & TICK XANH VECTOR CHUẨN XÁC */
 .header {
-  position: sticky; top: 0; z-index: 100;
-  background: rgba(7, 10, 19, 0.88);
+  position: sticky; top: 0; z-index: 1000;
+  background: rgba(8, 12, 22, 0.92);
   backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
   border-bottom: 1px solid var(--border-card);
   padding: 12px 18px;
-  box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+  box-shadow: 0 4px 25px rgba(0, 0, 0, 0.45);
 }
 .header-inner {
-  max-width: 960px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  max-width: 980px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 12px;
 }
 .logo-box { display: flex; align-items: center; gap: 12px; }
-.logo-badge {
-  width: 42px; height: 42px; border-radius: 12px;
-  display: flex; align-items: center; justify-content: center; font-size: 22px;
+.logo-container {
+  width: 44px; height: 44px; border-radius: 12px; overflow: hidden;
   background: linear-gradient(135deg, var(--accent-indigo) 0%, var(--accent-primary) 100%);
-  color: #fff; box-shadow: var(--glow-primary);
-  border: 1px solid rgba(255,255,255,0.15);
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: var(--glow-primary); border: 1px solid rgba(255,255,255,0.2);
+  flex-shrink: 0;
 }
+.brand-logo { width: 100%; height: 100%; object-fit: cover; }
+.logo-fallback { font-size: 24px; color: #fff; line-height: 1; }
 .header-meta h1 {
-  font-size: 16px; font-weight: 800; color: #fff; letter-spacing: 0.5px;
+  font-size: 17px; font-weight: 800; color: #fff; letter-spacing: 0.5px;
   display: flex; align-items: center; gap: 6px;
 }
-.header-meta p { font-size: 11.5px; color: var(--txt-2); margin-top: 1px; }
+.header-meta p { font-size: 11.5px; color: var(--txt-2); margin-top: 1px; display: flex; align-items: center; gap: 5px; }
 
-/* HUY HIỆU TICK XANH CHÍNH CHỦ */
-.verified-tick {
+/* HUY HIỆU TICK XANH SVG CHUẨN XÁC 100% NHƯ ZALO / META */
+.verified-seal {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 17px; height: 17px; border-radius: 50%;
-  background: linear-gradient(135deg, #0284c7 0%, #38bdf8 100%);
-  color: #ffffff; font-size: 10px; font-weight: 900;
-  box-shadow: 0 0 10px rgba(56, 189, 248, 0.65);
-  line-height: 1; vertical-align: middle;
+  vertical-align: middle; line-height: 1;
+}
+.verified-icon {
+  width: 17px; height: 17px;
+  filter: drop-shadow(0 0 6px rgba(29, 155, 240, 0.65));
+}
+.verified-seal-sm {
+  display: inline-flex; align-items: center; justify-content: center;
+  vertical-align: middle; line-height: 1;
 }
 
 .container {
-  max-width: 960px; margin: 0 auto; padding: 18px 14px;
+  max-width: 980px; margin: 0 auto; padding: 18px 14px;
   position: relative; z-index: 10;
 }
 
-/* THANH CHUYỂN TAB HIỆN ĐẠI (SEGMENTED TABS) - HOẠT ĐỘNG 100% */
+/* THANH CHUYỂN TAB CỰC MƯỢT — CÓ DISPLAY !IMPORTANT BẢO ĐẢM NHẢY TAB 100% */
 .main-tabs-nav {
-  display: flex; gap: 6px; overflow-x: auto; padding: 5px;
-  background: rgba(14, 21, 38, 0.85); backdrop-filter: blur(12px);
+  display: flex; gap: 6px; overflow-x: auto; padding: 6px;
+  background: rgba(14, 22, 40, 0.88); backdrop-filter: blur(14px);
   border: 1px solid var(--border-card);
-  border-radius: 14px; margin-bottom: 20px; scrollbar-width: none;
-  box-shadow: 0 4px 20px rgba(0,0,0,0.25);
+  border-radius: 15px; margin-bottom: 20px; scrollbar-width: none;
+  box-shadow: 0 6px 25px rgba(0,0,0,0.3);
 }
 .main-tabs-nav::-webkit-scrollbar { display: none; }
 
 .tab-btn {
-  flex: 1; min-width: 105px; min-height: 44px;
+  flex: 1; min-width: 110px; min-height: 44px;
   display: inline-flex; align-items: center; justify-content: center; gap: 7px;
-  padding: 10px 14px; border-radius: 10px;
+  padding: 10px 14px; border-radius: 11px;
   background: transparent; border: 1px solid transparent; color: var(--txt-2);
-  font-size: 13px; font-weight: 700; cursor: pointer !important;
+  font-size: 13.5px; font-weight: 700; cursor: pointer !important;
   touch-action: manipulation !important; user-select: none;
-  transition: all 0.25s var(--ease); white-space: nowrap;
+  transition: all 0.22s var(--ease); white-space: nowrap;
 }
-.tab-btn:hover { color: #fff; background: rgba(255, 255, 255, 0.05); }
+.tab-btn:hover { color: #fff; background: rgba(255, 255, 255, 0.06); }
 .tab-btn.active {
-  background: linear-gradient(135deg, rgba(59, 130, 246, 0.9) 0%, rgba(99, 102, 241, 0.9) 100%) !important;
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.95) 0%, rgba(99, 102, 241, 0.95) 100%) !important;
   color: #ffffff !important;
-  border-color: rgba(255, 255, 255, 0.2) !important;
-  box-shadow: 0 4px 16px rgba(59, 130, 246, 0.45);
+  border-color: rgba(255, 255, 255, 0.25) !important;
+  box-shadow: 0 4px 18px rgba(59, 130, 246, 0.45);
 }
 .tab-btn:active { transform: scale(0.97) !important; }
 
-/* HIỆU ỨNG CHUYỂN PANEL */
-.panel { display: none; }
-.panel.active { display: block; animation: panelSlideFade 0.25s var(--ease); }
+/* ĐIỀU KHIỂN PANEL — DISPLAY !IMPORTANT CHỐNG KẸT TAB */
+.panel { display: none !important; }
+.panel.active {
+  display: block !important;
+  animation: panelSlideFade 0.22s var(--ease);
+}
 @keyframes panelSlideFade {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: translateY(0); }
 }
 
-/* THẺ CARD GLASSMORPHISM SANG TRỌNG */
+/* THẺ CARD GLASSMORPHISM HIỆN ĐẠI */
 .card {
   background: var(--bg-card);
   backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
   border: 1px solid var(--border-card);
   border-radius: 18px; padding: 22px 20px;
-  box-shadow: 0 10px 35px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 10px 35px rgba(0, 0, 0, 0.38);
   margin-bottom: 18px; position: relative;
   transition: border-color 0.2s var(--ease);
 }
-.card:hover { border-color: rgba(99, 102, 241, 0.35); }
+.card:hover { border-color: rgba(99, 102, 241, 0.4); }
 .card h2 {
   font-size: 15.5px; font-weight: 800; color: #fff; margin-bottom: 16px;
   display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;
@@ -912,7 +950,7 @@ body {
 
 input[type="text"], input[type="password"], input[type="number"], select, textarea {
   width: 100%; padding: 12px 14px;
-  background: rgba(7, 10, 19, 0.85);
+  background: rgba(8, 12, 22, 0.88);
   border: 1px solid var(--border-card);
   border-radius: 11px; color: #fff; font-size: 13.5px; font-family: inherit;
   transition: all 0.2s var(--ease);
@@ -920,11 +958,11 @@ input[type="text"], input[type="password"], input[type="number"], select, textar
 input:focus, select:focus, textarea:focus {
   outline: none; border-color: var(--accent-primary);
   box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.25);
-  background: rgba(11, 16, 30, 0.95);
+  background: rgba(12, 18, 34, 0.95);
 }
 textarea { resize: vertical; min-height: 90px; }
 
-/* NÚT BẤM (BUTTONS) CỰC ĐẸP */
+/* NÚT BẤM (BUTTONS) */
 .btn-pill {
   display: inline-flex; align-items: center; justify-content: center; gap: 7px;
   padding: 10px 18px; border-radius: 11px; font-weight: 700; font-size: 13px;
@@ -937,23 +975,23 @@ textarea { resize: vertical; min-height: 90px; }
   background: linear-gradient(135deg, var(--accent-indigo) 0%, var(--accent-primary) 100%);
   color: #fff; box-shadow: 0 4px 16px rgba(59, 130, 246, 0.35);
 }
-.btn-pill.primary:hover { box-shadow: 0 6px 20px rgba(59, 130, 246, 0.5); }
+.btn-pill.primary:hover { box-shadow: 0 6px 22px rgba(59, 130, 246, 0.5); }
 .btn-pill.green {
   background: linear-gradient(135deg, #059669 0%, #10b981 100%);
   color: #fff; font-weight: 800; box-shadow: 0 4px 16px rgba(16, 185, 129, 0.3);
 }
-.btn-pill.green:hover { box-shadow: 0 6px 20px rgba(16, 185, 129, 0.5); }
+.btn-pill.green:hover { box-shadow: 0 6px 22px rgba(16, 185, 129, 0.5); }
 .btn-pill.danger {
-  background: rgba(239, 68, 68, 0.15); color: #f87171;
+  background: rgba(239, 68, 68, 0.16); color: #f87171;
   border-color: rgba(239, 68, 68, 0.35);
 }
-.btn-pill.danger:hover { background: rgba(239, 68, 68, 0.25); }
+.btn-pill.danger:hover { background: rgba(239, 68, 68, 0.28); }
 .btn-pill.dark {
-  background: #182238; color: #f1f5f9;
+  background: #18243c; color: #f1f5f9;
   border-color: var(--border-card);
 }
-.btn-pill.dark:hover { background: #1e2c49; border-color: rgba(99, 102, 241, 0.4); }
-.btn-pill.full { width: 100%; padding: 13px; font-size: 13.5px; }
+.btn-pill.dark:hover { background: #1e2e4e; border-color: rgba(99, 102, 241, 0.4); }
+.btn-pill.full { width: 100%; padding: 13.5px; font-size: 14px; }
 
 /* THANH CHIP CHỌN CHẾ ĐỘ */
 .chip-bar {
@@ -963,65 +1001,61 @@ textarea { resize: vertical; min-height: 90px; }
 .chip-bar::-webkit-scrollbar { display: none; }
 .chip-item {
   display: inline-flex; align-items: center; gap: 6px;
-  padding: 9px 14px; border-radius: 9px;
-  background: rgba(7, 10, 19, 0.8); border: 1px solid var(--border-card);
+  padding: 9px 14px; border-radius: 10px;
+  background: rgba(8, 12, 22, 0.82); border: 1px solid var(--border-card);
   color: var(--txt-2); font-size: 12.5px; font-weight: 700;
   cursor: pointer !important; user-select: none;
   touch-action: manipulation !important; white-space: nowrap;
   transition: all 0.2s var(--ease);
 }
-.chip-item:hover { color: #fff; border-color: var(--accent-primary); background: rgba(59, 130, 246, 0.08); }
+.chip-item:hover { color: #fff; border-color: var(--accent-primary); background: rgba(59, 130, 246, 0.1); }
 .chip-item.active {
   background: var(--accent-primary) !important; color: #fff !important;
   border-color: var(--accent-primary) !important;
-  box-shadow: 0 3px 12px rgba(59, 130, 246, 0.4);
+  box-shadow: 0 3px 14px rgba(59, 130, 246, 0.42);
 }
 
 /* LƯỚI TOGGLE CHỐNG BAN & CÀI ĐẶT */
 .toggle-grid {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 9px;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(195px, 1fr)); gap: 9px;
 }
 .toggle-item {
-  background: rgba(7, 10, 19, 0.85); border: 1px solid var(--border-card);
+  background: rgba(8, 12, 22, 0.88); border: 1px solid var(--border-card);
   border-radius: 11px; padding: 12px 14px;
   display: flex; align-items: center; justify-content: space-between;
   font-size: 12.5px; font-weight: 700; color: var(--txt-2);
   cursor: pointer !important; user-select: none;
   touch-action: manipulation !important; transition: all 0.2s var(--ease);
 }
-.toggle-item:hover { border-color: rgba(99, 102, 241, 0.35); color: #fff; }
+.toggle-item:hover { border-color: rgba(99, 102, 241, 0.4); color: #fff; }
 .toggle-item.active {
   border-color: var(--accent-green); background: rgba(16, 185, 129, 0.12);
-  color: #fff; box-shadow: 0 2px 10px rgba(16, 185, 129, 0.2);
+  color: #fff; box-shadow: 0 2px 12px rgba(16, 185, 129, 0.2);
 }
 
 /* DANH SÁCH MỤC TIÊU & TÌM KIẾM */
-.box-search-bar {
-  margin-bottom: 12px; position: relative;
-}
-.box-search-bar input {
-  padding-left: 38px;
-}
+.box-search-bar { margin-bottom: 12px; position: relative; }
+.box-search-bar input { padding-left: 38px; }
 .box-search-bar .search-icon {
   position: absolute; left: 14px; top: 50%; transform: translateY(-50%);
   color: var(--txt-2); font-size: 14px; pointer-events: none;
 }
 
 .box-list {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(275px, 1fr));
   gap: 9px; max-height: 380px; overflow-y: auto; padding: 2px;
 }
 .box-item {
-  background: rgba(7, 10, 19, 0.85); border: 1px solid var(--border-card);
+  background: rgba(8, 12, 22, 0.88); border: 1px solid var(--border-card);
   border-radius: 11px; padding: 12px 14px;
   display: flex; align-items: center; gap: 11px;
   cursor: pointer !important; touch-action: manipulation !important;
   transition: all 0.2s var(--ease); position: relative;
 }
-.box-item:hover { border-color: var(--accent-primary); background: rgba(59, 130, 246, 0.06); }
+.box-item:hover { border-color: var(--accent-primary); background: rgba(59, 130, 246, 0.08); }
 .box-item.selected {
   border-color: var(--accent-green); background: rgba(16, 185, 129, 0.12);
-  box-shadow: 0 2px 12px rgba(16, 185, 129, 0.15);
+  box-shadow: 0 2px 14px rgba(16, 185, 129, 0.16);
 }
 .check-mark {
   width: 22px; height: 22px; border-radius: 7px;
@@ -1035,11 +1069,11 @@ textarea { resize: vertical; min-height: 90px; }
 .b-title { font-size: 13px; font-weight: 700; color: #fff; word-break: break-word; }
 .b-sub { font-size: 11px; color: var(--txt-2); margin-top: 3px; display: flex; align-items: center; gap: 6px; }
 
-/* BẢNG DỮ LIỆU CHUYÊN NGHIỆP */
-.table-wrap { overflow-x: auto; margin-top: 10px; border-radius: 10px; }
+/* BẢNG DỮ LIỆU */
+.table-wrap { overflow-x: auto; margin-top: 10px; border-radius: 11px; }
 .table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .table th, .table td { padding: 11px 13px; text-align: left; border-bottom: 1px solid var(--border-card); }
-.table th { font-weight: 700; color: var(--txt-2); font-size: 11px; text-transform: uppercase; background: rgba(14, 21, 38, 0.5); }
+.table th { font-weight: 700; color: var(--txt-2); font-size: 11px; text-transform: uppercase; background: rgba(14, 22, 40, 0.6); }
 .table tr:hover td { background: rgba(255, 255, 255, 0.02); }
 
 /* CHẤM NHẤP NHÁY TRẠNG THÁI TIẾN TRÌNH */
@@ -1060,10 +1094,10 @@ textarea { resize: vertical; min-height: 90px; }
   max-width: 340px; width: calc(100% - 36px); pointer-events: none;
 }
 .toast {
-  background: rgba(18, 27, 49, 0.95); backdrop-filter: blur(16px);
-  border: 1px solid rgba(99, 102, 241, 0.35);
+  background: rgba(18, 27, 49, 0.96); backdrop-filter: blur(16px);
+  border: 1px solid rgba(99, 102, 241, 0.4);
   border-radius: 13px; padding: 13px 16px; margin-bottom: 10px;
-  box-shadow: 0 12px 35px rgba(0,0,0,0.55); pointer-events: auto;
+  box-shadow: 0 12px 35px rgba(0,0,0,0.6); pointer-events: auto;
   animation: slideToastIn 0.25s var(--ease);
   position: relative; overflow: hidden;
 }
@@ -1087,22 +1121,29 @@ body { display: flex; align-items: center; justify-content: center; min-height: 
   border-radius: 22px; padding: 36px 28px; max-width: 390px; width: 100%; text-align: center;
   box-shadow: 0 20px 50px rgba(0, 0, 0, 0.55);
 }
-.login-logo {
-  width: 64px; height: 64px; margin: 0 auto 16px; border-radius: 16px;
+.login-logo-box {
+  width: 64px; height: 64px; margin: 0 auto 16px; border-radius: 16px; overflow: hidden;
   background: linear-gradient(135deg, var(--accent-indigo) 0%, var(--accent-primary) 100%);
-  display: flex; align-items: center; justify-content: center; font-size: 32px;
+  display: flex; align-items: center; justify-content: center;
   box-shadow: 0 8px 24px rgba(59, 130, 246, 0.45);
   border: 1px solid rgba(255,255,255,0.2);
 }
+.login-logo-img { width: 100%; height: 100%; object-fit: cover; }
 </style>
 </head>
 <body>
 <div class="login-card">
-  <div class="login-logo">👑</div>
+  <div class="login-logo-box">
+    <img src="/logo" class="login-logo-img" onerror="this.style.display='none'; document.getElementById('login-fallback').style.display='block';" alt="Logo">
+    <div id="login-fallback" style="display:none; font-size:30px;">👑</div>
+  </div>
   <h1 style="font-size:20px; font-weight:800; margin-bottom:4px; color:#fff; display:flex; align-items:center; justify-content:center; gap:6px;">
-    Ricki Vip <span class="verified-tick" title="Bản quyền chính chủ">✔️</span>
+    Ricki Vip
+    <span class="verified-seal" title="Đã xác minh chính chủ">
+      <svg viewBox="0 0 24 24" class="verified-icon"><path fill="#1d9bf0" d="M22.5 12.5c0-1.58-.875-2.95-2.148-3.6.154-.435.238-.905.238-1.4 0-2.21-1.79-4-4-4-.495 0-.965.084-1.4.238C14.45 2.475 13.08 1.6 11.5 1.6s-2.95.875-3.6 2.148c-.435-.154-.905-.238-1.4-.238-2.21 0-4 1.79-4 4 0 .495.084.965.238 1.4C1.475 9.55.6 10.92.6 12.5s.875 2.95 2.148 3.6c-.154.435-.238.905-.238 1.4 0 2.21 1.79 4 4 4 .495 0 .965-.084 1.4-.238 1.15 1.273 2.52 2.148 4.1 2.148s2.95-.875 3.6-2.148c.435.154.905.238 1.4.238 2.21 0 4-1.79 4-4 0-.495-.084-.965-.238-1.4 1.273-.65 2.148-2.02 2.148-3.6zm-12.79 4.31l-4.2-4.2 1.41-1.41 2.79 2.79 6.79-6.79 1.41 1.41-8.2 8.2z"/></svg>
+    </span>
   </h1>
-  <p style="font-size:12px; color:var(--txt-2); margin-bottom:22px;">Bản quyền ✔️ Phạm Anh Khôi</p>
+  <p style="font-size:12px; color:var(--txt-2); margin-bottom:22px;">Bản quyền © Phạm Anh Khôi <span class="verified-seal-sm"><svg viewBox="0 0 24 24" width="12" height="12"><path fill="#1d9bf0" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg></span></p>
 
   <form method="POST" action="/login">
     <div class="form-group" style="text-align:left;">
@@ -1129,26 +1170,65 @@ HTML_MAIN = """<!DOCTYPE html>
 <style>
 """ + CSS_MODERN + """
 </style>
+
+<!-- KHỞI TẠO HÀM CHUYỂN TAB TRỰC TIẾP TRONG HEAD ĐỂ KHÔNG BAO GIỜ BỊ LỖI -->
+<script>
+function switchTab(name){
+  try {
+    var panels = document.querySelectorAll('.panel');
+    for(var i = 0; i < panels.length; i++){
+      panels[i].classList.remove('active');
+    }
+    var target = document.getElementById('panel-' + name);
+    if(target){
+      target.classList.add('active');
+    }
+    var btns = document.querySelectorAll('.tab-btn');
+    for(var j = 0; j < btns.length; j++){
+      if(btns[j].getAttribute('data-tab') === name){
+        btns[j].classList.add('active');
+      } else {
+        btns[j].classList.remove('active');
+      }
+    }
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    try { sessionStorage.setItem('ricki_tab', name); } catch(e){}
+  } catch(err){
+    console.error('Lỗi chuyển tab:', err);
+  }
+}
+window.switchTab = switchTab;
+window.showTab = switchTab;
+</script>
 </head>
 <body>
 
 <div class="header">
   <div class="header-inner">
     <div class="logo-box">
-      <div class="logo-badge">👑</div>
+      <div class="logo-container">
+        <img id="site-logo-img" src="/logo" class="brand-logo" alt="Logo" onerror="this.style.display='none'; document.getElementById('site-fallback-logo').style.display='flex';">
+        <div id="site-fallback-logo" class="logo-fallback" style="display:none;">👑</div>
+      </div>
       <div class="header-meta">
-        <h1>Ricki Vip <span class="verified-tick" title="Bản quyền chính chủ">✔️</span></h1>
-        <p>Bản quyền ✔️ Phạm Anh Khôi</p>
+        <h1>
+          Ricki Vip
+          <span class="verified-seal" title="Đã xác minh chính chủ">
+            <svg viewBox="0 0 24 24" class="verified-icon"><path fill="#1d9bf0" d="M22.5 12.5c0-1.58-.875-2.95-2.148-3.6.154-.435.238-.905.238-1.4 0-2.21-1.79-4-4-4-.495 0-.965.084-1.4.238C14.45 2.475 13.08 1.6 11.5 1.6s-2.95.875-3.6 2.148c-.435-.154-.905-.238-1.4-.238-2.21 0-4 1.79-4 4 0 .495.084.965.238 1.4C1.475 9.55.6 10.92.6 12.5s.875 2.95 2.148 3.6c-.154.435-.238.905-.238 1.4 0 2.21 1.79 4 4 4 .495 0 .965-.084 1.4-.238 1.15 1.273 2.52 2.148 4.1 2.148s2.95-.875 3.6-2.148c.435.154.905.238 1.4.238 2.21 0 4-1.79 4-4 0-.495-.084-.965-.238-1.4 1.273-.65 2.148-2.02 2.148-3.6zm-12.79 4.31l-4.2-4.2 1.41-1.41 2.79 2.79 6.79-6.79 1.41 1.41-8.2 8.2z"/></svg>
+          </span>
+        </h1>
+        <p>Bản quyền © Phạm Anh Khôi <span class="verified-seal-sm"><svg viewBox="0 0 24 24" width="12" height="12"><path fill="#1d9bf0" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg></span></p>
       </div>
     </div>
-    <div>
-      <a href="/logout" class="btn-pill danger" style="padding:7px 14px; font-size:12px;">Đăng Xuất</a>
+    <div style="display:flex; align-items:center; gap:8px;">
+      <span style="font-size:11.5px; color:var(--accent-green); font-weight:700; display:flex; align-items:center;"><span class="live-dot"></span>Hệ Thống Trực Tuyến</span>
+      <a href="/logout" class="btn-pill danger" style="padding:6px 12px; font-size:11.5px;">Đăng Xuất</a>
     </div>
   </div>
 </div>
 
 <div class="container">
-  <!-- THANH CHUYỂN TAB TRỰC QUAN (HOẠT ĐỘNG MƯỢT MÀ 100%) -->
+  <!-- THANH CHUYỂN TAB TRỰC QUAN MƯỢT MÀ -->
   <div class="main-tabs-nav">
     <button type="button" class="tab-btn active" data-tab="accounts" onclick="switchTab('accounts')">
       <span>👑</span><span>Tài Khoản</span>
@@ -1156,11 +1236,11 @@ HTML_MAIN = """<!DOCTYPE html>
     <button type="button" class="tab-btn" data-tab="boxes" onclick="switchTab('boxes')">
       <span>💬</span><span>Hội Thoại</span>
     </button>
-    <button type="button" class="tab-btn" data-tab="files" onclick="switchTab('files')">
-      <span>📁</span><span>Tệp Tin</span>
-    </button>
     <button type="button" class="tab-btn" data-tab="spam" onclick="switchTab('spam')">
       <span>⚡</span><span>Gửi Tin</span>
+    </button>
+    <button type="button" class="tab-btn" data-tab="files" onclick="switchTab('files')">
+      <span>📁</span><span>Tệp Tin & Logo</span>
     </button>
     <button type="button" class="tab-btn" data-tab="docs" onclick="switchTab('docs')">
       <span>📖</span><span>Hướng Dẫn</span>
@@ -1168,10 +1248,10 @@ HTML_MAIN = """<!DOCTYPE html>
   </div>
 
   <!-- TAB 1: TÀI KHOẢN -->
-  <div class="panel active" id="panel-accounts" style="display:block;">
+  <div class="panel active" id="panel-accounts">
     <div class="card">
       <h2>
-        <span>Quản Lý Tài Khoản (Zalo & Discord)</span>
+        <span>Quản Lý Tài Khoản (Zalo Web & Discord User)</span>
         <button type="button" class="btn-pill dark" onclick="checkAllAccounts()" style="font-size:11.5px; padding:6px 13px;">Kiểm Tra Tất Cả</button>
       </h2>
 
@@ -1231,9 +1311,9 @@ HTML_MAIN = """<!DOCTYPE html>
   </div>
 
   <!-- TAB 2: HỘI THOẠI & KÊNH -->
-  <div class="panel" id="panel-boxes" style="display:none;">
+  <div class="panel" id="panel-boxes">
     <div class="card">
-      <h2><span>Mục Tiêu Nhận Tin (Zalo Nhóm/Bạn & Discord DM/Server)</span></h2>
+      <h2><span>Mục Tiêu Nhận Tin (Bao gồm mọi box chat riêng Discord & Zalo)</span></h2>
       <div style="display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap;">
         <select id="load-acc-select" style="flex:1; min-width:200px;"><option value="">-- Chọn tài khoản nạp danh sách --</option></select>
         <button type="button" class="btn-pill green" onclick="loadBoxes()">Nạp Danh Sách</button>
@@ -1244,7 +1324,7 @@ HTML_MAIN = """<!DOCTYPE html>
       <!-- TÌM KIẾM HỘI THOẠI NHANH -->
       <div class="box-search-bar">
         <span class="search-icon">🔍</span>
-        <input type="text" id="box-search-input" placeholder="Tìm kiếm nhanh hội thoại, nhóm, tên bạn bè..." oninput="filterBoxes()">
+        <input type="text" id="box-search-input" placeholder="Tìm nhanh hội thoại, tên bạn bè, nhóm..." oninput="filterBoxes()">
       </div>
 
       <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; font-size:12px; font-weight:700; color:var(--txt-2);">
@@ -1258,28 +1338,8 @@ HTML_MAIN = """<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- TAB 3: TẬP TIN NỘI DUNG (HỖ TRỢ 5MB+) -->
-  <div class="panel" id="panel-files" style="display:none;">
-    <div class="card">
-      <h2><span>Quản Lý Tệp Ngôn Lớn (5MB - 50MB+ Streaming Mượt Mà)</span></h2>
-      <div id="drop-zone" style="border: 2px dashed var(--border-card); border-radius: 14px; padding: 26px 18px; text-align: center; margin-bottom: 15px; background: rgba(7, 10, 19, 0.85); transition: border-color 0.2s;">
-        <input type="file" id="file-input" accept=".txt" style="display:none;" onchange="handleFileSelected(this)">
-        <button type="button" class="btn-pill dark" onclick="document.getElementById('file-input').click()" style="margin-bottom:10px;">CHỌN TỆP .TXT TỪ THIẾT BỊ 📁</button>
-        <div id="upload-txt" style="font-size:12px; color:var(--txt-2);">Hỗ trợ tệp văn bản cực lớn (mỗi khối ngôn cách nhau 1 dòng trống)</div>
-      </div>
-      <button type="button" class="btn-pill green full" onclick="uploadFile()">TẢI LÊN & LƯU TỆP TIN ⚡</button>
-    </div>
-
-    <div class="card">
-      <h2><span>Danh Sách Tệp Đã Lưu</span></h2>
-      <div class="box-list" id="files-list">
-        <div style="text-align:center; padding:16px; color:var(--txt-2); grid-column: 1/-1;">Chưa có tập tin nào</div>
-      </div>
-    </div>
-  </div>
-
-  <!-- TAB 4: GỬI TIN TỰ ĐỘNG -->
-  <div class="panel" id="panel-spam" style="display:none;">
+  <!-- TAB 3: GỬI TIN TỰ ĐỘNG -->
+  <div class="panel" id="panel-spam">
     <div class="card">
       <h2><span>Cấu Hình Chiến Dịch Gửi Tin</span></h2>
 
@@ -1299,13 +1359,13 @@ HTML_MAIN = """<!DOCTYPE html>
         <textarea id="spam-messages" placeholder="Nhập nội dung tin nhắn cần gửi... (Mỗi khối ngôn cách nhau bởi 1 dòng trống)"></textarea>
       </div>
 
-      <div class="form-group" style="background:rgba(7, 10, 19, 0.85); border:1px solid var(--border-card); border-radius:12px; padding:13px;">
+      <div class="form-group" style="background:rgba(8,12,22,0.88); border:1px solid var(--border-card); border-radius:12px; padding:13px;">
         <label style="color:var(--accent-primary); font-size:11.5px;">💥 BỘ PHỐI ICON SÁT THƯƠNG & CHỌC TỨC</label>
         <div class="chip-bar" id="combat-icon-bar">
           <button type="button" class="chip-item active" data-ic="mixed">👑 Combo Đồ Sát (1 Sát Thương + 1 Chọc Tức + 1 Cười Đểu)</button>
-          <button type="button" class="chip-item" data-ic="damage">💀 Icon Sát Thương (💀💥🔥⚡🩸⚰️)</button>
-          <button type="button" class="chip-item" data-ic="troll">🤡 Icon Chọc Tức (🤡🤫🖕💩👎🥱)</button>
-          <button type="button" class="chip-item" data-ic="mock">🤣 Icon Cười Đểu (🤣😏🤪🤭😹👀)</button>
+          <button type="button" class="chip-item" data-ic="damage">💀 Sát Thương (💀💥🔥⚡🩸⚰️)</button>
+          <button type="button" class="chip-item" data-ic="troll">🤡 Chọc Tức (🤡🤫🖕💩👎🥱)</button>
+          <button type="button" class="chip-item" data-ic="mock">🤣 Cười Đểu (🤣😏🤪🤭😹👀)</button>
           <button type="button" class="chip-item" data-ic="none">Tắt Icon</button>
         </div>
         <input type="hidden" id="combat-icon-mode" value="mixed">
@@ -1344,11 +1404,11 @@ HTML_MAIN = """<!DOCTYPE html>
         </div>
       </div>
 
-      <div id="tag-all-options" style="display:none; margin-bottom:14px; background:rgba(7, 10, 19, 0.85); border:1px solid var(--border-card); border-radius:11px; padding:12px;">
+      <div id="tag-all-options" style="display:none; margin-bottom:14px; background:rgba(8,12,22,0.88); border:1px solid var(--border-card); border-radius:11px; padding:12px;">
         <label style="color:var(--accent-primary); font-size:11.5px;">VỊ TRÍ GẮN THẺ @ALL</label>
         <div style="display:flex; gap:18px; margin-top:5px; font-size:12.5px;">
           <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
-            <input type="radio" name="tag_pos" value="head" checked> Đặt ở ĐẦU tin nhắn (Rung chuông 100%)
+            <input type="radio" name="tag_pos" value="head" checked> Đặt ở ĐẦU tin nhắn (Rung chuông thông báo 100%)
           </label>
           <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
             <input type="radio" name="tag_pos" value="tail"> Đặt ở CUỐI tin nhắn
@@ -1357,7 +1417,7 @@ HTML_MAIN = """<!DOCTYPE html>
       </div>
 
       <div class="form-group">
-        <label>4. Màu sắc chữ Zalo (Đổi màu chuẩn 100% trong nhóm)</label>
+        <label>4. Màu sắc chữ Zalo (Đổi màu chuẩn 100% trong nhóm Zalo)</label>
         <div class="chip-bar" id="color-mode-bar">
           <button type="button" class="chip-item active" data-cmode="rainbow">🌈 Trộn Màu Từng Dòng (Rainbow)</button>
           <button type="button" class="chip-item" data-cmode="random">🎲 Đổi Màu Ngẫu Nhiên</button>
@@ -1366,7 +1426,7 @@ HTML_MAIN = """<!DOCTYPE html>
         <input type="hidden" id="color-mode" value="rainbow">
 
         <div id="fixed-colors-wrap" style="display:none; gap:6px; flex-wrap:wrap; margin-top:8px;">
-          <!-- Màu sẽ được render tự động từ mảng ZALO_PALETTE_JS bên dưới -->
+          <!-- Render tự động bởi JS -->
         </div>
       </div>
 
@@ -1381,10 +1441,11 @@ HTML_MAIN = """<!DOCTYPE html>
         <input type="number" id="delay-val" value="1.2" step="0.1" min="0.1" style="margin-top:6px;">
       </div>
 
-      <div class="form-group" style="background:rgba(7, 10, 19, 0.85); border:1px solid var(--border-card); border-radius:12px; padding:13px;">
+      <!-- TAG TÊN THÀNH VIÊN VÀ QUÉT UID TỰ ĐỘNG -->
+      <div class="form-group" style="background:rgba(8,12,22,0.88); border:1px solid var(--border-card); border-radius:12px; padding:13px;">
         <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
           <input type="checkbox" id="tg-tag" onchange="tgTag()">
-          <span>BẬT TAG TÊN THÀNH VIÊN NHÓM</span>
+          <span>BẬT TAG TÊN THÀNH VIÊN NHÓM (Tự động duyệt UID & Tên đầy đủ)</span>
         </label>
 
         <div id="tag-wrap" style="display:none; margin-top:9px;">
@@ -1394,13 +1455,13 @@ HTML_MAIN = """<!DOCTYPE html>
           </div>
 
           <div style="margin-bottom:9px;">
-            <label style="font-size:11px;">NHẬP TRỰC TIẾP TÊN/UID CẦN TAG (Cách nhau dấu phẩy):</label>
+            <label style="font-size:11px;">NHẬP TRỰC TIẾP TÊN/UID CẦN TAG (Cách nhau dấu phẩy hoặc xuống dòng):</label>
             <input type="text" id="manual-tags-inp" placeholder="VD: Khôi, Admin, Nam, 123456...">
           </div>
 
           <div style="display:flex; gap:6px; margin-bottom:9px; flex-wrap:wrap;">
             <select id="member-group-select" style="flex:1; min-width:160px;"><option value="">-- Chọn nhóm Zalo quét thành viên --</option></select>
-            <button type="button" class="btn-pill dark" onclick="loadMembers()">Quét</button>
+            <button type="button" class="btn-pill dark" onclick="loadMembers()">Quét Thành Viên</button>
             <button type="button" class="btn-pill green" onclick="selectAllMembers()">Chọn Hết</button>
             <button type="button" class="btn-pill danger" onclick="clearAllMembers()">Bỏ</button>
           </div>
@@ -1443,18 +1504,60 @@ HTML_MAIN = """<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- TAB 4: TỆP TIN & LOGO WEBSITE -->
+  <div class="panel" id="panel-files">
+    <!-- MỤC A: TẢI LÊN LOGO WEBSITE -->
+    <div class="card">
+      <h2><span>Tải Lên Logo Website (Thay thế Logo Header & Đăng Nhập)</span></h2>
+      <div style="display:flex; gap:16px; align-items:center; flex-wrap:wrap; margin-bottom:14px; background:rgba(8,12,22,0.88); border:1px solid var(--border-card); border-radius:14px; padding:16px;">
+        <div style="width:64px; height:64px; border-radius:14px; overflow:hidden; border:2px solid var(--accent-primary); flex-shrink:0; background:#080c16; display:flex; align-items:center; justify-content:center;">
+          <img id="logo-preview-img" src="/logo" alt="Logo Preview" style="width:100%; height:100%; object-fit:cover;">
+        </div>
+        <div style="flex:1; min-width:200px;">
+          <div style="font-size:13px; font-weight:700; color:#fff; margin-bottom:4px;">Logo Website Hiện Tại</div>
+          <div style="font-size:11.5px; color:var(--txt-2); margin-bottom:10px;">Hỗ trợ định dạng: PNG, JPG, JPEG, WEBP, SVG, GIF (Hiển thị tức thì)</div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <input type="file" id="logo-file-input" accept="image/*" style="display:none;" onchange="handleLogoSelected(this)">
+            <button type="button" class="btn-pill dark" onclick="document.getElementById('logo-file-input').click()">Chọn Ảnh Logo 🖼️</button>
+            <button type="button" class="btn-pill green" onclick="uploadLogo()">Lưu Làm Logo Web ⚡</button>
+            <button type="button" class="btn-pill danger" onclick="resetLogo()">Khôi Phục Mặc Định</button>
+          </div>
+        </div>
+      </div>
+      <div id="logo-selected-txt" style="font-size:12px; color:var(--txt-2);"></div>
+    </div>
+
+    <!-- MỤC B: QUẢN LÝ TỆP NGÔN LỚN -->
+    <div class="card">
+      <h2><span>Quản Lý Tệp Ngôn Lớn (5MB - 50MB+ Streaming Mượt Mà)</span></h2>
+      <div id="drop-zone" style="border: 2px dashed var(--border-card); border-radius: 14px; padding: 26px 18px; text-align: center; margin-bottom: 15px; background: rgba(8, 12, 22, 0.88); transition: border-color 0.2s;">
+        <input type="file" id="file-input" accept=".txt" style="display:none;" onchange="handleFileSelected(this)">
+        <button type="button" class="btn-pill dark" onclick="document.getElementById('file-input').click()" style="margin-bottom:10px;">CHỌN TỆP .TXT TỪ THIẾT BỊ 📁</button>
+        <div id="upload-txt" style="font-size:12px; color:var(--txt-2);">Hỗ trợ tệp văn bản cực lớn (mỗi khối ngôn cách nhau 1 dòng trống)</div>
+      </div>
+      <button type="button" class="btn-pill green full" onclick="uploadFile()">TẢI LÊN & LƯU TỆP TIN ⚡</button>
+    </div>
+
+    <div class="card">
+      <h2><span>Danh Sách Tệp Đã Lưu</span></h2>
+      <div class="box-list" id="files-list">
+        <div style="text-align:center; padding:16px; color:var(--txt-2); grid-column: 1/-1;">Chưa có tập tin nào</div>
+      </div>
+    </div>
+  </div>
+
   <!-- TAB 5: HƯỚNG DẪN -->
-  <div class="panel" id="panel-docs" style="display:none;">
+  <div class="panel" id="panel-docs">
     <div class="card">
       <h2><span>Hướng Dẫn Vận Hành & Bản Quyền</span></h2>
       <div style="font-size:13px; line-height:1.75; color:var(--txt-1);">
-        <p style="margin-bottom:12px; padding:10px 14px; background:rgba(59,130,246,0.1); border-left:4px solid var(--accent-primary); border-radius:6px;">
-          <b>Bản quyền phần mềm:</b> Thuộc về <b>✔️ Phạm Anh Khôi</b> — <b>Ricki Vip</b>. Mọi chức năng được tối ưu hóa chuyên sâu cho tốc độ, độ ổn định và trải nghiệm người dùng.
+        <p style="margin-bottom:12px; padding:12px 16px; background:rgba(59,130,246,0.1); border-left:4px solid var(--accent-primary); border-radius:8px;">
+          <b>Bản quyền phần mềm:</b> Thuộc về <b>Phạm Anh Khôi</b> (Verified ✔️) — <b>Ricki Vip</b>. Mọi chức năng được nâng cấp toàn diện và tối ưu chuyên sâu.
         </p>
-        <p style="margin-bottom:10px;"><b style="color:var(--accent-primary);">1. Lấy mọi Box Chat Riêng Discord:</b> Hệ thống tự động quét và nạp toàn bộ danh sách <b>Tin nhắn riêng (DM 1-1)</b>, <b>Nhóm Chat Riêng (Group DM)</b>, <b>Danh Sách Bạn Bè</b> và <b>Kênh Server</b>. Tự động định tuyến chính xác tin nhắn đến Discord mà không bị nhầm lẫn với Zalo.</p>
-        <p style="margin-bottom:10px;"><b style="color:var(--accent-green);">2. Anti-Die-Cookie Discord:</b> Tích hợp mã giả lập trình duyệt Chrome (<code>X-Super-Properties</code>) và hành vi gõ phím của người thật. Tự động cách ly và vượt qua giới hạn tần suất 429.</p>
-        <p style="margin-bottom:10px;"><b style="color:var(--accent-gold);">3. Đổi Màu Chữ Zalo 100%:</b> Áp dụng cho nhóm chat Zalo. Nhúng 3 lớp mã màu và huy hiệu màu emoji (🔴 🟡 🟢 💎) ở đầu dòng giúp điện thoại iOS và Android hiển thị màu sắc rực rỡ.</p>
-        <p style="margin-bottom:10px;"><b style="color:var(--accent-indigo);">4. Anti-Ban Zalo V4:</b> Áp dụng thuật toán chèn ký tự đệm an toàn sau dấu câu và cuối chuỗi, giữ nguyên 100% phông chữ tiếng Việt không bị rớt dấu.</p>
+        <p style="margin-bottom:10px;"><b style="color:var(--accent-primary);">1. Đổi Màu Chữ Zalo 100%:</b> Zalo chỉ hỗ trợ render màu chữ và in đậm trong <b>Nhóm Chat (Group)</b>. Hệ thống đã đồng bộ chuẩn xác đơn vị đo ký tự UTF-16 code units, tự động phân tách tag header và áp dụng màu từng dòng nguyên vẹn không bị lệch.</p>
+        <p style="margin-bottom:10px;"><b style="color:var(--accent-green);">2. Tự Động Quét UID & Tên Thật:</b> Bấm nút <b>Quét Thành Viên</b> tại bất kỳ nhóm Zalo nào để nạp danh sách thành viên với UID và tên thật hiển thị đầy đủ (thông qua memInfoMap), hỗ trợ xoay vòng hoặc tag toàn bộ cùng lúc.</p>
+        <p style="margin-bottom:10px;"><b style="color:var(--accent-gold);">3. Tag @All Zalo & Discord:</b> Hệ thống tự động gửi token <code>@All</code> (type 1) đến toàn bộ nhóm Zalo và <code>@everyone</code> đến Discord, bảo đảm rung chuông thông báo 100%.</p>
+        <p style="margin-bottom:10px;"><b style="color:var(--accent-purple);">4. Tải Lên Logo Website:</b> Tại tab Tệp Tin & Logo, bạn có thể tải lên bất kỳ ảnh PNG/JPG nào để thay thế logo trên header và trang đăng nhập theo ý thích cá nhân.</p>
       </div>
     </div>
   </div>
@@ -1464,7 +1567,7 @@ HTML_MAIN = """<!DOCTYPE html>
 
 <script>
 // ==============================================================================
-// KHỞI TẠO BẢNG MÀU CHUẨN TRÊN JAVASCRIPT ĐỂ KHÔNG BAO GIỜ BỊ LỖI UNDEFINED
+// BẢNG MÀU JAVASCRIPT ĐỒNG BỘ 100%
 // ==============================================================================
 const ZALO_PALETTE_JS = [
   {"id": "red",     "name": "Đỏ Chuẩn",      "hex": "e8453c", "badge": "🔴"},
@@ -1477,33 +1580,6 @@ const ZALO_PALETTE_JS = [
   {"id": "cyan",    "name": "Xanh Ngọc",     "hex": "00b4d8", "badge": "🔵"}
 ];
 
-// QUẢN LÝ CHUYỂN TAB MƯỢT MÀ VÀ CHUẨN XÁC
-function switchTab(name){
-  var panels = document.querySelectorAll('.panel');
-  panels.forEach(function(p){
-    p.classList.remove('active');
-    p.style.display = 'none';
-  });
-
-  var target = document.getElementById('panel-' + name);
-  if(target){
-    target.classList.add('active');
-    target.style.display = 'block';
-  }
-
-  var btns = document.querySelectorAll('.tab-btn');
-  btns.forEach(function(b){
-    if(b.getAttribute('data-tab') === name){
-      b.classList.add('active');
-    } else {
-      b.classList.remove('active');
-    }
-  });
-  window.scrollTo({ top: 0, behavior: 'smooth' });
-}
-window.switchTab = switchTab;
-window.showTab = switchTab;
-
 var currentPlatform = 'zalo';
 var currentMode = 'fast';
 var colorMode = 'rainbow';
@@ -1514,7 +1590,7 @@ var _members = [];
 var selectedTags = [];
 var flags = { antiband: true, antidieall: true, heading: true, multi: true, all: false, badge: true };
 
-// THÔNG BÁO TOAST CỰC ĐẸP
+// THÔNG BÁO TOAST NỔI
 var Toast = (function(){
   var stack = null;
   function ensure(){ if(!stack) stack = document.getElementById('toast-stack'); }
@@ -1588,7 +1664,7 @@ function updateMemberGroupSelect(){
 
 function initColorPalette(){
   var wrap = document.getElementById('fixed-colors-wrap');
-  wrap.innerHTML = ZALO_PALETTE_JS.map(function(c, i){
+  wrap.innerHTML = ZALO_PALETTE_JS.map(function(c){
     var isAct = (c.id === fixedColor) ? 'active' : '';
     return '<button type="button" class="chip-item ' + isAct + '" onclick="setFixedColor(\'' + c.id + '\', this)" style="border-color:#' + c.hex + ';">' +
       '<span>' + c.badge + '</span><span>' + c.name + '</span>' +
@@ -1648,6 +1724,58 @@ function handleFileSelected(input){
     document.getElementById('upload-txt').textContent = "Đã chọn: " + input.files[0].name + " (" + Math.round(input.files[0].size/1024) + " KB)";
     document.getElementById('upload-txt').style.color = "var(--accent-primary)";
     document.getElementById('upload-txt').style.fontWeight = "bold";
+  }
+}
+
+function handleLogoSelected(input){
+  if(input.files && input.files.length > 0){
+    var file = input.files[0];
+    document.getElementById('logo-selected-txt').textContent = "Đã chọn ảnh: " + file.name + " (" + Math.round(file.size/1024) + " KB)";
+    document.getElementById('logo-selected-txt').style.color = "var(--accent-green)";
+    var reader = new FileReader();
+    reader.onload = function(e){
+      document.getElementById('logo-preview-img').src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  }
+}
+
+async function uploadLogo(){
+  var inp = document.getElementById('logo-file-input');
+  if(!inp.files || !inp.files.length) return Toast.error('Vui lòng chọn tệp ảnh trước');
+  var fd = new FormData();
+  fd.append('logo', inp.files[0]);
+  Toast.info('Đang tải lên logo website...');
+  try {
+    var res = await fetch('/api/upload_logo', { method: 'POST', body: fd }).then(function(x){ return x.json(); });
+    if(res.error) return Toast.error(res.error);
+    Toast.success('Cập nhật logo website thành công!');
+    var newUrl = res.logo_url || ('/logo?t=' + Date.now());
+    var headerImg = document.getElementById('site-logo-img');
+    if(headerImg){
+      headerImg.src = newUrl;
+      headerImg.style.display = 'block';
+      var fb = document.getElementById('site-fallback-logo');
+      if(fb) fb.style.display = 'none';
+    }
+  } catch(e) {
+    Toast.error('Không thể kết nối máy chủ');
+  }
+}
+
+async function resetLogo(){
+  if(!confirm('Xác nhận khôi phục logo website về mặc định?')) return;
+  Toast.info('Đang khôi phục...');
+  try {
+    var res = await api('/api/reset_logo', { method: 'POST' });
+    if(res.ok){
+      Toast.success('Đã khôi phục logo mặc định!');
+      var newUrl = '/logo?t=' + Date.now();
+      document.getElementById('site-logo-img').src = newUrl;
+      document.getElementById('logo-preview-img').src = newUrl;
+    }
+  } catch(e){
+    Toast.error('Lỗi kết nối máy chủ');
   }
 }
 
@@ -1768,7 +1896,7 @@ function renderBoxes(boxArray){
     var platBadge = (b.platform === 'discord') ? '🟣 Discord' : '🔷 Zalo';
     return '<div class="box-item ' + (isSel ? 'selected' : '') + '" onclick="toggleBoxById(\'' + b.id + '\', this)">' +
       '<div class="check-mark">✓</div>' +
-      '<div style="overflow:hidden;">' +
+      '<div style="overflow:hidden; flex:1;">' +
         '<div class="b-title">' + b.name + '</div>' +
         '<div class="b-sub"><span>' + platBadge + '</span> <span>•</span> <span>' + b.type + '</span> <span>•</span> <span>' + b.id + '</span></div>' +
       '</div>' +
@@ -1863,8 +1991,9 @@ async function loadMembers(){
     if(box) gid = box.id;
   }
   if(!gid) return Toast.error('Vui lòng chọn 1 nhóm Zalo để quét thành viên');
-  Toast.info('Đang nạp danh sách thành viên...');
-  var r = await api('/api/members/' + gid, { method: 'POST' });
+  Toast.info('Đang nạp danh sách thành viên (lấy UID & Tên đầy đủ)...');
+  var aid = document.getElementById('load-acc-select').value;
+  var r = await api('/api/members/' + gid, { method: 'POST', body: JSON.stringify({ account_id: aid }) });
   if(r.error) return Toast.error(r.error);
   _members = r.members || [];
   selectedTags = [];
@@ -1926,10 +2055,10 @@ async function startSpam(){
   var tagUsers = document.getElementById('tg-tag').checked ? selectedTags.slice() : [];
   var manualTags = document.getElementById('manual-tags-inp').value.trim();
   if(manualTags){
-    var rawNames = manualTags.split(",").join(String.fromCharCode(10)).split(String.fromCharCode(10)).map(function(x){ return x.trim(); }).filter(Boolean);
+    var rawNames = manualTags.split(',').join(String.fromCharCode(10)).split(String.fromCharCode(10)).map(function(x){ return x.trim(); }).filter(Boolean);
     rawNames.forEach(function(nm, idx){
-      var clean = nm.replace(/^@/, "");
-      tagUsers.push({ id: "manual_" + idx, name: clean });
+      var clean = nm.replace(/^@/, '');
+      tagUsers.push({ id: 'manual_' + idx, name: clean });
     });
   }
 
@@ -2001,6 +2130,22 @@ window.addEventListener('DOMContentLoaded', function(){
   loadAccounts();
   loadFiles();
   loadTasks();
+
+  // Bổ sung listener trực tiếp cho mọi nút tab
+  document.querySelectorAll('.tab-btn').forEach(function(btn){
+    btn.addEventListener('click', function(e){
+      var tname = this.getAttribute('data-tab');
+      if(tname) switchTab(tname);
+    });
+  });
+
+  try {
+    var savedTab = sessionStorage.getItem('ricki_tab');
+    if(savedTab && document.getElementById('panel-' + savedTab)){
+      switchTab(savedTab);
+    }
+  } catch(e){}
+
   setInterval(loadTasks, 3000);
 });
 </script>
@@ -2041,6 +2186,70 @@ def page_login():
 def page_logout():
     session.clear()
     return redirect(url_for("page_login"))
+
+@app.route("/logo")
+def route_logo():
+    conn = db()
+    row = conn.execute("SELECT value FROM settings WHERE key = 'site_logo'").fetchone()
+    conn.close()
+    if row and row["value"]:
+        logo_path = os.path.join(UPLOAD_DIR, row["value"])
+        if os.path.exists(logo_path):
+            return send_from_directory(UPLOAD_DIR, row["value"])
+
+    svg = '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+      <defs>
+        <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" style="stop-color:#6366f1;stop-opacity:1" />
+          <stop offset="100%" style="stop-color:#3b82f6;stop-opacity:1" />
+        </linearGradient>
+      </defs>
+      <rect width="100" height="100" rx="26" fill="url(#grad1)"/>
+      <path d="M50 22 L63 44 L84 38 L72 68 L28 68 L16 38 L37 44 Z" fill="#ffd700" stroke="#fff" stroke-width="2"/>
+      <circle cx="50" cy="54" r="5" fill="#fff"/>
+      <circle cx="33" cy="54" r="3.5" fill="#fff"/>
+      <circle cx="67" cy="54" r="3.5" fill="#fff"/>
+    </svg>'''
+    return svg, 200, {"Content-Type": "image/svg+xml"}
+
+@app.route("/api/upload_logo", methods=["POST"])
+@login_required
+def api_upload_logo():
+    f = request.files.get("logo")
+    if not f or not f.filename:
+        return jsonify({"error": "Vui lòng chọn tệp hình ảnh"}), 400
+
+    ext = os.path.splitext(f.filename)[1].lower()
+    if ext not in [".png", ".jpg", ".jpeg", ".webp", ".svg", ".gif"]:
+        return jsonify({"error": "Chỉ chấp nhận tệp hình ảnh (.png, .jpg, .jpeg, .webp, .svg, .gif)"}), 400
+
+    saved_name = "site_logo" + ext
+    save_path = os.path.join(UPLOAD_DIR, saved_name)
+    f.save(save_path)
+
+    conn = db()
+    conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('site_logo', ?)", (saved_name,))
+    conn.commit()
+    conn.close()
+
+    return jsonify({"ok": True, "logo_url": "/logo?t=" + str(int(time.time()))})
+
+@app.route("/api/reset_logo", methods=["POST"])
+@login_required
+def api_reset_logo():
+    conn = db()
+    row = conn.execute("SELECT value FROM settings WHERE key = 'site_logo'").fetchone()
+    if row and row["value"]:
+        old_file = os.path.join(UPLOAD_DIR, row["value"])
+        if os.path.exists(old_file):
+            try:
+                os.remove(old_file)
+            except Exception:
+                pass
+    conn.execute("DELETE FROM settings WHERE key = 'site_logo'")
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
 
 @app.route("/api/accounts", methods=["GET"])
 @login_required
@@ -2200,14 +2409,25 @@ def api_accounts_load_boxes(aid):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route("/api/members/<grid>", methods=["POST"])
+@app.route("/api/members/<grid>", methods=["GET", "POST"])
 @login_required
 def api_members(grid):
+    data = request.get_json(silent=True) or {}
+    req_aid = data.get("account_id") or request.args.get("account_id")
+
     conn = db()
-    accs = conn.execute("SELECT * FROM accounts WHERE platform = 'zalo' AND status = 'live'").fetchall()
+    accs = []
+    if req_aid:
+        row = conn.execute("SELECT * FROM accounts WHERE id = ? AND platform = 'zalo'", (req_aid,)).fetchone()
+        if row:
+            accs.append(row)
+
+    if not accs:
+        accs = conn.execute("SELECT * FROM accounts WHERE platform = 'zalo' AND status = 'live'").fetchall()
     if not accs:
         accs = conn.execute("SELECT * FROM accounts WHERE platform = 'zalo'").fetchall()
     conn.close()
+
     if not accs:
         return jsonify({"error": "Chưa có tài khoản Zalo để quét"}), 400
 
@@ -2282,8 +2502,6 @@ def api_files_del(fid):
 # ---------------------------------------------------------
 RUNNING_TASKS = {}
 TASKS_LOCK = threading.Lock()
-
-# Cache client để không phải login liên tục làm đơ và die cookie
 CLIENT_CACHE = {}
 CLIENT_CACHE_LOCK = threading.Lock()
 
@@ -2440,7 +2658,7 @@ def run_spam_worker(task_id, payload, stop_ev):
                     time.sleep(actual_delay)
                 continue
 
-            else: # fast mode
+            else:  # fast mode
                 lines = [ln.strip() for ln in raw.split("\n") if ln.strip()]
                 for ln in lines:
                     if stop_ev.is_set():
