@@ -5,7 +5,6 @@
 # ==============================================================================
 
 import os
-import sys
 import re
 import json
 import time
@@ -13,16 +12,168 @@ import sqlite3
 import threading
 import random
 import base64
-import requests
-from Crypto.Cipher import AES
+import hashlib
+from functools import wraps
+from collections import defaultdict
 
+from flask import (
+    Flask, render_template_string, request, jsonify,
+    session, redirect, url_for, send_from_directory
+)
+from Crypto.Cipher import AES
+import requests
+
+# ---------------------------------------------------------
+# CẤU HÌNH HỆ THỐNG & BIẾN MÔI TRƯỜNG RENDER
+# ---------------------------------------------------------
+APP_PASSWORD = os.environ.get("APP_PASSWORD", "anhkhoidz")
 DATA_DIR = os.environ.get("DATA_DIR", "/tmp/ricki_web")
 os.makedirs(DATA_DIR, exist_ok=True)
 DB_PATH = os.path.join(DATA_DIR, "ricki_vip.db")
 UPLOAD_DIR = os.path.join(DATA_DIR, "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# Bảng màu Zalo chuẩn
+# BIẾN APP CHO GUNICORN (GIẢI QUYẾT LỖI GUNICORN TRÊN RENDER 100%)
+app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", os.urandom(24))
+
+# ---------------------------------------------------------
+# BỘ GIÁP BẢO MẬT WEB & API
+# ---------------------------------------------------------
+class WebSecurityArmor:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.req_history = defaultdict(list)
+        self.failed_logins = defaultdict(list)
+        self.blocked_ips = {}
+
+    def check_rate_limit(self, ip, max_reqs=250, window=60):
+        now = time.time()
+        with self.lock:
+            if ip in self.blocked_ips:
+                if now < self.blocked_ips[ip]:
+                    remain = int(self.blocked_ips[ip] - now)
+                    return False, f"IP tạm thời bị giới hạn. Thử lại sau {remain}s."
+                del self.blocked_ips[ip]
+
+            history = [t for t in self.req_history[ip] if now - t < window]
+            history.append(now)
+            self.req_history[ip] = history
+
+            if len(history) > max_reqs:
+                self.blocked_ips[ip] = now + 60
+                return False, "Tần suất truy cập quá nhanh (Rate Limit). Tạm khóa 60s."
+
+            return True, None
+
+    def record_login(self, ip, success):
+        now = time.time()
+        with self.lock:
+            if success:
+                self.failed_logins.pop(ip, None)
+            else:
+                fails = [t for t in self.failed_logins[ip] if now - t < 300]
+                fails.append(now)
+                self.failed_logins[ip] = fails
+                if len(fails) >= 6:
+                    self.blocked_ips[ip] = now + 180
+                    return False, "Đăng nhập sai quá 6 lần. Tạm khóa IP 3 phút."
+            return True, None
+
+SECURITY_ARMOR = WebSecurityArmor()
+
+@app.before_request
+def security_firewall_check():
+    if request.path.startswith("/static") or request.path in ["/logo", "/health"]:
+        return None
+    ip = request.headers.get("X-Forwarded-For", request.remote_addr).split(",")[0].strip()
+    allowed, err = SECURITY_ARMOR.check_rate_limit(ip)
+    if not allowed:
+        return jsonify({"error": err}), 429
+
+@app.after_request
+def apply_security_headers(response):
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
+
+# ---------------------------------------------------------
+# CƠ SỞ DỮ LIỆU SQLITE
+# ---------------------------------------------------------
+def db():
+    c = sqlite3.connect(DB_PATH)
+    c.row_factory = sqlite3.Row
+    c.execute("PRAGMA journal_mode=WAL")
+    c.execute("PRAGMA synchronous=NORMAL")
+    return c
+
+def init_db():
+    conn = db()
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS accounts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        label TEXT NOT NULL,
+        platform TEXT NOT NULL DEFAULT 'zalo',
+        imei TEXT,
+        cookies TEXT,
+        token TEXT,
+        real_name TEXT,
+        avatar TEXT,
+        status TEXT DEFAULT 'unknown',
+        enabled INTEGER DEFAULT 1,
+        created_at REAL
+    )
+    """)
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS files (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        filename TEXT NOT NULL,
+        filepath TEXT NOT NULL,
+        size INTEGER,
+        lines INTEGER,
+        created_at REAL
+    )
+    """)
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    )
+    """)
+    conn.commit()
+
+    # Tự động nạp tài khoản từ biến môi trường Render nếu có
+    z_imei = os.environ.get("ZALO_IMEI", "").strip()
+    z_cookies = os.environ.get("ZALO_COOKIES", "").strip()
+    d_token = os.environ.get("DISCORD_TOKEN", "").strip()
+
+    if z_imei and z_cookies:
+        exist = conn.execute("SELECT id FROM accounts WHERE platform = 'zalo' AND imei = ?", (z_imei,)).fetchone()
+        if not exist:
+            conn.execute("""
+            INSERT INTO accounts (label, platform, imei, cookies, real_name, status, enabled, created_at)
+            VALUES ('Zalo Env Account', 'zalo', ?, ?, 'Zalo User', 'live', 1, ?)
+            """, (z_imei, z_cookies, time.time()))
+            conn.commit()
+
+    if d_token:
+        exist = conn.execute("SELECT id FROM accounts WHERE platform = 'discord' AND token = ?", (d_token,)).fetchone()
+        if not exist:
+            conn.execute("""
+            INSERT INTO accounts (label, platform, token, real_name, status, enabled, created_at)
+            VALUES ('Discord Env Account', 'discord', ?, 'Discord User', 'live', 1, ?)
+            """, (d_token, time.time()))
+            conn.commit()
+
+    conn.close()
+
+init_db()
+
+# ---------------------------------------------------------
+# BẢNG MÀU ZALO CHUẨN XÁC & HUY HIỆU MÀU
+# ---------------------------------------------------------
 ZALO_PALETTE = [
     {"id": "red",     "name": "Đỏ Chuẩn",      "hex": "e8453c", "badge": "🔴"},
     {"id": "gold",    "name": "Vàng Cam",      "hex": "f4a261", "badge": "🟡"},
@@ -96,6 +247,9 @@ def apply_antiband_zalo_v4(text):
     result += tail
     return result
 
+# ---------------------------------------------------------
+# GIAO THỨC ZALO WEB NÂNG CAO
+# ---------------------------------------------------------
 class Zalo:
     def __init__(self, imei, cookies):
         self.imei = imei
@@ -435,6 +589,9 @@ class Zalo:
             return True, res
         return False, res
 
+# ---------------------------------------------------------
+# DISCORD USER CLIENT
+# ---------------------------------------------------------
 class DiscordUserClient:
     def __init__(self, token):
         self.token = token.strip()
@@ -597,44 +754,51 @@ class DiscordUserClient:
             return True, r.json()
         return False, {"error": r.text, "status": r.status_code}
 
-def db():
-    c = sqlite3.connect(DB_PATH)
-    c.row_factory = sqlite3.Row
-    c.execute("PRAGMA journal_mode=WAL")
-    c.execute("PRAGMA synchronous=NORMAL")
-    return c
+# ---------------------------------------------------------
+# QUẢN LÝ TIẾN TRÌNH GỬI TIN & BOT LỆNH
+# ---------------------------------------------------------
+RUNNING_TASKS = {}
+TASKS_LOCK = threading.Lock()
+SEEN_MESSAGES = set()
+SEEN_LOCK = threading.Lock()
 
-def init_db():
+BOT_STATE = {
+    "active_file": None,
+    "active_text": None,
+    "target_mode": "here",
+    "custom_targets": [],
+    "spam_mode": "fast",
+    "delay": 1.2,
+    "color_mode": "rainbow",
+    "fixed_color": "red",
+    "tag_all": False,
+    "combat_icon_mode": "mixed",
+    "combat_icon_count": 3,
+    "antiband": True
+}
+
+def get_active_clients():
     conn = db()
-    conn.execute("""
-    CREATE TABLE IF NOT EXISTS accounts (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        label TEXT NOT NULL,
-        platform TEXT NOT NULL DEFAULT 'zalo',
-        imei TEXT,
-        cookies TEXT,
-        token TEXT,
-        real_name TEXT,
-        avatar TEXT,
-        status TEXT DEFAULT 'unknown',
-        enabled INTEGER DEFAULT 1,
-        created_at REAL
-    )
-    """)
-    conn.execute("""
-    CREATE TABLE IF NOT EXISTS files (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        filename TEXT NOT NULL,
-        filepath TEXT NOT NULL,
-        size INTEGER,
-        lines INTEGER,
-        created_at REAL
-    )
-    """)
-    conn.commit()
+    zalo_rows = conn.execute("SELECT * FROM accounts WHERE platform = 'zalo' AND enabled = 1").fetchall()
+    discord_rows = conn.execute("SELECT * FROM accounts WHERE platform = 'discord' AND enabled = 1").fetchall()
     conn.close()
 
-init_db()
+    z_clients = []
+    d_clients = []
+
+    for r in zalo_rows:
+        try:
+            z_clients.append((r["id"], r["label"], Zalo(r["imei"], r["cookies"])))
+        except Exception:
+            pass
+
+    for r in discord_rows:
+        try:
+            d_clients.append((r["id"], r["label"], DiscordUserClient(r["token"])))
+        except Exception:
+            pass
+
+    return z_clients, d_clients
 
 class FastFileBlockReader:
     def __init__(self, filepath):
@@ -666,49 +830,6 @@ class FastFileBlockReader:
             self.fp.close()
         except Exception:
             pass
-
-BOT_STATE = {
-    "active_file": None,
-    "active_text": None,
-    "target_mode": "here",
-    "custom_targets": [],
-    "spam_mode": "fast",
-    "delay": 1.2,
-    "color_mode": "rainbow",
-    "fixed_color": "red",
-    "tag_all": False,
-    "combat_icon_mode": "mixed",
-    "combat_icon_count": 3,
-    "antiband": True
-}
-
-RUNNING_TASKS = {}
-TASKS_LOCK = threading.Lock()
-SEEN_MESSAGES = set()
-SEEN_LOCK = threading.Lock()
-
-def get_active_clients():
-    conn = db()
-    zalo_rows = conn.execute("SELECT * FROM accounts WHERE platform = 'zalo' AND enabled = 1").fetchall()
-    discord_rows = conn.execute("SELECT * FROM accounts WHERE platform = 'discord' AND enabled = 1").fetchall()
-    conn.close()
-
-    z_clients = []
-    d_clients = []
-
-    for r in zalo_rows:
-        try:
-            z_clients.append((r["id"], r["label"], Zalo(r["imei"], r["cookies"])))
-        except Exception:
-            pass
-
-    for r in discord_rows:
-        try:
-            d_clients.append((r["id"], r["label"], DiscordUserClient(r["token"])))
-        except Exception:
-            pass
-
-    return z_clients, d_clients
 
 def run_spam_task(task_id, payload, stop_ev):
     targets = payload.get("targets", [])
@@ -1117,8 +1238,9 @@ def execute_command(cmd_text, platform, target_id, is_group=True, client=None):
 
     return f"⚠️ Lệnh không xác định: .{cmd_name}. Gõ .menu để xem danh sách toàn bộ lệnh!"
 
+# Luồng lắng nghe tự động Zalo
 def zalo_listener_loop():
-    print("🔷 [Zalo Listener] Khởi động bộ bắt lệnh tự động...")
+    print("🔷 [Zalo Listener] Khởi động luồng bắt lệnh tự động...")
     while True:
         try:
             z_clients, _ = get_active_clients()
@@ -1158,8 +1280,9 @@ def zalo_listener_loop():
             pass
         time.sleep(3)
 
+# Luồng lắng nghe tự động Discord
 def discord_listener_loop():
-    print("🟣 [Discord Listener] Khởi động bộ bắt lệnh tự động...")
+    print("🟣 [Discord Listener] Khởi động luồng bắt lệnh tự động...")
     while True:
         try:
             _, d_clients = get_active_clients()
@@ -1194,82 +1317,232 @@ def discord_listener_loop():
             pass
         time.sleep(3)
 
-def terminal_shell_loop():
-    print("\n" + "="*70)
-    print("👑 RICKI VIP — TRÌNH ĐIỀU HÀNH DÒNG LỆNH (TERMINAL CONSOLE) 👑")
-    print("Bản quyền © Phạm Anh Khôi (Verified ✔)")
-    print("──────────────────────────────────────────────────────────────────────")
-    print("👉 Gõ '.menu' để xem danh sách lệnh.")
-    print("👉 Bạn cũng có thể gõ lệnh trực tiếp trong chat Zalo hoặc Discord!")
-    print("="*70 + "\n")
+# KÍCH HOẠT CÁC LUỒNG BẮT LỆNH NGẦM NGAY KHI GUNICORN HOẶC PYTHON KHỞI CHẠY
+LISTENERS_STARTED = False
+LISTENERS_LOCK = threading.Lock()
 
-    while True:
-        try:
-            cmd = input("Ricki Vip > ").strip()
-            if not cmd:
-                continue
-            if cmd.lower() in ["exit", "quit"]:
-                print("Đang thoát...")
-                sys.exit(0)
+def start_background_listeners():
+    global LISTENERS_STARTED
+    with LISTENERS_LOCK:
+        if not LISTENERS_STARTED:
+            LISTENERS_STARTED = True
+            threading.Thread(target=zalo_listener_loop, daemon=True).start()
+            threading.Thread(target=discord_listener_loop, daemon=True).start()
+            print("🚀 [Ricki Vip] Đã kích hoạt nền Zalo & Discord Command Listeners!")
 
-            reply = execute_command(cmd, "zalo", "terminal", is_group=False)
-            if reply:
-                print("\n" + reply + "\n")
-        except (KeyboardInterrupt, EOFError):
-            print("\nĐã tắt console.")
-            break
-        except Exception as e:
-            print("Lỗi:", e)
+start_background_listeners()
 
-def setup_accounts_wizard():
+# ---------------------------------------------------------
+# CÁC TUYẾN ĐƯỜNG HTTP (FLASK ENDPOINTS)
+# ---------------------------------------------------------
+@app.route("/health")
+def route_health():
+    return jsonify({"status": "ok", "app": "Ricki Vip", "author": "Phạm Anh Khôi", "verified": True})
+
+@app.route("/logo")
+def route_logo():
     conn = db()
-    z_acc = conn.execute("SELECT * FROM accounts WHERE platform = 'zalo'").fetchone()
-    d_acc = conn.execute("SELECT * FROM accounts WHERE platform = 'discord'").fetchone()
+    row = conn.execute("SELECT value FROM settings WHERE key = 'site_logo'").fetchone()
+    conn.close()
+    if row and row["value"]:
+        logo_path = os.path.join(UPLOAD_DIR, row["value"])
+        if os.path.exists(logo_path):
+            return send_from_directory(UPLOAD_DIR, row["value"])
+
+    svg = '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+      <defs>
+        <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" style="stop-color:#6366f1;stop-opacity:1" />
+          <stop offset="100%" style="stop-color:#3b82f6;stop-opacity:1" />
+        </linearGradient>
+      </defs>
+      <rect width="100" height="100" rx="26" fill="url(#grad1)"/>
+      <path d="M50 22 L63 44 L84 38 L72 68 L28 68 L16 38 L37 44 Z" fill="#ffd700" stroke="#fff" stroke-width="2"/>
+      <circle cx="50" cy="54" r="5" fill="#fff"/>
+      <circle cx="33" cy="54" r="3.5" fill="#fff"/>
+      <circle cx="67" cy="54" r="3.5" fill="#fff"/>
+    </svg>'''
+    return svg, 200, {"Content-Type": "image/svg+xml"}
+
+HTML_DASHBOARD = """<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Ricki Vip — Điều Hành Tự Động</title>
+<style>
+:root {
+  --bg-page: #080c16;
+  --bg-card: rgba(16, 24, 44, 0.94);
+  --accent-primary: #3b82f6;
+  --accent-indigo: #6366f1;
+  --accent-green: #10b981;
+  --accent-red: #ef4444;
+  --txt-0: #ffffff;
+  --txt-1: #e2e8f0;
+  --txt-2: #94a3b8;
+  --border-card: rgba(99, 102, 241, 0.22);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg-page); color: var(--txt-1); min-height: 100vh; padding: 18px 14px;
+}
+.container { max-width: 860px; margin: 0 auto; }
+.card {
+  background: var(--bg-card); border: 1px solid var(--border-card);
+  border-radius: 18px; padding: 22px 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.4);
+  margin-bottom: 18px;
+}
+.card h2 { font-size: 16px; font-weight: 800; color: #fff; margin-bottom: 14px; display: flex; align-items: center; justify-content: space-between; }
+.header-box { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; flex-wrap: wrap; gap: 12px; }
+.logo-title { display: flex; align-items: center; gap: 12px; }
+.logo-img { width: 46px; height: 46px; border-radius: 12px; border: 1.5px solid var(--accent-primary); }
+.verified-icon { width: 18px; height: 18px; vertical-align: middle; filter: drop-shadow(0 0 6px rgba(29, 155, 240, 0.7)); }
+.live-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; color: var(--accent-green); background: rgba(16, 185, 129, 0.12); padding: 6px 12px; border-radius: 20px; border: 1px solid rgba(16, 185, 129, 0.3); }
+.live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent-green); box-shadow: 0 0 8px var(--accent-green); }
+.form-group { margin-bottom: 14px; }
+.form-group label { display: block; font-size: 11.5px; font-weight: 700; text-transform: uppercase; color: var(--txt-2); margin-bottom: 6px; }
+input[type="text"], input[type="password"], textarea {
+  width: 100%; padding: 11px 13px; background: rgba(8,12,22,0.9); border: 1px solid var(--border-card);
+  border-radius: 10px; color: #fff; font-size: 13.5px; font-family: inherit;
+}
+input:focus, textarea:focus { outline: none; border-color: var(--accent-primary); box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.25); }
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 11px 18px; border-radius: 10px; font-weight: 700; font-size: 13px;
+  cursor: pointer; border: none; transition: all 0.2s ease;
+}
+.btn-primary { background: linear-gradient(135deg, var(--accent-indigo) 0%, var(--accent-primary) 100%); color: #fff; }
+.btn-green { background: linear-gradient(135deg, #059669 0%, #10b981 100%); color: #fff; }
+.cmd-box { background: rgba(8,12,22,0.92); border: 1px solid var(--border-card); border-radius: 12px; padding: 16px; font-family: monospace; font-size: 13px; line-height: 1.8; color: #38bdf8; overflow-x: auto; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header-box">
+    <div class="logo-title">
+      <img src="/logo" class="logo-img" alt="Logo">
+      <div>
+        <h1 style="font-size:19px; font-weight:800; color:#fff; display:flex; align-items:center; gap:6px;">
+          Ricki Vip
+          <svg viewBox="0 0 24 24" class="verified-icon"><path fill="#1d9bf0" d="M22.5 12.5c0-1.58-.875-2.95-2.148-3.6.154-.435.238-.905.238-1.4 0-2.21-1.79-4-4-4-.495 0-.965.084-1.4.238C14.45 2.475 13.08 1.6 11.5 1.6s-2.95.875-3.6 2.148c-.435-.154-.905-.238-1.4-.238-2.21 0-4 1.79-4 4 0 .495.084.965.238 1.4C1.475 9.55.6 10.92.6 12.5s.875 2.95 2.148 3.6c-.154.435-.238.905-.238 1.4 0 2.21 1.79 4 4 4 .495 0 .965-.084 1.4-.238 1.15 1.273 2.52 2.148 4.1 2.148s2.95-.875 3.6-2.148c.435.154.905.238 1.4.238 2.21 0 4-1.79 4-4 0-.495-.084-.965-.238-1.4 1.273-.65 2.148-2.02 2.148-3.6zm-12.79 4.31l-4.2-4.2 1.41-1.41 2.79 2.79 6.79-6.79 1.41 1.41-8.2 8.2z"/></svg>
+        </h1>
+        <p style="font-size:12px; color:var(--txt-2);">Bản quyền © Phạm Anh Khôi • Bot Lệnh Zalo & Discord</p>
+      </div>
+    </div>
+    <div class="live-pill"><span class="live-dot"></span> Đang Chạy Trên Render</div>
+  </div>
+
+  <div class="card">
+    <h2><span>Cấu Hình Nhanh Token & IMEI (Lưu 1 Lần)</span></h2>
+    <form id="acc-form" onsubmit="saveAcc(event)">
+      <div class="form-group">
+        <label>Zalo IMEI (Zalo Web)</label>
+        <input type="text" id="z-imei" placeholder="Nhập chuỗi IMEI Zalo...">
+      </div>
+      <div class="form-group">
+        <label>Zalo Cookie (Dạng JSON hoặc String)</label>
+        <textarea id="z-cookie" style="min-height:70px;" placeholder='[{"name":"zpw_sek","value":"..."}, ...]'></textarea>
+      </div>
+      <div class="form-group">
+        <label>Discord User Account Token</label>
+        <input type="password" id="d-token" placeholder="Dán mã Token tài khoản Discord...">
+      </div>
+      <button type="submit" class="btn btn-green" style="width:100%;">LƯU TÀI KHOẢN VÀ KÍCH HOẠT BOT ⚡</button>
+    </form>
+    <div id="save-msg" style="margin-top:10px; font-size:13px; font-weight:700;"></div>
+  </div>
+
+  <div class="card">
+    <h2><span>Hướng Dẫn Gõ Lệnh Trực Tiếp (Zalo & Discord)</span></h2>
+    <div style="font-size:13px; color:var(--txt-2); margin-bottom:12px;">
+      Bạn chỉ cần mở Zalo hoặc Discord lên, nhắn tin vào <b>Nhóm</b>, <b>Bạn bè</b>, hoặc <b>Cloud của tôi (Zalo)</b> các lệnh bên dưới:
+    </div>
+    <div class="cmd-box">
+.menu                        👉 Hiện bảng hướng dẫn & toàn bộ lệnh
+.spam nhanh 1.2 rainbow       👉 Bắt đầu gửi tin siêu tốc đổi màu
+.spam ngon 2.0 red           👉 Treo khối ngôn (2 giây / 1 tin)
+.stop                        👉 Dừng toàn bộ tiến trình gửi tin
+.tagall [nội dung]           👉 Tag @All Zalo & @everyone Discord
+.file [tên_file.txt]         👉 Chọn tệp nội dung ngôn để gửi
+.listfiles                   👉 Liệt kê toàn bộ tệp ngôn đã lưu
+.addfile &lt;tên&gt; &lt;nội dung&gt;    👉 Tạo tệp mới ngay trong box chat
+.color &lt;màu&gt;                👉 Đổi màu chữ Zalo (red, gold, green, blue...)
+.status                      👉 Xem số tin đã gửi & tiến trình đang chạy
+    </div>
+  </div>
+</div>
+
+<script>
+async function saveAcc(e){
+  e.preventDefault();
+  var imei = document.getElementById('z-imei').value.trim();
+  var cookie = document.getElementById('z-cookie').value.trim();
+  var token = document.getElementById('d-token').value.trim();
+  var msg = document.getElementById('save-msg');
+  msg.textContent = 'Đang lưu và khởi động...';
+  msg.style.color = '#38bdf8';
+
+  var res = await fetch('/api/quick_setup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ imei: imei, cookies: cookie, token: token })
+  }).then(function(x){ return x.json(); });
+
+  if(res.ok){
+    msg.textContent = '✔️ Đã lưu thành công! Giờ bạn có thể vào Zalo/Discord gõ .menu là chạy luôn!';
+    msg.style.color = '#10b981';
+  } else {
+    msg.textContent = '❌ Lỗi: ' + (res.error || 'Không thể lưu');
+    msg.style.color = '#ef4444';
+  }
+}
+</script>
+</body>
+</html>"""
+
+@app.route("/")
+def route_root():
+    return render_template_string(HTML_DASHBOARD)
+
+@app.route("/api/quick_setup", methods=["POST"])
+def api_quick_setup():
+    data = request.get_json(silent=True) or {}
+    imei = data.get("imei", "").strip()
+    cookies = data.get("cookies", "").strip()
+    token = data.get("token", "").strip()
+
+    conn = db()
+    saved = []
+    if imei and cookies:
+        conn.execute("""
+        INSERT INTO accounts (label, platform, imei, cookies, real_name, status, enabled, created_at)
+        VALUES ('Zalo Main', 'zalo', ?, ?, 'Zalo User', 'live', 1, ?)
+        """, (imei, cookies, time.time()))
+        saved.append("Zalo")
+
+    if token:
+        conn.execute("""
+        INSERT INTO accounts (label, platform, token, real_name, status, enabled, created_at)
+        VALUES ('Discord Main', 'discord', ?, 'Discord User', 'live', 1, ?)
+        """, (token, time.time()))
+        saved.append("Discord")
+
+    conn.commit()
     conn.close()
 
-    if not z_acc and not d_acc:
-        print("\n" + "="*70)
-        print("⚡ CẤU HÌNH TÀI KHOẢN KHỞI TẠO (CHỈ CẦN NHẬP 1 LẦN) ⚡")
-        print("="*70)
+    start_background_listeners()
 
-        print("\n[1] CẤU HÌNH TÀI KHOẢN ZALO:")
-        z_imei = input("👉 Nhập IMEI Zalo Web (bỏ trống nếu không dùng Zalo): ").strip()
-        z_cookies = ""
-        if z_imei:
-            z_cookies = input("👉 Nhập Cookie Zalo (dạng String hoặc JSON): ").strip()
+    if not saved:
+        return jsonify({"error": "Vui lòng nhập ít nhất tài khoản Zalo hoặc Discord"}), 400
 
-        print("\n[2] CẤU HÌNH TÀI KHOẢN DISCORD:")
-        d_token = input("👉 Nhập Discord User Account Token (bỏ trống nếu không dùng Discord): ").strip()
+    return jsonify({"ok": True, "saved": saved})
 
-        conn = db()
-        if z_imei and z_cookies:
-            conn.execute("""
-            INSERT INTO accounts (label, platform, imei, cookies, real_name, status, enabled, created_at)
-            VALUES (?, 'zalo', ?, ?, 'Zalo User', 'live', 1, ?)
-            """, ("Nick Zalo Chính", z_imei, z_cookies, time.time()))
-            print("✔️ Đã lưu tài khoản Zalo!")
-
-        if d_token:
-            conn.execute("""
-            INSERT INTO accounts (label, platform, token, real_name, status, enabled, created_at)
-            VALUES (?, 'discord', ?, 'Discord User', 'live', 1, ?)
-            """, ("Nick Discord Chính", d_token, time.time()))
-            print("✔️ Đã lưu tài khoản Discord!")
-
-        conn.commit()
-        conn.close()
-        print("\nCấu hình hoàn tất! Đang khởi động hệ thống...\n")
-
-def main():
-    setup_accounts_wizard()
-
-    t_zalo = threading.Thread(target=zalo_listener_loop, daemon=True)
-    t_zalo.start()
-
-    t_discord = threading.Thread(target=discord_listener_loop, daemon=True)
-    t_discord.start()
-
-    terminal_shell_loop()
-
+# ---------------------------------------------------------
+# KHỞI CHẠY BẰNG PYTHON HOẶC GUNICORN
+# ---------------------------------------------------------
 if __name__ == "__main__":
-    main()
+    port = int(os.environ.get("PORT", 5000))
+    print(f"🚀 [Ricki Vip] Đang chạy tại cổng: {port}")
+    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
