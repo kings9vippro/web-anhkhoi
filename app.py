@@ -33,7 +33,7 @@ DB_PATH = os.path.join(DATA_DIR, "ricki_vip.db")
 UPLOAD_DIR = os.path.join(DATA_DIR, "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# BIẾN APP CHO GUNICORN (GIẢI QUYẾT LỖI GUNICORN TRÊN RENDER 100%)
+# ĐỐI TƯỢNG WSGI CHO GUNICORN TRÊN RENDER (BẮT BUỘC ĐỂ KHÔNG BỊ LỖI DEPLOY)
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", os.urandom(24))
 
@@ -47,7 +47,7 @@ class WebSecurityArmor:
         self.failed_logins = defaultdict(list)
         self.blocked_ips = {}
 
-    def check_rate_limit(self, ip, max_reqs=250, window=60):
+    def check_rate_limit(self, ip, max_reqs=280, window=60):
         now = time.time()
         with self.lock:
             if ip in self.blocked_ips:
@@ -133,6 +133,7 @@ def init_db():
         filepath TEXT NOT NULL,
         size INTEGER,
         lines INTEGER,
+        blocks INTEGER DEFAULT 1,
         created_at REAL
     )
     """)
@@ -144,7 +145,7 @@ def init_db():
     """)
     conn.commit()
 
-    # Tự động nạp tài khoản từ biến môi trường Render nếu có
+    # Tự động nạp tài khoản từ biến môi trường Render nếu được cấu hình
     z_imei = os.environ.get("ZALO_IMEI", "").strip()
     z_cookies = os.environ.get("ZALO_COOKIES", "").strip()
     d_token = os.environ.get("DISCORD_TOKEN", "").strip()
@@ -215,10 +216,19 @@ def utf16_len(s):
         return 0
     return len(s.encode("utf-16-le")) // 2
 
-def apply_antiband_zalo_v4(text):
+# ---------------------------------------------------------
+# HÀM ANTI-BAN ZALO V5 NÂNG CAO (AN TOÀN PHÔNG TIẾNG VIỆT 100%)
+# ---------------------------------------------------------
+def apply_antiband_zalo_v5(text):
+    """
+    Thuật toán Anti-Ban V5:
+    - Bảo toàn 100% nguyên âm và dấu thanh tiếng Việt (không bao giờ chèn vào giữa từ ghép).
+    - Ngẫu nhiên hóa khoảng trắng vô hình an toàn (\u00a0, \u2009, \u202f).
+    - Chèn chuỗi zero-width spaces (\u200b, \u200c, \u200d, \ufeff) sau dấu câu và cuối dòng.
+    """
     if not text:
         return text
-    SAFE_SPACES = [" ", "\u00a0", " \u200b", "\u2009", "\u200a", "\u202f"]
+    SAFE_SPACES = [" ", "\u00a0", " \u200b", "\u2009", "\u202f"]
     SAFE_TAIL_CHARS = ["\u200b", "\u200c", "\u200d", "\ufeff"]
 
     lines = text.split("\n")
@@ -233,12 +243,12 @@ def apply_antiband_zalo_v4(text):
         for i, w in enumerate(words):
             new_words.append(w)
             if i < len(words) - 1:
-                if random.random() < 0.30:
+                if random.random() < 0.28:
                     new_words.append(random.choice(SAFE_SPACES))
                 else:
                     new_words.append(" ")
         line_str = "".join(new_words)
-        line_str = line_str.replace(". ", ".\u200b ").replace("! ", "!\u200b ").replace("? ", "?\u200b ")
+        line_str = line_str.replace(". ", ".\u200b ").replace(", ", ",\u200b ").replace("! ", "!\u200b ").replace("? ", "?\u200b ")
         processed_lines.append(line_str)
 
     result = "\n".join(processed_lines)
@@ -248,7 +258,7 @@ def apply_antiband_zalo_v4(text):
     return result
 
 # ---------------------------------------------------------
-# GIAO THỨC ZALO WEB NÂNG CAO
+# GIAO THỨC ZALO WEB CLIENT NÂNG CAO
 # ---------------------------------------------------------
 class Zalo:
     def __init__(self, imei, cookies):
@@ -297,6 +307,21 @@ class Zalo:
                 self.secret_key = zpw
         if not self.secret_key:
             raise Exception("Không thể lấy Secret Key Zalo")
+
+    def check_status(self):
+        """Kiểm tra tình trạng tài khoản Zalo còn sống hay die và đo độ trễ (ping)"""
+        t0 = time.time()
+        try:
+            prof = self.get_user_profile()
+            ping_ms = int((time.time() - t0) * 1000)
+            if prof and (prof.get("name") or prof.get("displayName") or prof.get("userId")):
+                uname = prof.get("name") or prof.get("displayName") or "Zalo User"
+                uid = prof.get("userId") or prof.get("uid") or ""
+                return {"live": True, "name": uname, "uid": uid, "ping_ms": ping_ms}
+            return {"live": False, "error": "Không thể lấy hồ sơ người dùng", "ping_ms": ping_ms}
+        except Exception as e:
+            ping_ms = int((time.time() - t0) * 1000)
+            return {"live": False, "error": str(e), "ping_ms": ping_ms}
 
     def _pad(self, s):
         bs = AES.block_size
@@ -394,6 +419,7 @@ class Zalo:
         return boxes
 
     def get_group_members(self, grid):
+        """Lấy danh sách thành viên nhóm với đầy đủ UID và Tên thật từ memInfoMap"""
         members = []
         fmap = self.get_friend_map()
         try:
@@ -439,7 +465,7 @@ class Zalo:
                 continue
 
             if antiband:
-                clean_line = apply_antiband_zalo_v4(clean_line)
+                clean_line = apply_antiband_zalo_v5(clean_line)
 
             if color_mode == "rainbow":
                 color_idx = (idx + color_offset) % len(ZALO_PALETTE)
@@ -540,6 +566,7 @@ class Zalo:
             tag_header=tag_header, antiband=antiband
         )
 
+        # Hỗ trợ gắn tag ở CUỐI tin nhắn (tag_pos == 'tail')
         if tags_str and tag_pos == "tail":
             base_len = utf16_len(final_msg)
             final_msg += " " + tags_str
@@ -631,6 +658,24 @@ class DiscordUserClient:
             "Content-Type": "application/json"
         })
 
+    def check_status(self):
+        """Kiểm tra token Discord còn sống hay die và đo độ trễ (ping)"""
+        t0 = time.time()
+        try:
+            r = self.session.get("https://discord.com/api/v9/users/@me", timeout=8)
+            ping_ms = int((time.time() - t0) * 1000)
+            if r.status_code == 200:
+                data = r.json()
+                uname = data.get("global_name") or data.get("username") or "Discord User"
+                uid = data.get("id") or ""
+                return {"live": True, "username": uname, "id": uid, "ping_ms": ping_ms}
+            elif r.status_code == 401:
+                return {"live": False, "error": "Token hết hạn hoặc không hợp lệ (401)", "ping_ms": ping_ms}
+            return {"live": False, "error": f"Lỗi HTTP {r.status_code}", "ping_ms": ping_ms}
+        except Exception as e:
+            ping_ms = int((time.time() - t0) * 1000)
+            return {"live": False, "error": str(e), "ping_ms": ping_ms}
+
     def get_self(self):
         try:
             r = self.session.get("https://discord.com/api/v9/users/@me", timeout=10)
@@ -717,7 +762,7 @@ class DiscordUserClient:
         except Exception:
             pass
 
-    def send_message(self, target_id, content, mentions=None, tag_all=False, antiband=True):
+    def send_message(self, target_id, content, mentions=None, tag_all=False, antiband=True, tag_tail=""):
         channel_id = str(target_id)
         if channel_id.startswith("user_"):
             raw_uid = channel_id.replace("user_", "")
@@ -731,8 +776,10 @@ class DiscordUserClient:
         if mentions:
             tags = " ".join([f"<@{m.get('id')}>" for m in mentions])
             final_msg = tags + " " + final_msg
+        if tag_tail:
+            final_msg = final_msg + " " + tag_tail
         if antiband:
-            final_msg = apply_antiband_zalo_v4(final_msg)
+            final_msg = apply_antiband_zalo_v5(final_msg)
 
         self.simulate_typing(channel_id)
 
@@ -762,6 +809,7 @@ TASKS_LOCK = threading.Lock()
 SEEN_MESSAGES = set()
 SEEN_LOCK = threading.Lock()
 
+# Trạng thái toàn cục điều khiển bằng lệnh
 BOT_STATE = {
     "active_file": None,
     "active_text": None,
@@ -772,6 +820,7 @@ BOT_STATE = {
     "color_mode": "rainbow",
     "fixed_color": "red",
     "tag_all": False,
+    "tag_rotate_tail": False,  # Chức năng kèm @ tag ở cuối tự động xoay vòng liên tục
     "combat_icon_mode": "mixed",
     "combat_icon_count": 3,
     "antiband": True
@@ -840,6 +889,7 @@ def run_spam_task(task_id, payload, stop_ev):
     color_mode = payload.get("color_mode", "rainbow")
     fixed_color = payload.get("fixed_color", "red")
     tag_all = bool(payload.get("tag_all", False))
+    tag_rotate_tail = bool(payload.get("tag_rotate_tail", False))
     antiband = bool(payload.get("antiband", True))
     combat_icon_mode = payload.get("combat_icon_mode", "mixed")
     combat_icon_count = int(payload.get("combat_icon_count", 3))
@@ -850,6 +900,7 @@ def run_spam_task(task_id, payload, stop_ev):
 
     msg_idx = 0
     direct_idx = 0
+    tag_cycle_index = 0
 
     while not stop_ev.is_set():
         if reader:
@@ -884,6 +935,14 @@ def run_spam_task(task_id, payload, stop_ev):
 
             acc_id, label, client = client_tuple
 
+            # Lấy danh sách thành viên nếu bật tính năng tag xoay vòng ở cuối tin
+            group_members = []
+            if tag_rotate_tail and is_group and target_plat == "zalo":
+                try:
+                    group_members = client.get_group_members(target_id)
+                except Exception:
+                    pass
+
             icon_str = ""
             if combat_icon_mode != "none":
                 icon_str = " " + generate_combat_combo(combat_icon_mode, combat_icon_count)
@@ -893,17 +952,26 @@ def run_spam_task(task_id, payload, stop_ev):
                 if target_plat == "zalo":
                     ok, res = client.send_adv(
                         text, target_id, color_mode=color_mode, fixed_color=fixed_color,
-                        is_group=is_group, tag_all=tag_all, is_heading=True,
-                        color_offset=msg_idx, antiband=antiband
+                        is_group=is_group, mentions=(group_members if tag_rotate_tail else None),
+                        tag_all=tag_all, tag_mode="rotate", mention_index=tag_cycle_index,
+                        is_heading=True, color_offset=msg_idx, antiband=antiband,
+                        tag_pos=("tail" if tag_rotate_tail else "head")
                     )
                 else:
+                    tag_tail_str = ""
+                    if tag_rotate_tail and group_members:
+                        m_target = group_members[tag_cycle_index % len(group_members)]
+                        tag_tail_str = f"<@{m_target.get('id')}>"
                     ok, res = client.send_message(
-                        target_id, text, tag_all=tag_all, antiband=antiband
+                        target_id, text, tag_all=tag_all, antiband=antiband, tag_tail=tag_tail_str
                     )
+
                 if ok:
                     with TASKS_LOCK:
                         if task_id in RUNNING_TASKS:
                             RUNNING_TASKS[task_id]["sent_count"] = RUNNING_TASKS[task_id].get("sent_count", 0) + 1
+                tag_cycle_index += 1
+
             else:
                 lines = [ln.strip() for ln in raw.split("\n") if ln.strip()]
                 for ln in lines:
@@ -913,18 +981,26 @@ def run_spam_task(task_id, payload, stop_ev):
                     if target_plat == "zalo":
                         ok, res = client.send_adv(
                             msg_line, target_id, color_mode=color_mode, fixed_color=fixed_color,
-                            is_group=is_group, tag_all=tag_all, is_heading=True,
-                            color_offset=msg_idx, antiband=antiband
+                            is_group=is_group, mentions=(group_members if tag_rotate_tail else None),
+                            tag_all=tag_all, tag_mode="rotate", mention_index=tag_cycle_index,
+                            is_heading=True, color_offset=msg_idx, antiband=antiband,
+                            tag_pos=("tail" if tag_rotate_tail else "head")
                         )
                     else:
+                        tag_tail_str = ""
+                        if tag_rotate_tail and group_members:
+                            m_target = group_members[tag_cycle_index % len(group_members)]
+                            tag_tail_str = f"<@{m_target.get('id')}>"
                         ok, res = client.send_message(
-                            target_id, msg_line, tag_all=tag_all, antiband=antiband
+                            target_id, msg_line, tag_all=tag_all, antiband=antiband, tag_tail=tag_tail_str
                         )
+
                     if ok:
                         with TASKS_LOCK:
                             if task_id in RUNNING_TASKS:
                                 RUNNING_TASKS[task_id]["sent_count"] = RUNNING_TASKS[task_id].get("sent_count", 0) + 1
                     msg_idx += 1
+                    tag_cycle_index += 1
                     time.sleep(delay * random.uniform(0.9, 1.2))
                 continue
 
@@ -938,50 +1014,52 @@ def run_spam_task(task_id, payload, stop_ev):
         if task_id in RUNNING_TASKS:
             RUNNING_TASKS[task_id]["status"] = "stopped"
 
-MENU_TEXT = """👑 RICKI VIP — ĐIỀU HÀNH BẰNG LỆNH (ZALO & DISCORD) 👑
+# ---------------------------------------------------------
+# MENU LỆNH ĐẦY ĐỦ & ĐẸP MẮT (RICKI VIP BOT)
+# ---------------------------------------------------------
+MENU_TEXT = """👑 RICKI VIP — HỆ THỐNG ĐIỀU HÀNH BẰNG LỆNH 👑
 Bản quyền © Phạm Anh Khôi (Verified ✔)
 ────────────────────────────
-📋 BẢNG DANH SÁCH LỆNH CHÍNH XÁC:
+📋 BẢNG LỆNH ĐIỀU HÀNH TỰ ĐỘNG:
 
-1️⃣ .menu | !menu
-   👉 Hiện bảng hướng dẫn và danh sách toàn bộ lệnh.
+🚀 1. GỬI TIN & ĐIỀU HÀNH:
+• .spam [nhanh|ngon|nhay] [delay] [màu] [tag]
+  👉 Bắn tin tự động (Thêm chữ 'tag' để tự gắn @ tag xoay vòng ở cuối tin liên tục!)
+  👉 Ví dụ: .spam nhanh 1.2 rainbow tag
+• .stop | .stopall
+  👉 Dừng ngay lập tức toàn bộ tiến trình gửi tin.
 
-2️⃣ .spam [nhanh|ngon|nhay] [delay] [màu]
-   👉 Bắt đầu gửi tin tự động vào box chat này!
-   👉 Ví dụ: .spam nhanh 1.2 rainbow
-   👉 Ví dụ: .spam ngon 2.0 red
+👥 2. TAG THÀNH VIÊN & @ALL:
+• .tagloop [delay] [màu] [nội dung]
+  👉 Tự động tag xoay vòng từng thành viên ở CUỐI tin liên tục đến khi gõ .stop!
+• .tagall [nội dung]
+  👉 Rung chuông thông báo toàn nhóm (@All trên Zalo, @everyone trên Discord).
 
-3️⃣ .stop | .stopall
-   👉 Dừng ngay lập tức toàn bộ tiến trình đang gửi tin.
+📁 3. TỆP NGÔN & THIẾT LẬP FILE:
+• .setupfile <tên_file>
+  👉 Kiểm tra toàn diện file (dòng, khối ngôn, size) & đặt làm tệp chạy chính!
+• .checkfile <tên_file>
+  👉 Phân tích cú pháp và xem trước 3 khối ngôn đầu của file.
+• .listfiles | .files
+  👉 Liệt kê toàn bộ tệp ngôn đã đẩy lên máy chủ.
+• .addfile <tên_file.txt> <nội dung>
+  👉 Tạo/lưu tệp ngôn mới trực tiếp qua chat.
+• .settext <nội dung>
+  👉 Đặt nội dung gửi trực tiếp (thay thế tệp).
 
-4️⃣ .tagall [nội dung]
-   👉 Tag toàn bộ thành viên (@All trên Zalo / @everyone trên Discord).
-   👉 Ví dụ: .tagall Dậy anh em ơi chiến nào!
+🔍 4. KIỂM TRA TÀI KHOẢN (CHECK LIVE/DIE):
+• .check | .checkacc
+  👉 Kiểm tra Token Discord & IMEI Zalo xem còn sống hay die kèm tốc độ Ping!
+• .status
+  👉 Báo cáo tổng thể tiến trình, số tin đã gửi, tệp đang chọn.
 
-5️⃣ .file [tên_file.txt]
-   👉 Chọn tệp nội dung ngôn (VD: .file ngon.txt).
-   👉 Bỏ trống để xem tệp đang chọn & danh sách tệp có sẵn.
-
-6️⃣ .listfiles
-   👉 Xem danh sách toàn bộ tệp ngôn đã lưu trên máy chủ.
-
-7️⃣ .addfile <tên_file.txt> <nội dung>
-   👉 Tạo hoặc lưu tệp ngôn mới trực tiếp từ box chat!
-
-8️⃣ .settext <nội dung>
-   👉 Dán trực tiếp văn bản cần gửi (thay thế tệp).
-
-9️⃣ .color <rainbow|random|red|gold|green|blue|purple|pink|cyan>
-   👉 Đổi màu chữ Zalo (áp dụng chuẩn 100% trong nhóm).
-
-🔟 .status
-   👉 Xem trạng thái tài khoản, tiến trình và số tin đã gửi.
-
-1️⃣1️⃣ .boxes
-   👉 Liệt kê danh sách các box chat / nhóm gần đây để lấy ID.
-
-1️⃣2️⃣ .target <here | all | id1,id2>
-   👉 Đặt mục tiêu gửi (mặc định: here - chính nhóm đang gõ lệnh).
+🎨 5. MÀU SẮC & CÀI ĐẶT:
+• .color <rainbow|random|red|gold|green|blue|purple|pink|cyan>
+  👉 Đổi màu chữ Zalo (chuẩn 100% nhóm chat).
+• .boxes
+  👉 Xem danh sách 10 box chat / nhóm gần nhất kèm ID.
+• .target <here | all | id>
+  👉 Chọn mục tiêu nhận tin (mặc định: here - chính nhóm đang gõ).
 ────────────────────────────
 💡 Bạn có thể gõ lệnh trực tiếp trong nhóm Zalo, chat riêng, Cloud của tôi, hoặc kênh Discord!"""
 
@@ -1001,137 +1079,226 @@ def execute_command(cmd_text, platform, target_id, is_group=True, client=None):
     else:
         return None
 
+    # 1. MENU
     if cmd_name in ["menu", "help"]:
         return MENU_TEXT
 
-    elif cmd_name == "status":
-        z_clients, d_clients = get_active_clients()
-        with TASKS_LOCK:
-            running_tasks = [t for t in RUNNING_TASKS.values() if t.get("status") == "running"]
-            total_sent = sum(t.get("sent_count", 0) for t in RUNNING_TASKS.values())
-
-        file_name = os.path.basename(BOT_STATE["active_file"]) if BOT_STATE["active_file"] else "Chưa chọn (Dùng .file hoặc .settext)"
-        if BOT_STATE["active_text"]:
-            file_name = f"Văn bản trực tiếp ({len(BOT_STATE['active_text'])} ký tự)"
-
+    # 2. CHECK TOKEN / IMEI (LIVE HAY DIE)
+    elif cmd_name in ["check", "checkacc", "kiemtra"]:
         rep = [
-            "⚡ TRẠNG THÁI HỆ THỐNG RICKI VIP ⚡",
+            "🔍 KẾT QUẢ KIỂM TRA TRẠNG THÁI TÀI KHOẢN 🔍",
             "👤 Bản quyền: Phạm Anh Khôi (Verified ✔)",
-            "────────────────────────────",
-            f"🔷 Tài khoản Zalo hoạt động: {len(z_clients)}",
-            f"🟣 Tài khoản Discord hoạt động: {len(d_clients)}",
-            f"📁 Nguồn nội dung: {file_name}",
-            f"🎯 Mục tiêu: {BOT_STATE['target_mode']} (ID: {target_id})",
-            f"🎨 Màu chữ Zalo: {BOT_STATE['color_mode']} ({BOT_STATE['fixed_color']})",
-            f"🚀 Tiến trình đang chạy: {len(running_tasks)}",
-            f"📊 Tổng số tin đã gửi: {total_sent}",
-            "────────────────────────────",
-            "👉 Gõ .menu để xem hướng dẫn đầy đủ."
+            "────────────────────────────"
         ]
-        return "\n".join(rep)
+        z_clients, d_clients = get_active_clients()
 
-    elif cmd_name in ["listfiles", "files"]:
-        txt_files = [f for f in os.listdir(UPLOAD_DIR) if f.endswith(".txt")]
-        if not txt_files:
-            return "📁 Thư mục hiện chưa có tệp .txt nào! Dùng lệnh: .addfile <tên_file.txt> <nội dung> để tạo mới."
-        rep = ["📁 DANH SÁCH TỆP NGÔN TRÊN HỆ THỐNG:"]
-        for idx, fn in enumerate(txt_files, 1):
-            fp = os.path.join(UPLOAD_DIR, fn)
-            sz = round(os.path.getsize(fp) / 1024, 1)
-            rep.append(f"{idx}. {fn} ({sz} KB)")
+        if not z_clients and not d_clients:
+            return "⚠️ Chưa có tài khoản nào được kết nối! Hãy nạp Token hoặc IMEI trước."
+
+        # Kiểm tra Zalo
+        for aid, label, zc in z_clients:
+            stat = zc.check_status()
+            if stat["live"]:
+                rep.append(f"🟢 [ZALO] LIVE: {stat['name']} (UID: {stat['uid']}) • Ping: {stat['ping_ms']}ms")
+            else:
+                rep.append(f"🔴 [ZALO] DIE: {label} (Lỗi: {stat['error']}) • Ping: {stat['ping_ms']}ms")
+
+        # Kiểm tra Discord
+        for aid, label, dc in d_clients:
+            stat = dc.check_status()
+            if stat["live"]:
+                rep.append(f"🟢 [DISCORD] LIVE: {stat['username']} (ID: {stat['id']}) • Ping: {stat['ping_ms']}ms")
+            else:
+                rep.append(f"🔴 [DISCORD] DIE: {label} (Lỗi: {stat['error']}) • Ping: {stat['ping_ms']}ms")
+
         rep.append("────────────────────────────")
-        rep.append("👉 Dùng lệnh: .file <tên_file> để chọn tệp cần gửi.")
+        rep.append("⚡ Hệ thống sẵn sàng nhận lệnh điều khiển!")
         return "\n".join(rep)
 
-    elif cmd_name == "file":
+    # 3. SETUP FILE (KIỂM TRA & THIẾT LẬP FILE)
+    elif cmd_name in ["setupfile", "setfile"]:
         if not cmd_args:
-            current = os.path.basename(BOT_STATE["active_file"]) if BOT_STATE["active_file"] else "Chưa chọn"
-            return f"📁 Tệp hiện tại: {current}\n👉 Dùng lệnh: .file <tên_tệp.txt> để chọn, hoặc .listfiles để xem danh sách."
+            return "⚠️ Cú pháp: .setupfile <tên_file.txt>\n👉 Dùng .listfiles để xem danh sách tệp có sẵn trên máy chủ."
 
         target_file = cmd_args.strip()
         fp = os.path.join(UPLOAD_DIR, target_file)
         if not os.path.exists(fp):
-            candidates = [f for f in os.listdir(UPLOAD_DIR) if target_file.lower() in f.lower()]
-            if candidates:
-                fp = os.path.join(UPLOAD_DIR, candidates[0])
-                target_file = candidates[0]
+            cands = [f for f in os.listdir(UPLOAD_DIR) if target_file.lower() in f.lower()]
+            if cands:
+                fp = os.path.join(UPLOAD_DIR, cands[0])
+                target_file = cands[0]
             else:
-                return f"❌ Không tìm thấy tệp '{target_file}'! Gõ .listfiles để xem các tệp có sẵn."
+                return f"❌ Không tìm thấy tệp '{target_file}' trên máy chủ! Dùng .listfiles để xem các tệp đã tải lên."
+
+        # Phân tích cú pháp tệp
+        total_lines = 0
+        total_blocks = 0
+        in_block = False
+        sample_blocks = []
+
+        try:
+            with open(fp, "r", encoding="utf-8", errors="ignore") as f:
+                cur_b = []
+                for line in f:
+                    total_lines += 1
+                    l_str = line.strip()
+                    if l_str:
+                        cur_b.append(l_str)
+                        if not in_block:
+                            total_blocks += 1
+                            in_block = True
+                    else:
+                        if in_block and cur_b and len(sample_blocks) < 2:
+                            sample_blocks.append("\n".join(cur_b[:3]))
+                        cur_b = []
+                        in_block = False
+        except Exception as e:
+            return f"❌ Lỗi khi đọc tệp: {str(e)}"
+
+        sz_kb = round(os.path.getsize(fp) / 1024, 1)
+        est_min = round((total_blocks * BOT_STATE["delay"]) / 60, 1)
 
         BOT_STATE["active_file"] = fp
         BOT_STATE["active_text"] = None
-        sz = round(os.path.getsize(fp) / 1024, 1)
-        return f"✔️ ĐÃ CHỌN TỆP: {target_file} ({sz} KB)!\n👉 Gõ .spam để bắt đầu gửi ngay lập tức!"
 
-    elif cmd_name == "addfile":
-        if " " not in cmd_args:
-            return "⚠️ Cú pháp: .addfile <tên_file.txt> <nội dung văn bản>"
-        fname, content = cmd_args.split(" ", 1)
-        if not fname.endswith(".txt"):
-            fname += ".txt"
-        fp = os.path.join(UPLOAD_DIR, fname)
-        with open(fp, "w", encoding="utf-8") as f:
-            f.write(content)
-        BOT_STATE["active_file"] = fp
-        BOT_STATE["active_text"] = None
-        return f"✔️ ĐÃ TẠO TỆP THÀNH CÔNG: {fname}!\nĐã tự động đặt làm tệp nội dung chính. Gõ .spam để bắn tin!"
+        rep = [
+            f"📋 THIẾT LẬP & KIỂM TRA FILE: {target_file}",
+            "────────────────────────────",
+            f"📁 Kích thước: {sz_kb} KB",
+            f"📑 Tổng số dòng: {total_lines} dòng",
+            f"📦 Tổng số khối ngôn: {total_blocks} khối",
+            "🔍 Định dạng: Chuẩn cú pháp (Mỗi khối cách 1 dòng trống)",
+            f"⏳ Thời gian gửi ước tính: ~{est_min} phút (ở delay {BOT_STATE['delay']}s)",
+            "────────────────────────────",
+            "✔️ ĐÃ THIẾT LẬP LÀM TỆP NỘI DUNG CHÍNH!",
+            "👉 Gõ .spam để bắt đầu gửi ngay, hoặc thêm 'tag' để xoay vòng tag thành viên ở cuối tin!"
+        ]
+        return "\n".join(rep)
 
-    elif cmd_name == "settext":
+    # 4. CHECKFILE (XEM TRƯỚC CẤU TRÚC FILE)
+    elif cmd_name == "checkfile":
         if not cmd_args:
-            return "⚠️ Cú pháp: .settext <nội dung văn bản cần gửi>"
-        BOT_STATE["active_text"] = cmd_args
-        BOT_STATE["active_file"] = None
-        return f"✔️ ĐÃ LƯU VĂN BẢN TRỰC TIẾP ({len(cmd_args)} ký tự)!\n👉 Gõ .spam để gửi ngay!"
+            current = os.path.basename(BOT_STATE["active_file"]) if BOT_STATE["active_file"] else "Chưa chọn"
+            return f"📁 Tệp hiện tại: {current}\n👉 Dùng: .checkfile <tên_file.txt> để kiểm tra chi tiết cấu trúc."
 
-    elif cmd_name == "color":
-        valid_colors = ["rainbow", "random", "red", "gold", "green", "orange", "blue", "purple", "pink", "cyan"]
-        chosen = cmd_args.lower()
-        if chosen not in valid_colors:
-            return f"⚠️ Màu không hợp lệ. Các màu hỗ trợ: {', '.join(valid_colors)}"
-        if chosen in ["rainbow", "random"]:
-            BOT_STATE["color_mode"] = chosen
-        else:
-            BOT_STATE["color_mode"] = "fixed"
-            BOT_STATE["fixed_color"] = chosen
-        return f"🎨 ĐÃ ĐẶT MÀU CHỮ ZALO: {chosen.upper()} (áp dụng chuẩn 100% trong nhóm)!"
+        target_file = cmd_args.strip()
+        fp = os.path.join(UPLOAD_DIR, target_file)
+        if not os.path.exists(fp):
+            cands = [f for f in os.listdir(UPLOAD_DIR) if target_file.lower() in f.lower()]
+            if cands:
+                fp = os.path.join(UPLOAD_DIR, cands[0])
+                target_file = cands[0]
+            else:
+                return f"❌ Không tìm thấy tệp '{target_file}'!"
 
-    elif cmd_name == "tagall":
-        text = cmd_args if cmd_args else "Thông báo đến toàn thể thành viên!"
-        if platform == "zalo" and client:
-            client.send_adv(text, target_id, is_group=is_group, tag_all=True, is_heading=True)
-            return None
-        elif platform == "discord" and client:
-            client.send_message(target_id, text, tag_all=True)
-            return None
-        return f"📢 Đã kích hoạt Tag @All: {text}"
+        sz_kb = round(os.path.getsize(fp) / 1024, 1)
+        preview_lines = []
+        with open(fp, "r", encoding="utf-8", errors="ignore") as f:
+            for _ in range(6):
+                line = f.readline()
+                if not line:
+                    break
+                preview_lines.append(line.rstrip())
 
-    elif cmd_name == "spam":
-        mode = "fast"
+        rep = [
+            f"🔍 KIỂM TRA TỆP: {target_file} ({sz_kb} KB)",
+            "────────────────────────────",
+            "📄 Bản xem trước dòng đầu:",
+            "\n".join(preview_lines[:5]) or "(Tệp trống)",
+            "────────────────────────────",
+            f"👉 Dùng .setupfile {target_file} để kích hoạt gửi tệp này!"
+        ]
+        return "\n".join(rep)
+
+    # 5. TAGLOOP (TAG XOAY VÒNG Ở CUỐI TIN LIÊN TỤC ĐẾN KHI .STOP)
+    elif cmd_name == "tagloop":
+        # .tagloop [delay] [màu] [nội dung]
+        args = cmd_args.split()
         delay = 1.2
         color = BOT_STATE["fixed_color"]
         color_mode = BOT_STATE["color_mode"]
+        direct_text = ""
+
+        if len(args) >= 1 and args[0].replace(".", "", 1).isdigit():
+            delay = float(args[0])
+            if len(args) >= 2 and args[1] in [c["id"] for c in ZALO_PALETTE] + ["rainbow", "random"]:
+                if args[1] in ["rainbow", "random"]:
+                    color_mode = args[1]
+                else:
+                    color_mode = "fixed"
+                    color = args[1]
+                direct_text = " ".join(args[2:])
+            else:
+                direct_text = " ".join(args[1:])
+        else:
+            direct_text = cmd_args
+
+        if not direct_text and not BOT_STATE["active_file"] and not BOT_STATE["active_text"]:
+            direct_text = "Alo anh em có mặt không đấy"
+
+        file_path = BOT_STATE["active_file"]
+        direct_blocks = [direct_text] if direct_text else ([b.strip() for b in BOT_STATE["active_text"].split("\n\n") if b.strip()] if BOT_STATE["active_text"] else [])
+
+        task_id = "TAGLOOP_" + str(int(time.time()))[-4:]
+        stop_ev = threading.Event()
+
+        payload = {
+            "targets": [{"id": str(target_id), "type": "group" if is_group else "user", "platform": platform}],
+            "file_path": file_path if not direct_text else None,
+            "direct_blocks": direct_blocks,
+            "delay": delay,
+            "mode": "fast",
+            "color_mode": color_mode,
+            "fixed_color": color,
+            "tag_all": False,
+            "tag_rotate_tail": True, # Bật chế độ tự động tag xoay vòng ở cuối tin
+            "antiband": BOT_STATE["antiband"],
+            "combat_icon_mode": BOT_STATE["combat_icon_mode"],
+            "combat_icon_count": BOT_STATE["combat_icon_count"]
+        }
+
+        t = threading.Thread(target=run_spam_task, args=(task_id, payload, stop_ev), daemon=True)
+        t.start()
+
+        with TASKS_LOCK:
+            RUNNING_TASKS[task_id] = {
+                "id": task_id,
+                "type": "TAGLOOP_TAIL",
+                "status": "running",
+                "thread": t,
+                "stop_ev": stop_ev,
+                "created_at": time.time(),
+                "sent_count": 0
+            }
+
+        return f"🔥 ĐÃ KÍCH HOẠT CHẾ ĐỘ TAG XOAY VÒNG Ở CUỐI TIN LIÊN TỤC!\n🔹 Mã: {task_id}\n🔹 Tốc độ: {delay}s\n🔹 Màu: {color_mode.upper()}\n👉 Bot sẽ tự động gắn thẻ từng thành viên ở cuối mỗi câu liên tục cho đến khi bạn gõ .stop!"
+
+    # 6. SPAM
+    elif cmd_name == "spam":
+        mode = "fast"
+        delay = BOT_STATE["delay"]
+        color = BOT_STATE["fixed_color"]
+        color_mode = BOT_STATE["color_mode"]
+        tag_tail_flag = BOT_STATE["tag_rotate_tail"]
 
         args = cmd_args.split()
-        if len(args) >= 1:
-            if args[0] in ["nhanh", "fast"]:
+        for a in args:
+            a_lower = a.lower()
+            if a_lower in ["tag", "@tag", "autotag"]:
+                tag_tail_flag = True
+            elif a_lower in ["nhanh", "fast"]:
                 mode = "fast"
-            elif args[0] in ["ngon", "treo_ngon"]:
+            elif a_lower in ["ngon", "treo_ngon"]:
                 mode = "treo_ngon"
-            elif args[0] in ["nhay", "treo_nhay"]:
+            elif a_lower in ["nhay", "treo_nhay"]:
                 mode = "treo_nhay"
-
-        if len(args) >= 2:
-            try:
-                delay = float(args[1])
-            except Exception:
-                pass
-
-        if len(args) >= 3:
-            if args[2].lower() in ["rainbow", "random"]:
-                color_mode = args[2].lower()
-            else:
+            elif a.replace(".", "", 1).isdigit():
+                delay = float(a)
+            elif a_lower in ["rainbow", "random"]:
+                color_mode = a_lower
+            elif a_lower in [c["id"] for c in ZALO_PALETTE]:
                 color_mode = "fixed"
-                color = args[2].lower()
+                color = a_lower
 
         file_path = BOT_STATE["active_file"]
         direct_blocks = []
@@ -1139,7 +1306,7 @@ def execute_command(cmd_text, platform, target_id, is_group=True, client=None):
             if BOT_STATE["active_text"]:
                 direct_blocks = [b.strip() for b in BOT_STATE["active_text"].split("\n\n") if b.strip()]
             else:
-                return "❌ Chưa có nội dung gửi! Hãy dùng lệnh .file <tên_file> hoặc .settext <nội dung> trước."
+                return "❌ Chưa có nội dung gửi! Dùng lệnh: .setupfile <tên_file> hoặc .settext <nội dung> trước."
 
         targets = []
         if BOT_STATE["target_mode"] == "here":
@@ -1161,9 +1328,6 @@ def execute_command(cmd_text, platform, target_id, is_group=True, client=None):
         else:
             targets = [{"id": str(target_id), "type": "group" if is_group else "user", "platform": platform}]
 
-        if not targets:
-            return "❌ Không tìm thấy mục tiêu nhận tin! Mặc định gửi vào box chat hiện tại."
-
         task_id = "TASK_" + str(int(time.time()))[-5:]
         stop_ev = threading.Event()
 
@@ -1176,6 +1340,7 @@ def execute_command(cmd_text, platform, target_id, is_group=True, client=None):
             "color_mode": color_mode,
             "fixed_color": color,
             "tag_all": BOT_STATE["tag_all"],
+            "tag_rotate_tail": tag_tail_flag,
             "antiband": BOT_STATE["antiband"],
             "combat_icon_mode": BOT_STATE["combat_icon_mode"],
             "combat_icon_count": BOT_STATE["combat_icon_count"]
@@ -1195,8 +1360,10 @@ def execute_command(cmd_text, platform, target_id, is_group=True, client=None):
                 "sent_count": 0
             }
 
-        return f"🚀 ĐÃ BẮT ĐẦU CHIẾN DỊCH GỬI TIN!\n🔹 Mã: {task_id}\n🔹 Chế độ: {mode.upper()}\n🔹 Tốc độ: {delay}s\n🔹 Màu: {color_mode.upper()}\n🔹 Mục tiêu: {len(targets)} box\n👉 Gõ .stop để dừng bất kỳ lúc nào."
+        tag_status_str = "KÈM @ TAG Ở CUỐI XOAY VÒNG" if tag_tail_flag else "Tắt Tag Cuối"
+        return f"🚀 ĐÃ BẮT ĐẦU CHIẾN DỊCH GỬI TIN!\n🔹 Mã: {task_id}\n🔹 Chế độ: {mode.upper()}\n🔹 Tốc độ: {delay}s\n🔹 Màu: {color_mode.upper()}\n🔹 Tính năng Tag: {tag_status_str}\n🔹 Mục tiêu: {len(targets)} box\n👉 Gõ .stop để dừng bất kỳ lúc nào."
 
+    # 7. STOP
     elif cmd_name in ["stop", "stopall"]:
         stopped = 0
         with TASKS_LOCK:
@@ -1207,6 +1374,106 @@ def execute_command(cmd_text, platform, target_id, is_group=True, client=None):
                     stopped += 1
         return f"🛑 ĐÃ DỪNG TOÀN BỘ TIẾN TRÌNH ({stopped} tiến trình đã dừng)! Hệ thống trở về trạng thái nghỉ."
 
+    # 8. TAGALL
+    elif cmd_name == "tagall":
+        text = cmd_args if cmd_args else "Thông báo khẩn đến toàn thể thành viên nhóm!"
+        if platform == "zalo" and client:
+            client.send_adv(text, target_id, is_group=is_group, tag_all=True, is_heading=True)
+            return None
+        elif platform == "discord" and client:
+            client.send_message(target_id, text, tag_all=True)
+            return None
+        return f"📢 Đã kích hoạt Tag @All: {text}"
+
+    # 9. STATUS
+    elif cmd_name == "status":
+        z_clients, d_clients = get_active_clients()
+        with TASKS_LOCK:
+            running_tasks = [t for t in RUNNING_TASKS.values() if t.get("status") == "running"]
+            total_sent = sum(t.get("sent_count", 0) for t in RUNNING_TASKS.values())
+
+        file_name = os.path.basename(BOT_STATE["active_file"]) if BOT_STATE["active_file"] else "Chưa chọn (Dùng .setupfile hoặc .settext)"
+        if BOT_STATE["active_text"]:
+            file_name = f"Văn bản trực tiếp ({len(BOT_STATE['active_text'])} ký tự)"
+
+        rep = [
+            "⚡ TRẠNG THÁI HỆ THỐNG RICKI VIP ⚡",
+            "👤 Bản quyền: Phạm Anh Khôi (Verified ✔)",
+            "────────────────────────────",
+            f"🔷 Tài khoản Zalo: {len(z_clients)} hoạt động",
+            f"🟣 Tài khoản Discord: {len(d_clients)} hoạt động",
+            f"📁 Nguồn nội dung: {file_name}",
+            f"🎯 Mục tiêu: {BOT_STATE['target_mode']} (ID: {target_id})",
+            f"🎨 Màu chữ Zalo: {BOT_STATE['color_mode']} ({BOT_STATE['fixed_color']})",
+            f"🏷️ Tag xoay vòng ở cuối: {'BẬT' if BOT_STATE['tag_rotate_tail'] else 'TẮT'}",
+            f"🛡️ Anti-ban V5: {'BẬT' if BOT_STATE['antiband'] else 'TẮT'}",
+            f"🚀 Tiến trình đang chạy: {len(running_tasks)}",
+            f"📊 Tổng số tin đã gửi: {total_sent}",
+            "────────────────────────────",
+            "👉 Gõ .menu để xem hướng dẫn đầy đủ."
+        ]
+        return "\n".join(rep)
+
+    # 10. LISTFILES
+    elif cmd_name in ["listfiles", "files"]:
+        txt_files = [f for f in os.listdir(UPLOAD_DIR) if f.endswith(".txt")]
+        if not txt_files:
+            return "📁 Thư mục máy chủ hiện chưa có tệp .txt nào!\n👉 Dùng lệnh: .addfile <tên_file.txt> <nội dung> để tạo mới ngay trong chat."
+        rep = ["📁 DANH SÁCH TỆP NGÔN TRÊN MÁY CHỦ:"]
+        for idx, fn in enumerate(txt_files, 1):
+            fp = os.path.join(UPLOAD_DIR, fn)
+            sz = round(os.path.getsize(fp) / 1024, 1)
+            rep.append(f"{idx}. {fn} ({sz} KB)")
+        rep.append("────────────────────────────")
+        rep.append("👉 Dùng lệnh: .setupfile <tên_file> để kiểm tra chi tiết & kích hoạt gửi tệp này.")
+        return "\n".join(rep)
+
+    # 11. ADDFILE
+    elif cmd_name == "addfile":
+        if " " not in cmd_args:
+            return "⚠️ Cú pháp: .addfile <tên_file.txt> <nội dung văn bản>"
+        fname, content = cmd_args.split(" ", 1)
+        if not fname.endswith(".txt"):
+            fname += ".txt"
+        fp = os.path.join(UPLOAD_DIR, fname)
+        with open(fp, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        # Lưu vào SQLite
+        lines = len(content.splitlines())
+        blocks = len([b for b in content.split("\n\n") if b.strip()]) or 1
+        conn = db()
+        conn.execute("INSERT INTO files (filename, filepath, size, lines, blocks, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                     (fname, fp, os.path.getsize(fp), lines, blocks, time.time()))
+        conn.commit()
+        conn.close()
+
+        BOT_STATE["active_file"] = fp
+        BOT_STATE["active_text"] = None
+        return f"✔️ ĐÃ TẠO TỆP THÀNH CÔNG: {fname} ({lines} dòng, {blocks} khối)!\nĐã tự động đặt làm tệp nội dung chính. Gõ .spam để bắn tin!"
+
+    # 12. SETTEXT
+    elif cmd_name == "settext":
+        if not cmd_args:
+            return "⚠️ Cú pháp: .settext <nội dung văn bản cần gửi>"
+        BOT_STATE["active_text"] = cmd_args
+        BOT_STATE["active_file"] = None
+        return f"✔️ ĐÃ LƯU VĂN BẢN TRỰC TIẾP ({len(cmd_args)} ký tự)!\n👉 Gõ .spam để gửi ngay!"
+
+    # 13. COLOR
+    elif cmd_name == "color":
+        valid_colors = ["rainbow", "random", "red", "gold", "green", "orange", "blue", "purple", "pink", "cyan"]
+        chosen = cmd_args.lower()
+        if chosen not in valid_colors:
+            return f"⚠️ Màu không hợp lệ. Các màu hỗ trợ: {', '.join(valid_colors)}"
+        if chosen in ["rainbow", "random"]:
+            BOT_STATE["color_mode"] = chosen
+        else:
+            BOT_STATE["color_mode"] = "fixed"
+            BOT_STATE["fixed_color"] = chosen
+        return f"🎨 ĐÃ ĐẶT MÀU CHỮ ZALO: {chosen.upper()} (áp dụng chuẩn 100% trong nhóm)!"
+
+    # 14. TARGET & BOXES
     elif cmd_name == "target":
         if not cmd_args or cmd_args.lower() == "here":
             BOT_STATE["target_mode"] = "here"
@@ -1238,20 +1505,47 @@ def execute_command(cmd_text, platform, target_id, is_group=True, client=None):
 
     return f"⚠️ Lệnh không xác định: .{cmd_name}. Gõ .menu để xem danh sách toàn bộ lệnh!"
 
-# Luồng lắng nghe tự động Zalo
+# ---------------------------------------------------------
+# BỘ LẮNG NGHE LỆNH SIÊU TỐC (FAST NON-BLOCKING LISTENERS)
+# ---------------------------------------------------------
+CACHED_ZALO_CONVS = []
+LAST_ZALO_CONV_POLL = 0
+
+def handle_incoming_command(text, platform, target_id, is_group, client):
+    """Xử lý lệnh trong luồng riêng biệt để phản hồi siêu tốc (< 1 giây)"""
+    try:
+        reply = execute_command(text, platform, target_id, is_group=is_group, client=client)
+        if reply:
+            if platform == "zalo":
+                client.send_adv(reply, target_id, is_group=is_group, is_heading=True)
+            else:
+                client.send_message(target_id, reply)
+    except Exception as e:
+        print(f"Lỗi thực thi lệnh: {e}")
+
 def zalo_listener_loop():
-    print("🔷 [Zalo Listener] Khởi động luồng bắt lệnh tự động...")
+    global CACHED_ZALO_CONVS, LAST_ZALO_CONV_POLL
+    print("🔷 [Zalo Fast Listener] Đang chạy luồng bắt lệnh tự động siêu tốc...")
     while True:
         try:
             z_clients, _ = get_active_clients()
+            now = time.time()
             for acc_id, label, zc in z_clients:
-                convs = zc.get_conversations()
-                for c in convs[:15]:
+                # Cập nhật danh sách hội thoại mỗi 60 giây để không làm chậm luồng
+                if now - LAST_ZALO_CONV_POLL > 60 or not CACHED_ZALO_CONVS:
+                    try:
+                        CACHED_ZALO_CONVS = zc.get_conversations()
+                        LAST_ZALO_CONV_POLL = now
+                    except Exception:
+                        pass
+
+                # Quét nhanh tin nhắn mới từ 8 nhóm hoạt động gần nhất
+                for c in CACHED_ZALO_CONVS[:8]:
                     grid = c["id"]
                     try:
-                        pl = json.dumps({"grid": str(grid), "page": 1, "count": 4})
+                        pl = json.dumps({"grid": str(grid), "page": 1, "count": 3})
                         params = {"params": zc.encrypt(pl), "imei": zc.imei}
-                        r = zc.session.post("https://chat.zalo.me/api/group/getmsg", data=params, timeout=6)
+                        r = zc.session.post("https://chat.zalo.me/api/group/getmsg", data=params, timeout=3)
                         res = r.json()
                         if res.get("data"):
                             plain = zc.decrypt(res["data"])
@@ -1265,35 +1559,48 @@ def zalo_listener_loop():
                                     if msg_id in SEEN_MESSAGES:
                                         continue
                                     SEEN_MESSAGES.add(msg_id)
-                                    if len(SEEN_MESSAGES) > 2000:
+                                    if len(SEEN_MESSAGES) > 3000:
                                         SEEN_MESSAGES.clear()
 
                                 text = str(m.get("message") or m.get("content") or "").strip()
                                 if text.startswith((".", "!", "/")) or text.lower() == "menu":
-                                    print(f"🔷 [Zalo Command] Nhận lệnh '{text}' từ nhóm {c['name']}")
-                                    reply = execute_command(text, "zalo", grid, is_group=True, client=zc)
-                                    if reply:
-                                        zc.send_adv(reply, grid, is_group=True, is_heading=True)
+                                    print(f"🔷 [Zalo Command] Nhận lệnh: '{text}' trong {c['name']}")
+                                    # Thực thi trong thread riêng để phản hồi ngay lập tức
+                                    threading.Thread(
+                                        target=handle_incoming_command,
+                                        args=(text, "zalo", grid, True, zc),
+                                        daemon=True
+                                    ).start()
                     except Exception:
                         pass
         except Exception:
             pass
-        time.sleep(3)
+        time.sleep(1.2) # Quét nhanh với chu kỳ 1.2s
 
-# Luồng lắng nghe tự động Discord
+CACHED_DISCORD_BOXES = []
+LAST_DISCORD_BOX_POLL = 0
+
 def discord_listener_loop():
-    print("🟣 [Discord Listener] Khởi động luồng bắt lệnh tự động...")
+    global CACHED_DISCORD_BOXES, LAST_DISCORD_BOX_POLL
+    print("🟣 [Discord Fast Listener] Đang chạy luồng bắt lệnh tự động siêu tốc...")
     while True:
         try:
             _, d_clients = get_active_clients()
+            now = time.time()
             for acc_id, label, dc in d_clients:
-                boxes = dc.get_all_chat_boxes()
-                for b in boxes[:15]:
+                if now - LAST_DISCORD_BOX_POLL > 60 or not CACHED_DISCORD_BOXES:
+                    try:
+                        CACHED_DISCORD_BOXES = dc.get_all_chat_boxes()
+                        LAST_DISCORD_BOX_POLL = now
+                    except Exception:
+                        pass
+
+                for b in CACHED_DISCORD_BOXES[:8]:
                     cid = b["id"]
                     if cid.startswith("user_"):
                         continue
                     try:
-                        r = dc.session.get(f"https://discord.com/api/v9/channels/{cid}/messages?limit=4", timeout=6)
+                        r = dc.session.get(f"https://discord.com/api/v9/channels/{cid}/messages?limit=3", timeout=3)
                         if r.status_code == 200:
                             arr = r.json()
                             for m in arr:
@@ -1302,22 +1609,23 @@ def discord_listener_loop():
                                     if mid in SEEN_MESSAGES:
                                         continue
                                     SEEN_MESSAGES.add(mid)
-                                    if len(SEEN_MESSAGES) > 2000:
+                                    if len(SEEN_MESSAGES) > 3000:
                                         SEEN_MESSAGES.clear()
 
                                 text = m.get("content", "").strip()
                                 if text.startswith((".", "!", "/")) or text.lower() == "menu":
-                                    print(f"🟣 [Discord Command] Nhận lệnh '{text}' từ {b['name']}")
-                                    reply = execute_command(text, "discord", cid, is_group=(b["type"]=="group"), client=dc)
-                                    if reply:
-                                        dc.send_message(cid, reply)
+                                    print(f"🟣 [Discord Command] Nhận lệnh: '{text}' trong {b['name']}")
+                                    threading.Thread(
+                                        target=handle_incoming_command,
+                                        args=(text, "discord", cid, (b["type"]=="group"), dc),
+                                        daemon=True
+                                    ).start()
                     except Exception:
                         pass
         except Exception:
             pass
-        time.sleep(3)
+        time.sleep(1.2)
 
-# KÍCH HOẠT CÁC LUỒNG BẮT LỆNH NGẦM NGAY KHI GUNICORN HOẶC PYTHON KHỞI CHẠY
 LISTENERS_STARTED = False
 LISTENERS_LOCK = threading.Lock()
 
@@ -1328,12 +1636,12 @@ def start_background_listeners():
             LISTENERS_STARTED = True
             threading.Thread(target=zalo_listener_loop, daemon=True).start()
             threading.Thread(target=discord_listener_loop, daemon=True).start()
-            print("🚀 [Ricki Vip] Đã kích hoạt nền Zalo & Discord Command Listeners!")
+            print("🚀 [Ricki Vip] Đã kích hoạt nền Fast Command Listeners (Zalo & Discord)!")
 
 start_background_listeners()
 
 # ---------------------------------------------------------
-# CÁC TUYẾN ĐƯỜNG HTTP (FLASK ENDPOINTS)
+# TUYẾN ĐƯỜNG HTTP (HEALTH CHECK, LOGO & DASHBOARD)
 # ---------------------------------------------------------
 @app.route("/health")
 def route_health():
@@ -1369,7 +1677,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Ricki Vip — Điều Hành Tự Động</title>
+<title>Ricki Vip — Điều Hành Đa Nền Tảng</title>
 <style>
 :root {
   --bg-page: #080c16;
@@ -1378,6 +1686,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   --accent-indigo: #6366f1;
   --accent-green: #10b981;
   --accent-red: #ef4444;
+  --accent-gold: #f59e0b;
   --txt-0: #ffffff;
   --txt-1: #e2e8f0;
   --txt-2: #94a3b8;
@@ -1388,7 +1697,7 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   background: var(--bg-page); color: var(--txt-1); min-height: 100vh; padding: 18px 14px;
 }
-.container { max-width: 860px; margin: 0 auto; }
+.container { max-width: 900px; margin: 0 auto; }
 .card {
   background: var(--bg-card); border: 1px solid var(--border-card);
   border-radius: 18px; padding: 22px 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.4);
@@ -1415,7 +1724,10 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent-primary)
 }
 .btn-primary { background: linear-gradient(135deg, var(--accent-indigo) 0%, var(--accent-primary) 100%); color: #fff; }
 .btn-green { background: linear-gradient(135deg, #059669 0%, #10b981 100%); color: #fff; }
+.btn-danger { background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239,68,68,0.3); }
+.btn-dark { background: #1a253c; color: #f1f5f9; border: 1px solid var(--border-card); }
 .cmd-box { background: rgba(8,12,22,0.92); border: 1px solid var(--border-card); border-radius: 12px; padding: 16px; font-family: monospace; font-size: 13px; line-height: 1.8; color: #38bdf8; overflow-x: auto; white-space: pre-wrap; }
+.file-item { display: flex; align-items: center; justify-content: space-between; background: rgba(8,12,22,0.85); border: 1px solid var(--border-card); padding: 10px 14px; border-radius: 10px; margin-bottom: 8px; }
 </style>
 </head>
 <body>
@@ -1431,9 +1743,33 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent-primary)
         <p style="font-size:12px; color:var(--txt-2);">Bản quyền © Phạm Anh Khôi • Bot Lệnh Zalo & Discord</p>
       </div>
     </div>
-    <div class="live-pill"><span class="live-dot"></span> Đang Chạy Trên Render</div>
+    <div class="live-pill"><span class="live-dot"></span> Hệ Thống Trực Tuyến & Fast Listener ⚡</div>
   </div>
 
+  <!-- THẺ 1: KIỂM TRA TÀI KHOẢN (CHECK TOKEN / IMEI LIVE HAY DIE) -->
+  <div class="card">
+    <h2>
+      <span>Kiểm Tra Trạng Thái Tài Khoản (Live / Die)</span>
+      <button type="button" class="btn btn-primary" onclick="checkStatus()" style="font-size:11.5px; padding:6px 14px;">🔍 Kiểm Tra Ngay</button>
+    </h2>
+    <div id="check-result-box" style="font-size:13px; color:var(--txt-2); background:rgba(8,12,22,0.9); padding:14px; border-radius:10px; border:1px solid var(--border-card); line-height:1.7;">
+      Bấm 'Kiểm Tra Ngay' hoặc gõ lệnh <b>.check</b> trong chat để test token Discord và IMEI Zalo.
+    </div>
+  </div>
+
+  <!-- THẺ 2: ĐẨY FILE LÊN SERVER & SETUP FILE -->
+  <div class="card">
+    <h2><span>Tải Tệp Ngôn Lên Server & Kiểm Tra Cấu Trúc Setup</span></h2>
+    <div style="border: 2px dashed var(--border-card); border-radius: 12px; padding: 22px; text-align: center; margin-bottom: 14px; background: rgba(8,12,22,0.85);">
+      <input type="file" id="upload-file-input" accept=".txt" style="display:none;" onchange="uploadServerFile(this)">
+      <button type="button" class="btn btn-dark" onclick="document.getElementById('upload-file-input').click()" style="margin-bottom:8px;">CHỌN TỆP .TXT ĐẨY LÊN SERVER 📁</button>
+      <div style="font-size:12px; color:var(--txt-2);">Hỗ trợ tệp văn bản ngôn lớn (hệ thống tự động phân tách và kiểm tra khối ngôn)</div>
+    </div>
+    <div style="font-size:13px; font-weight:700; color:var(--txt-1); margin-bottom:8px;">Danh sách tệp trên máy chủ:</div>
+    <div id="server-file-list">Đang tải danh sách tệp...</div>
+  </div>
+
+  <!-- THẺ 3: CẤU HÌNH NHANH TOKEN & IMEI -->
   <div class="card">
     <h2><span>Cấu Hình Nhanh Token & IMEI (Lưu 1 Lần)</span></h2>
     <form id="acc-form" onsubmit="saveAcc(event)">
@@ -1443,7 +1779,7 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent-primary)
       </div>
       <div class="form-group">
         <label>Zalo Cookie (Dạng JSON hoặc String)</label>
-        <textarea id="z-cookie" style="min-height:70px;" placeholder='[{"name":"zpw_sek","value":"..."}, ...]'></textarea>
+        <textarea id="z-cookie" style="min-height:65px;" placeholder='[{"name":"zpw_sek","value":"..."}, ...]'></textarea>
       </div>
       <div class="form-group">
         <label>Discord User Account Token</label>
@@ -1454,22 +1790,22 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent-primary)
     <div id="save-msg" style="margin-top:10px; font-size:13px; font-weight:700;"></div>
   </div>
 
+  <!-- THẺ 4: BẢNG LỆNH ĐIỀU HÀNH -->
   <div class="card">
-    <h2><span>Hướng Dẫn Gõ Lệnh Trực Tiếp (Zalo & Discord)</span></h2>
-    <div style="font-size:13px; color:var(--txt-2); margin-bottom:12px;">
-      Bạn chỉ cần mở Zalo hoặc Discord lên, nhắn tin vào <b>Nhóm</b>, <b>Bạn bè</b>, hoặc <b>Cloud của tôi (Zalo)</b> các lệnh bên dưới:
-    </div>
+    <h2><span>Bảng Lệnh Đầy Đủ (Gõ Trực Tiếp Trong Chat Zalo & Discord)</span></h2>
     <div class="cmd-box">
-.menu                        👉 Hiện bảng hướng dẫn & toàn bộ lệnh
-.spam nhanh 1.2 rainbow       👉 Bắt đầu gửi tin siêu tốc đổi màu
-.spam ngon 2.0 red           👉 Treo khối ngôn (2 giây / 1 tin)
-.stop                        👉 Dừng toàn bộ tiến trình gửi tin
-.tagall [nội dung]           👉 Tag @All Zalo & @everyone Discord
-.file [tên_file.txt]         👉 Chọn tệp nội dung ngôn để gửi
-.listfiles                   👉 Liệt kê toàn bộ tệp ngôn đã lưu
-.addfile &lt;tên&gt; &lt;nội dung&gt;    👉 Tạo tệp mới ngay trong box chat
-.color &lt;màu&gt;                👉 Đổi màu chữ Zalo (red, gold, green, blue...)
-.status                      👉 Xem số tin đã gửi & tiến trình đang chạy
+.menu                                👉 Hiện bảng hướng dẫn & danh sách toàn bộ lệnh
+.check | .checkacc                   👉 Kiểm tra Token / IMEI Live hay Die kèm Ping ms
+.spam nhanh 1.2 rainbow tag          👉 Gửi tin kèm @ TAG Ở CUỐI XOAY VÒNG liên tục!
+.tagloop 1.2 rainbow [nội dung]      👉 Tự động tag xoay vòng từng thành viên ở cuối tin
+.stop                                👉 Dừng khẩn cấp toàn bộ tiến trình gửi tin
+.tagall [nội dung]                   👉 Tag @All toàn nhóm (Zalo @All, Discord @everyone)
+.setupfile &lt;tên_file.txt&gt;           👉 Kiểm tra cấu trúc khối ngôn & kích hoạt file
+.checkfile &lt;tên_file.txt&gt;           👉 Xem trước 3 khối ngôn đầu & số dòng của tệp
+.listfiles                           👉 Liệt kê toàn bộ tệp ngôn đã lưu trên máy chủ
+.addfile &lt;tên&gt; &lt;nội dung&gt;           👉 Tạo tệp mới ngay trong box chat
+.color &lt;màu&gt;                        👉 Đổi màu chữ Zalo (red, gold, green, blue...)
+.status                              👉 Xem số tin đã gửi, tiến trình & tệp đang chọn
     </div>
   </div>
 </div>
@@ -1491,13 +1827,82 @@ async function saveAcc(e){
   }).then(function(x){ return x.json(); });
 
   if(res.ok){
-    msg.textContent = '✔️ Đã lưu thành công! Giờ bạn có thể vào Zalo/Discord gõ .menu là chạy luôn!';
+    msg.textContent = '✔️ Đã lưu thành công! Giờ bạn có thể vào Zalo/Discord gõ .menu hoặc .check là chạy ngay!';
     msg.style.color = '#10b981';
+    checkStatus();
   } else {
     msg.textContent = '❌ Lỗi: ' + (res.error || 'Không thể lưu');
     msg.style.color = '#ef4444';
   }
 }
+
+async function checkStatus(){
+  var box = document.getElementById('check-result-box');
+  box.innerHTML = 'Đang kiểm tra kết nối tài khoản (đo ping)...';
+  var res = await fetch('/api/check_status').then(function(x){ return x.json(); });
+  if(res.accounts && res.accounts.length){
+    var html = '';
+    res.accounts.forEach(function(a){
+      var isLive = a.live;
+      var icon = isLive ? '🟢' : '🔴';
+      var color = isLive ? '#10b981' : '#ef4444';
+      html += '<div style="margin-bottom:6px; color:' + color + ';">' + icon + ' <b>[' + a.platform.toUpperCase() + '] ' + (isLive ? 'LIVE' : 'DIE') + '</b>: ' + a.name + ' • Ping: ' + a.ping_ms + 'ms ' + (a.error ? '(' + a.error + ')' : '') + '</div>';
+    });
+    box.innerHTML = html;
+  } else {
+    box.innerHTML = '⚠️ Chưa có tài khoản nào được kết nối!';
+  }
+}
+
+async function uploadServerFile(input){
+  if(!input.files || !input.files.length) return;
+  var fd = new FormData();
+  fd.append('file', input.files[0]);
+  var r = await fetch('/api/files/upload', { method: 'POST', body: fd }).then(function(x){ return x.json(); });
+  if(r.ok){
+    alert('✔️ Đã đẩy tệp lên server thành công!\n• Số dòng: ' + r.lines + '\n• Số khối ngôn: ' + r.blocks);
+    loadFiles();
+  } else {
+    alert('❌ Lỗi: ' + (r.error || 'Không thể tải tệp'));
+  }
+  input.value = '';
+}
+
+async function loadFiles(){
+  var fl = await fetch('/api/files').then(function(x){ return x.json(); });
+  var box = document.getElementById('server-file-list');
+  if(!fl.length){
+    box.innerHTML = '<div style="color:var(--txt-2); padding:8px;">Chưa có tệp nào trên máy chủ.</div>';
+    return;
+  }
+  box.innerHTML = fl.map(function(f){
+    return '<div class="file-item">' +
+      '<div><b>' + f.filename + '</b> <span style="font-size:11.5px; color:var(--txt-2);">(' + f.lines + ' dòng, ' + f.blocks + ' khối • ' + Math.round(f.size/1024) + ' KB)</span></div>' +
+      '<div>' +
+        '<button type="button" class="btn btn-primary" onclick="setupFile(' + f.id + ')" style="padding:4px 10px; font-size:11px; margin-right:6px;">Thiết Lập</button>' +
+        '<button type="button" class="btn btn-danger" onclick="delFile(' + f.id + ')" style="padding:4px 10px; font-size:11px;">Xóa</button>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+}
+
+async function setupFile(fid){
+  var r = await fetch('/api/files/setup/' + fid, { method: 'POST' }).then(function(x){ return x.json(); });
+  if(r.ok){
+    alert('✔️ Đã thiết lập tệp: ' + r.filename + ' làm tệp ngôn chính!\nGiờ bạn có thể vào Zalo/Discord gõ .spam là chạy luôn.');
+  }
+}
+
+async function delFile(fid){
+  if(!confirm('Xác nhận xóa tệp này?')) return;
+  await fetch('/api/files/' + fid, { method: 'DELETE' });
+  loadFiles();
+}
+
+window.addEventListener('DOMContentLoaded', function(){
+  loadFiles();
+  checkStatus();
+});
 </script>
 </body>
 </html>"""
@@ -1539,10 +1944,103 @@ def api_quick_setup():
 
     return jsonify({"ok": True, "saved": saved})
 
+@app.route("/api/check_status", methods=["GET"])
+def api_check_status():
+    z_clients, d_clients = get_active_clients()
+    results = []
+    for aid, label, zc in z_clients:
+        stat = zc.check_status()
+        results.append({
+            "platform": "zalo",
+            "name": stat.get("name", label),
+            "live": stat.get("live", False),
+            "ping_ms": stat.get("ping_ms", 0),
+            "error": stat.get("error", "")
+        })
+    for aid, label, dc in d_clients:
+        stat = dc.check_status()
+        results.append({
+            "platform": "discord",
+            "name": stat.get("username", label),
+            "live": stat.get("live", False),
+            "ping_ms": stat.get("ping_ms", 0),
+            "error": stat.get("error", "")
+        })
+    return jsonify({"accounts": results})
+
+@app.route("/api/files", methods=["GET"])
+def api_files_list():
+    conn = db()
+    rows = conn.execute("SELECT id, filename, filepath, size, lines, blocks, created_at FROM files ORDER BY id DESC").fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+@app.route("/api/files/upload", methods=["POST"])
+def api_files_upload():
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"error": "Vui lòng chọn tệp tin .txt"}), 400
+
+    safe_name = str(int(time.time())) + "_" + re.sub(r"[^a-zA-Z0-9_.-]", "_", f.filename)
+    fp = os.path.join(UPLOAD_DIR, safe_name)
+    f.save(fp)
+
+    lines = 0
+    blocks = 0
+    in_block = False
+    with open(fp, "r", encoding="utf-8", errors="ignore") as r_fp:
+        for line in r_fp:
+            lines += 1
+            if line.strip():
+                if not in_block:
+                    blocks += 1
+                    in_block = True
+            else:
+                in_block = False
+
+    sz = os.path.getsize(fp)
+    conn = db()
+    conn.execute("INSERT INTO files (filename, filepath, size, lines, blocks, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                 (f.filename, fp, sz, lines, max(1, blocks), time.time()))
+    conn.commit()
+    conn.close()
+
+    # Tự động chọn làm file đang chạy
+    BOT_STATE["active_file"] = fp
+    BOT_STATE["active_text"] = None
+
+    return jsonify({"ok": True, "filename": f.filename, "lines": lines, "blocks": max(1, blocks), "size": sz})
+
+@app.route("/api/files/setup/<int:fid>", methods=["POST"])
+def api_files_setup(fid):
+    conn = db()
+    row = conn.execute("SELECT * FROM files WHERE id = ?", (fid,)).fetchone()
+    conn.close()
+    if not row or not os.path.exists(row["filepath"]):
+        return jsonify({"error": "Không tìm thấy tệp"}), 404
+
+    BOT_STATE["active_file"] = row["filepath"]
+    BOT_STATE["active_text"] = None
+    return jsonify({"ok": True, "filename": row["filename"]})
+
+@app.route("/api/files/<int:fid>", methods=["DELETE"])
+def api_files_del(fid):
+    conn = db()
+    row = conn.execute("SELECT * FROM files WHERE id = ?", (fid,)).fetchone()
+    if row and os.path.exists(row["filepath"]):
+        try:
+            os.remove(row["filepath"])
+        except Exception:
+            pass
+    conn.execute("DELETE FROM files WHERE id = ?", (fid,))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
 # ---------------------------------------------------------
-# KHỞI CHẠY BẰNG PYTHON HOẶC GUNICORN
+# KHỞI CHẠY MÁY CHỦ BẰNG GUNICORN HOẶC PYTHON TRỰC TIẾP
 # ---------------------------------------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    print(f"🚀 [Ricki Vip] Đang chạy tại cổng: {port}")
+    print(f"🚀 [Ricki Vip] Máy chủ & Fast Bot hoạt động tại cổng: {port}")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
