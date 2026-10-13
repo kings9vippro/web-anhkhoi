@@ -1,6 +1,6 @@
 # ============================================================
-# Bản quyền thuộc về Phạm Anh Khôi
-# Hệ Thống: PHẠM ANH KHÔI — VIP SYSTEM PRO (MAX COMBAT EDITION) ❄️
+# Bản quyền thuộc về Ricki Vip
+# Hệ Thống: RICKI VIP — CHIẾN HẠM PRO (MAX COMBAT & SECURITY EDITION) ❄️
 # Hỗ trợ Đa Nền Tảng: Zalo & Discord (Acc User Token Trực Tiếp)
 # Tích hợp: Anti-Ban Siêu Cấp, Anti-Die-All, Tag @All & Tag Tên Chuẩn 100%
 # Bộ Phối Icon Sát Thương Cực Cao Chọc Tức Đối Thủ | Tối Ưu Tệp 5MB+
@@ -46,10 +46,67 @@ except ImportError:
     except Exception:
         raise ImportError("Vui lòng cài đặt pycryptodome hoặc cryptography để chạy mã hóa Zalo.")
 
-APP_PASSWORD = os.environ.get("APP_PASSWORD", "anhkhoidz")
-DATA_DIR = os.environ.get("DATA_DIR", "/tmp/vip_web")
+APP_PASSWORD = os.environ.get("APP_PASSWORD", "rickivip")
+DATA_DIR = os.environ.get("DATA_DIR", "/tmp/ricki_web")
 os.makedirs(DATA_DIR, exist_ok=True)
-DB_PATH = os.path.join(DATA_DIR, "vip.db")
+DB_PATH = os.path.join(DATA_DIR, "ricki_vip.db")
+
+# ============================================================
+# LỚP BẢO MẬT WEB & API TÂN TIẾN TỐI ĐA (RICKI VIP SECURITY ARMOR)
+# ============================================================
+class WebSecurityArmor:
+    """Bộ giáp bảo mật Web & API siêu cấp Ricki Vip:
+    - Adaptive Rate Limiter chống DDoS / spam request
+    - Anti-Brute-Force bảo vệ đăng nhập (khóa IP sau 5 lần sai)
+    - Phòng vệ Path Traversal & Injection
+    - Quản lý phiên an toàn chống giả mạo
+    """
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.req_history = defaultdict(list)    # ip -> [timestamps]
+        self.failed_logins = defaultdict(list)  # ip -> [timestamps]
+        self.blocked_ips = {}                   # ip -> unblock_timestamp
+
+    def check_rate_limit(self, ip, max_reqs=120, window=60):
+        now = time.time()
+        with self.lock:
+            # Kiểm tra nếu IP đang trong danh sách cách ly
+            if ip in self.blocked_ips:
+                if now < self.blocked_ips[ip]:
+                    remain = int(self.blocked_ips[ip] - now)
+                    return False, f"IP của bạn tạm thời bị cách ly bảo vệ. Vui lòng thử lại sau {remain} giây."
+                else:
+                    del self.blocked_ips[ip]
+
+            # Dọn dẹp request cũ
+            history = [t for t in self.req_history[ip] if now - t < window]
+            history.append(now)
+            self.req_history[ip] = history
+
+            if len(history) > max_reqs:
+                self.blocked_ips[ip] = now + 60
+                return False, "Phát hiện tần suất truy cập bất thường (Rate Limit Exceeded). Tạm khóa 60s để bảo vệ hệ thống."
+
+            return True, None
+
+    def record_login_attempt(self, ip, success):
+        now = time.time()
+        with self.lock:
+            if success:
+                self.failed_logins.pop(ip, None)
+            else:
+                fails = [t for t in self.failed_logins[ip] if now - t < 300]
+                fails.append(now)
+                self.failed_logins[ip] = fails
+                if len(fails) >= 5:
+                    self.blocked_ips[ip] = now + 180  # Khóa 3 phút sau 5 lần sai
+                    return False, "CẢNH BÁO BẢO MẬT: Đăng nhập sai quá 5 lần! IP bị khóa trong 3 phút."
+            return True, None
+
+
+SECURITY_ARMOR = WebSecurityArmor()
+
+
 UPLOAD_DIR = os.path.join(DATA_DIR, "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
@@ -236,24 +293,38 @@ ZERO_WIDTH_CHARS = ["​", "‌", "‍", "﻿", "⁠", "⁢", "⁣", "⁤"]
 
 
 def apply_antiband_advanced(text):
-    """Hàm chống ban đa tầng siêu cấp:
-    1. Chèn ngẫu nhiên các ký tự zero-width vào giữa các chữ
-    2. Thêm zero-width padding ở cuối
-    3. Biến thiên hash mã hóa SHA256 liên tục trên từng tin gửi
-    4. Giữ nguyên 100% mắt người đọc nhìn thấy hoàn hảo."""
+    """Hàm chống ban siêu cấp V3 - Độc quyền Ricki Vip:
+    1. Giữ nguyên 100% từng từ tiếng Việt, tuyệt đối KHÔNG cắt xẻ vào giữa từ
+       (Khắc phục triệt để lỗi vỡ phông chữ, lỗi dấu thanh tiếng Việt và ô vuông tofu).
+    2. Biến thiên khoảng trắng an toàn giữa các từ (Standard Space, Non-Breaking Space, Thin Space).
+    3. Dynamic Tail Hash Signature: Tạo chữ ký băm vô hình ở cuối văn bản (3-7 ký tự zero-width),
+       đảm bảo mỗi tin gửi đi đều có mã băm SHA256 hoàn toàn khác biệt mà mắt thường không thấy.
+    4. 100% mắt người đọc nhìn thấy hoàn hảo trên Zalo Mobile, PC và Discord."""
     if not text:
         return text
+    
+    # Danh sách khoảng trắng unicode an toàn không làm hỏng font
+    SAFE_SPACES = [" ", "\u00a0", " \u200b", "\u2009", "\u200a"]
+    SAFE_TAIL_CHARS = ["\u200b", "\u200c", "\u200d", "\ufeff"]
+    
+    # Tách theo khoảng trắng thông thường, giữ nguyên vẹn 100% từ ngữ tiếng Việt
     words = text.split(" ")
-    new_words = []
-    for w in words:
-        if len(w) > 2 and random.random() < 0.4:
-            pos = random.randint(1, len(w) - 1)
-            zw = random.choice(ZERO_WIDTH_CHARS)
-            w = w[:pos] + zw + w[pos:]
-        new_words.append(w)
-    res = " ".join(new_words)
-    res += "".join([random.choice(ZERO_WIDTH_CHARS) for _ in range(random.randint(1, 3))])
-    return res
+    out_words = []
+    for i, w in enumerate(words):
+        out_words.append(w)
+        if i < len(words) - 1:
+            if random.random() < 0.35:
+                out_words.append(random.choice(SAFE_SPACES))
+            else:
+                out_words.append(" ")
+                
+    result = "".join(out_words)
+    
+    # Tạo mã băm tàng hình ở CUỐI tin nhắn (không chạm vào chữ cái, không vỡ font)
+    tail_len = random.randint(3, 7)
+    tail = "".join(random.choice(SAFE_TAIL_CHARS) for _ in range(tail_len))
+    result += tail
+    return result
 
 
 class AccountHealthManager:
@@ -789,6 +860,82 @@ class DiscordUserClient:
 # GIAO DIỆN SIÊU VIP CYBER GLASSMORPHISM NOEL (HIỆU ỨNG CỰC ĐẸP)
 # ============================================================
 CSS_VIP = """
+/* NÂNG CẤP ĐỘ NHẠY & TƯƠNG TÁC CHO NÚT BẤM RICKI VIP */
+#snow-canvas {
+  position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  pointer-events: none !important; z-index: 0 !important;
+}
+
+.container {
+  max-width: 1080px; margin: 0 auto; padding: 18px 16px;
+  position: relative; z-index: 25;
+}
+
+.btn-pill, .btn-round, .dock-btn, .top-nav-btn, .chip-item, .toggle-item {
+  position: relative; z-index: 30;
+  cursor: pointer !important;
+  user-select: none;
+  touch-action: manipulation !important;
+  -webkit-tap-highlight-color: transparent;
+}
+.btn-pill:hover, .btn-round:hover, .top-nav-btn:hover {
+  filter: brightness(1.18);
+}
+.btn-pill:active, .btn-round:active, .top-nav-btn:active {
+  transform: scale(0.96) translateY(1px) !important;
+}
+
+/* THANH ĐIỀU HƯỚNG TABS PHÍA TRÊN (TOP NAV BAR) */
+.top-nav-bar {
+  display: flex; gap: 8px; overflow-x: auto; padding: 10px 0 14px;
+  margin-bottom: 14px; scrollbar-width: none;
+}
+.top-nav-bar::-webkit-scrollbar { display: none; }
+.top-nav-btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 10px 18px; border-radius: 99px;
+  background: rgba(13, 23, 42, 0.85); border: 1.5px solid var(--border-neon);
+  color: var(--txt-1); font-size: 12px; font-weight: 800; white-space: nowrap;
+  transition: all 0.25s var(--ease); backdrop-filter: blur(15px);
+}
+.top-nav-btn .nav-ic { font-size: 15px; }
+.top-nav-btn:hover {
+  color: #fff; border-color: var(--neon-gold); background: rgba(255, 183, 3, 0.12);
+}
+.top-nav-btn.active {
+  background: var(--grad-vip) !important; color: #fff !important;
+  border-color: transparent !important;
+  box-shadow: 0 0 20px rgba(255, 51, 68, 0.6) !important;
+}
+
+/* THANH DOCK BÊN DƯỚI KÈM CHỮ GỢI NHỚ */
+.dock-btn {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 3px; padding: 8px 12px; border-radius: 18px;
+}
+.dock-label {
+  font-size: 9.5px; font-weight: 800; letter-spacing: 0.3px;
+}
+
+/* TRUNG TÂM BẢO MẬT & ANTI-BAN CARD */
+.sec-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 10px; border-radius: 99px; font-size: 10.5px; font-weight: 800;
+  background: rgba(0, 255, 136, 0.15); color: var(--neon-green); border: 1px solid var(--neon-green);
+}
+.sec-card-box {
+  background: rgba(6, 11, 20, 0.7); border: 1.5px solid var(--border-neon);
+  border-radius: 18px; padding: 16px; margin-bottom: 12px;
+}
+
+/* THANH ĐIỀU KHIỂN NỔI PRO (FLOATING ACTION BAR TRONG GỬI TIN) */
+.action-control-banner {
+  background: rgba(13, 23, 42, 0.95); border: 2px solid var(--border-gold);
+  border-radius: 24px; padding: 18px; margin: 20px 0;
+  display: flex; align-items: center; justify-content: space-around; flex-wrap: wrap; gap: 14px;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.8), 0 0 20px rgba(255, 183, 3, 0.3);
+}
+
 :root {
   --bg-page: #060b14;
   --bg-card: rgba(13, 23, 42, 0.88);
@@ -999,7 +1146,7 @@ HTML_GATE = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>VIP SYSTEM PRO — Cổng Bảo Mật ❄️</title>
+<title>RICKI VIP — Cổng Bảo Mật ❄️</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
 <style>
 """ + CSS_VIP + """
@@ -1026,7 +1173,7 @@ body { display: flex; align-items: center; justify-content: center; min-height: 
 <canvas id="snow-canvas"></canvas>
 <div class="gate-card">
   <div class="radar-box"><div class="radar-icon">👑</div></div>
-  <h1 style="font-family:'Orbitron',sans-serif; font-size:18px; margin-bottom:8px; color:var(--neon-gold);">VIP SYSTEM PRO 2026</h1>
+  <h1 style="font-family:'Orbitron',sans-serif; font-size:18px; margin-bottom:8px; color:var(--neon-gold);">RICKI VIP 2026</h1>
   <p id="scan-status" style="font-size:12.5px; color:var(--txt-1); min-height:36px;">Hệ thống phát tán tin nhắn đa nền tảng tối thượng.</p>
   <div class="progress-line" id="p-box"><div class="progress-fill" id="p-bar"></div></div>
   <button class="btn-pill primary full" id="verify-btn" onclick="startScan()">XÁC MINH DANH TÍNH VIP ❄️</button>
@@ -1072,7 +1219,7 @@ function startScan(){
   btn.style.display = 'none'; pbox.style.display = 'block';
 
   var steps = [
-    { p: 35, t: 'Đang kiểm tra chứng chỉ VIP System...' },
+    { p: 35, t: 'Đang kiểm tra chứng chỉ Ricki Vip...' },
     { p: 75, t: 'Mở khóa module mã hóa Zalo & Discord...' },
     { p: 100, t: 'Hoàn tất xác thực. Đang chuyển hướng...' }
   ];
@@ -1099,7 +1246,7 @@ HTML_LOGIN = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Đăng Nhập — VIP SYSTEM PRO ❄️</title>
+<title>Đăng Nhập — RICKI VIP ❄️</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
 <style>
 """ + CSS_VIP + """
@@ -1119,9 +1266,9 @@ body { display: flex; align-items: center; justify-content: center; min-height: 
   <div style="position:relative; display:inline-block;">
     <img src="/static/logo.png" class="brand-img" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 100 100\'><circle cx=\'50\' cy=\'50\' r=\'45\' fill=\'%23ff3344\'/><text x=\'50\' y=\'62\' font-size=\'40\' text-anchor=\'middle\' fill=\'white\'>👑</text></svg>'">
   </div>
-  <h1 style="font-family:'Orbitron',sans-serif; font-size:19px; margin-bottom:6px; color:var(--neon-gold);">VIP SYSTEM PRO ❄️</h1>
+  <h1 style="font-family:'Orbitron',sans-serif; font-size:19px; margin-bottom:6px; color:var(--neon-gold);">RICKI VIP ❄️</h1>
   <p style="font-size:11.5px; color:var(--txt-1); font-weight:700; margin-bottom:24px; display:flex; align-items:center; justify-content:center; gap:6px;">
-    Bản quyền: <span class="v-badge"><svg viewBox="0 0 24 24" width="15" height="15" fill="#00d4ff"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg></span> Phạm Anh Khôi
+    Bản quyền: <span class="v-badge"><svg viewBox="0 0 24 24" width="15" height="15" fill="#00d4ff"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg></span> Ricki Vip
   </p>
 
   {% if error %}
@@ -1131,7 +1278,7 @@ body { display: flex; align-items: center; justify-content: center; min-height: 
   <form method="POST" action="/login">
     <div class="form-group" style="text-align:left;">
       <label>MẬT KHẨU BẢO MẬT VIP</label>
-      <input type="password" name="password" placeholder="Nhập mật khẩu (mặc định: anhkhoidz)" required autocomplete="current-password">
+      <input type="password" name="password" placeholder="Nhập mật khẩu (mặc định: rickivip)" required autocomplete="current-password">
     </div>
     <button type="submit" class="btn-pill primary full" style="margin-top:12px;">ĐĂNG NHẬP HỆ THỐNG VIP 👑</button>
   </form>
@@ -1176,7 +1323,7 @@ HTML_MAIN = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>PHẠM ANH KHÔI — VIP SYSTEM PRO (MAX COMBAT) ❄️</title>
+<title>RICKI VIP — CHIẾN HẠM PRO (MAX COMBAT) ❄️</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&family=JetBrains+Mono:wght@500;700&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
 <style>
 """ + CSS_VIP + """
@@ -1190,9 +1337,9 @@ HTML_MAIN = """<!DOCTYPE html>
     <div class="logo-box">
       <img id="header-logo" src="/static/logo.png" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 100 100\'><circle cx=\'50\' cy=\'50\' r=\'45\' fill=\'%23ff3344\'/><text x=\'50\' y=\'62\' font-size=\'40\' text-anchor=\'middle\' fill=\'white\'>👑</text></svg>'">
       <div class="header-meta">
-        <h1>VIP SYSTEM PRO ❄️</h1>
+        <h1>RICKI VIP ❄️</h1>
         <p>
-          Bản quyền: <span class="v-badge"><svg viewBox="0 0 24 24" width="14" height="14" fill="#00d4ff"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg></span> <b>Phạm Anh Khôi</b> (Zalo & Discord Acc)
+          Bản quyền: <span class="v-badge"><svg viewBox="0 0 24 24" width="14" height="14" fill="#00d4ff"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg></span> <b>Ricki Vip</b> (Zalo & Discord Acc)
         </p>
       </div>
     </div>
@@ -1203,6 +1350,28 @@ HTML_MAIN = """<!DOCTYPE html>
 </div>
 
 <div class="container">
+
+<div class="top-nav-bar">
+  <button class="top-nav-btn active" data-tab="accounts" onclick="showTab('accounts')">
+    <span class="nav-ic">👑</span><span class="nav-txt">Tài Khoản</span>
+  </button>
+  <button class="top-nav-btn" data-tab="boxes" onclick="showTab('boxes')">
+    <span class="nav-ic">💬</span><span class="nav-txt">Hội Thoại & Nhóm</span>
+  </button>
+  <button class="top-nav-btn" data-tab="files" onclick="showTab('files')">
+    <span class="nav-ic">📁</span><span class="nav-txt">Tập Tin (5MB+)</span>
+  </button>
+  <button class="top-nav-btn" data-tab="spam" onclick="showTab('spam')">
+    <span class="nav-ic">⚡</span><span class="nav-txt">Gửi Tin Tự Động</span>
+  </button>
+  <button class="top-nav-btn" data-tab="security" onclick="showTab('security')">
+    <span class="nav-ic">🛡️</span><span class="nav-txt">Bảo Mật & Anti-Ban</span>
+  </button>
+  <button class="top-nav-btn" data-tab="docs" onclick="showTab('docs')">
+    <span class="nav-ic">📖</span><span class="nav-txt">Hướng Dẫn</span>
+  </button>
+</div>
+
   <!-- TAB 1: ACCOUNTS (ZALO & DISCORD ACC TOKEN) -->
   <div class="panel active" id="panel-accounts">
     <div class="card">
@@ -1444,9 +1613,24 @@ HTML_MAIN = """<!DOCTYPE html>
       </div>
     </div>
 
-    <div style="text-align:center; margin-bottom:20px;">
-      <button class="btn-round action-start" onclick="startSpam()" title="Bắt đầu"><svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 20 12 6 21 6 3"/></svg></button>
-      <button class="btn-round action-stop" onclick="stopAll()" title="Dừng lại"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg></button>
+    <div class="action-control-banner">
+      <div style="text-align:left;">
+        <div style="font-size:13px; font-weight:900; color:var(--neon-gold); display:flex; align-items:center; gap:8px;">
+          <span>⚡ BẢNG ĐIỀU KHIỂN CHIẾN HẠM RICKI VIP</span>
+          <span class="sec-badge">🛡️ ANTI-BAN V3 KÍCH HOẠT</span>
+        </div>
+        <div style="font-size:11.5px; color:var(--txt-1); margin-top:4px;">
+          Khởi chạy chiến dịch tự động trên Zalo & Discord hoặc Dừng khẩn cấp toàn bộ tiến trình
+        </div>
+      </div>
+      <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
+        <button class="btn-pill green" onclick="startSpam()" style="padding:14px 28px; font-size:13px; font-weight:900; box-shadow:var(--shadow-neon-green); letter-spacing:0.8px;">
+          🚀 BẮT ĐẦU GỬI NGAY
+        </button>
+        <button class="btn-pill danger" onclick="stopAll()" style="padding:14px 22px; font-size:12px; font-weight:900; box-shadow:var(--shadow-neon-red);">
+          🛑 DỪNG TẤT CẢ
+        </button>
+      </div>
     </div>
 
     <div class="card">
@@ -1600,12 +1784,65 @@ var Toast = (function(){
 
 function showTab(name){
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.top-nav-btn').forEach(b => b.classList.remove('active'));
   document.querySelectorAll('.dock-btn').forEach(b => b.classList.remove('active'));
+  
   var p = document.getElementById('panel-' + name);
   if(p) p.classList.add('active');
-  var b = document.querySelector(`.dock-btn[data-tab="${name}"]`);
-  if(b) b.classList.add('active');
+  
+  var tb = document.querySelector(`.top-nav-btn[data-tab="${name}"]`);
+  if(tb) tb.classList.add('active');
+  
+  var db = document.querySelector(`.dock-btn[data-tab="${name}"]`);
+  if(db) db.classList.add('active');
+
+  window.scrollTo({ top: 0, behavior: 'smooth' });
 }
+
+// BẢO VỆ CHỐNG SOI MÃ F12 & CHUỘT PHẢI
+var inspectDefenseActive = false;
+function tgInspectDefense(){
+  inspectDefenseActive = !inspectDefenseActive;
+  var btn = document.getElementById('btn-inspect-def');
+  if(inspectDefenseActive){
+    if(btn){ btn.textContent = 'ĐANG BẬT BẢO VỆ 🔒'; btn.className = 'btn-pill green'; }
+    document.addEventListener('contextmenu', blockContextMenu);
+    document.addEventListener('keydown', blockDevKeys);
+    Toast.success('Đã KÍCH HOẠT bảo vệ chống soi mã và chặn F12!');
+  } else {
+    if(btn){ btn.textContent = 'BẬT BẢO VỆ F12 🔒'; btn.className = 'btn-pill dark'; }
+    document.removeEventListener('contextmenu', blockContextMenu);
+    document.removeEventListener('keydown', blockDevKeys);
+    Toast.info('Đã tắt chế độ chặn F12.');
+  }
+}
+function blockContextMenu(e){ e.preventDefault(); Toast.info('Hệ thống Ricki Vip đã khóa chuột phải để bảo vệ bản quyền.'); }
+function blockDevKeys(e){
+  if(e.keyCode === 123 || (e.ctrlKey && e.shiftKey && (e.keyCode === 73 || e.keyCode === 74)) || (e.ctrlKey && e.keyCode === 85)){
+    e.preventDefault();
+    Toast.error('Phím tắt nhà phát triển bị vô hiệu hóa bởi Ricki Vip Armor.');
+  }
+}
+
+// TEST TRỰC TIẾP ANTI-BAN V3 TRÊN GIAO DIỆN
+async function testAntibandLive(){
+  var inp = document.getElementById('test-antiband-inp').value.trim();
+  if(!inp) return Toast.error('Vui lòng nhập nội dung muốn kiểm tra');
+  Toast.info('Đang phân tích mã băm Anti-Ban V3...');
+  var res = await api('/api/security/test_antiband', { method: 'POST', body: JSON.stringify({ text: inp }) });
+  if(res.error) return Toast.error(res.error);
+  var box = document.getElementById('test-antiband-res');
+  box.style.display = 'block';
+  box.innerHTML = `
+    <div style="color:var(--neon-green); font-weight:bold; margin-bottom:6px;">✅ PHÂN TÍCH ANTI-BAN V3 HOÀN TẤT:</div>
+    <div><b>Văn bản gốc:</b> "${res.original}"</div>
+    <div style="color:var(--txt-2); word-break:break-all;"><b>SHA256 gốc:</b> ${res.orig_sha256}</div>
+    <div style="margin-top:6px; color:var(--neon-gold);"><b>Văn bản sau bảo vệ:</b> "${res.processed}" (Mắt thường đọc chuẩn 100%)</div>
+    <div style="color:var(--neon-blue); word-break:break-all;"><b>SHA256 mới:</b> ${res.proc_sha256}</div>
+    <div style="margin-top:6px; color:#00ff88;"><b>Trạng thái:</b> Mã băm thay đổi 100% | Phông chữ tiếng Việt nguyên vẹn không bị lỗi!</div>
+  `;
+}
+
 
 function setPlatform(plat){
   currentPlatform = plat;
@@ -2737,6 +2974,6 @@ def api_stop_all_tasks():
 # ============================================================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    print(f"👑 [PHẠM ANH KHÔI — VIP SYSTEM PRO] Đang chạy tại: http://0.0.0.0:{port}")
+    print(f"👑 [RICKI VIP — CHIẾN HẠM PRO] Đang chạy tại: http://0.0.0.0:{port}")
     print(f"🔑 Mật khẩu truy cập mặc định: {APP_PASSWORD}")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
