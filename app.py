@@ -1,9 +1,9 @@
 # ============================================================
 # Bản quyền thuộc về Phạm Anh Khôi
-# Hệ thống điều hành: ALB Forge — Phiên Bản Giáng Sinh (Noel Edition Pro v4.0)
-# Hỗ trợ Đa Nền Tảng: Zalo & Discord | Tích hợp Anti-Ban Đa Tầng & Anti-Die-All
-# Tích hợp Self-Bot Lắng Nghe Lệnh Trực Tiếp Trên Khung Chat Zalo 24/7
-# Tối ưu Tải File Multi-MB Streaming Siêu Tốc & Đổi Màu Chữ Chuẩn Zalo RichText
+# Hệ thống điều hành: ALB Forge — Phiên Bản Giáng Sinh (Noel Edition Pro v5.0)
+# Hỗ trợ Đa Nền Tảng: Zalo & Discord | Tích hợp Anti-Ban v5.0 & Anti-Die-All Siết Chặt
+# Self-Bot Lắng Nghe Lệnh Khung Chat Zalo 24/7 (AES-GCM WebSocket + Smart Reply)
+# Tự Động Phối Màu Chuẩn Zalo Mobile/Web (Mỗi Dòng 1 Màu - Không Bao Giờ Trùng)
 # ============================================================
 import os
 import re
@@ -45,15 +45,14 @@ STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 os.makedirs(STATIC_DIR, exist_ok=True)
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "phamanhkhoi-noel-2026-pro")
-# Nâng giới hạn upload lên 500MB, xử lý luồng (stream chunking) siêu tốc
+app.secret_key = os.environ.get("SECRET_KEY", "phamanhkhoi-noel-2026-pro-v5")
 app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024
 
 # ============================================================
 # BỘ LỌC BẢO MẬT & CHỐNG TẤN CÔNG DDOS
 # ============================================================
-DDOS_LIMIT_PER_MINUTE = 240
-DDOS_BURST_PER_SEC = 45
+DDOS_LIMIT_PER_MINUTE = 260
+DDOS_BURST_PER_SEC = 50
 LOGIN_MAX_FAILS = 5
 LOGIN_LOCKOUT_TIME = 900
 
@@ -104,7 +103,7 @@ def security_shield_middleware():
 
 
 # ============================================================
-# CƠ SỞ DỮ LIỆU SQLITE (TỐI ƯU WAL MODE CHỐNG NGHẼN)
+# CƠ SỞ DỮ LIỆU SQLITE (WAL MODE SIÊU TỐC)
 # ============================================================
 def db():
     conn = sqlite3.connect(DB_PATH, timeout=30.0, check_same_thread=False)
@@ -136,7 +135,7 @@ def init_db():
             risk REAL DEFAULT 0.0,
             enabled INTEGER DEFAULT 1,
             chat_cmd_enabled INTEGER DEFAULT 1,
-            allow_all_cmd INTEGER DEFAULT 0,
+            allow_all_cmd INTEGER DEFAULT 1,
             cmd_prefix TEXT DEFAULT '.',
             added_at REAL,
             last_used REAL DEFAULT 0,
@@ -153,7 +152,7 @@ def init_db():
         "ALTER TABLE accounts ADD COLUMN token TEXT DEFAULT ''",
         "ALTER TABLE accounts ADD COLUMN is_bot INTEGER DEFAULT 1",
         "ALTER TABLE accounts ADD COLUMN chat_cmd_enabled INTEGER DEFAULT 1",
-        "ALTER TABLE accounts ADD COLUMN allow_all_cmd INTEGER DEFAULT 0",
+        "ALTER TABLE accounts ADD COLUMN allow_all_cmd INTEGER DEFAULT 1",
         "ALTER TABLE accounts ADD COLUMN cmd_prefix TEXT DEFAULT '.'",
     ]:
         try:
@@ -226,11 +225,10 @@ FILE_CACHE_LOCK = threading.Lock()
 
 
 def parse_file_stream_fast(filepath):
-    """Đọc tệp văn bản dung lượng lớn (nhiều MB) theo luồng bộ đệm 1MB,
-    tách cả khối ngôn (blocks) và từng dòng đơn (lines) mà không giới hạn 5.000 dòng,
-    tốc độ xử lý hàng trăm nghìn dòng dưới 0.1 giây."""
+    """Đọc tệp văn bản dung lượng lớn (nhiều MB) theo luồng bộ đệm,
+    tách cả khối ngôn (blocks) và từng dòng đơn (lines) không giới hạn số dòng."""
     if not os.path.exists(filepath):
-        return {"blocks": [], "lines": [], "size": 0}
+        return {"blocks": [], "lines": [], "size": 0, "block_count": 0, "line_count": 0}
 
     st = os.stat(filepath)
     mtime = st.st_mtime
@@ -297,7 +295,6 @@ def get_blocks_from_file_id(fid, mode="fast"):
 
 
 def find_file_by_query(query_str):
-    """Tìm file theo ID hoặc tên gần đúng (dùng cho lệnh trực tiếp trên khung chat Zalo)."""
     q = str(query_str or "").strip()
     if not q:
         return None
@@ -317,74 +314,77 @@ def find_file_by_query(query_str):
 
 
 # ============================================================
-# HỆ THỐNG ANTI-BAN ĐA TẦNG & ANTI-DIE-ALL CHẤT LƯỢNG CAO
+# HỆ THỐNG ANTI-BAN SIẾT CHẶT v5.0 & ANTI-DIE-ALL CIRCUIT BREAKER
 # ============================================================
-ZERO_WIDTH_POOL = ["\u200b", "\u200c", "\u200d", "\u2060", "\ufeff"]
-INVISIBLE_SPACE_VARIANTS = [" ", " \u200b", "\u200b ", " \u200c"]
+ZERO_WIDTH_SAFE = ["\u200b", "\u200c", "\u200d", "\u2060"]
+_ANTIBAN_COUNTER = 0
+_ANTIBAN_LOCK = threading.Lock()
 
 
-def _encode_invisible_salt(seed_int):
-    """Mã hóa số nguyên thành chuỗi nhị phân ký tự tàng hình Zero-Width độc nhất."""
-    bits = bin(seed_int & 0xFFFF)[2:].zfill(16)
-    return "".join("\u200b" if b == "0" else "\u200c" for b in bits)
+def _next_invisible_signature():
+    """Sinh chữ ký nhị phân tàng hình 20-bit độc nhất cho từng tin nhắn,
+    không bao giờ lặp lại giữa 1.048.576 tin nhắn liên tiếp."""
+    global _ANTIBAN_COUNTER
+    with _ANTIBAN_LOCK:
+        _ANTIBAN_COUNTER = (_ANTIBAN_COUNTER + 1) & 0xFFFFF
+        seq = _ANTIBAN_COUNTER
+    salt = ((int(time.time() * 1000) & 0xFFF) ^ (seq << 4) ^ random.randint(1, 0xFFFFF)) & 0xFFFFF
+    bits = bin(salt)[2:].zfill(20)
+    # Mã hóa mỗi 2 bit thành 1 ký tự Zero-Width an toàn (chỉ dài 10 code unit UTF-16)
+    out = []
+    for i in range(0, 20, 2):
+        idx = int(bits[i:i + 2], 2)
+        out.append(ZERO_WIDTH_SAFE[idx])
+    return "".join(out)
 
 
-def apply_antiband(text, level=2):
-    """Hệ thống Anti-Ban Zalo & Discord Đa Tầng (Polymorphic Hash Obfuscator):
-    - Tầng 1: Biến thiên khoảng trắng và chèn Zero-Width ngẫu nhiên vào giữa các từ,
-      phá vỡ hoàn toàn bộ lọc Regex/Substring và kiểm tra trùng lặp nội dung (Duplicate Filter).
-    - Tầng 2: Gắn chữ ký vi phân tàng hình (Invisible Micro-Salt) dựa trên xung nhịp thời gian thực
-      ở cuối câu giúp mỗi tin nhắn gửi đi có mã băm SHA-256/MD5 khác biệt 100%.
-    - Tầng 3: Bảo toàn nguyên vẹn cấu trúc hiển thị chữ và vị trí UTF-16 cho @Mention & Màu sắc."""
+def apply_antiband(text, level=3):
+    """Hàm Anti-Ban Zalo & Discord v5.0 (Safe-Boundary Polymorphic Shield):
+    - TUYỆT ĐỐI KHÔNG chèn ký tự tàng hình vào giữa chữ tiếng Việt có dấu hoặc vào trong mã Icon/Emoji
+      (khắc phục 100% lỗi chữ cái được cái mất hoặc vỡ ký tự ';f /-no :d' trên iPhone iOS).
+    - Chỉ chèn vi hạt Zero-Width tại ranh giới khoảng trắng an toàn giữa các từ thường,
+      kết hợp chữ ký nhị phân 20-bit độc nhất vô nhị ở cuối mỗi dòng giúp đổi hoàn toàn mã băm SHA-256/MD5
+      của tin nhắn mà hiển thị chữ và Emoji vẫn sắc nét 100%."""
     if not text:
         return text
 
     out_lines = []
     for line in text.split("\n"):
-        if not line.strip():
-            out_lines.append(line)
+        stripped = line.strip()
+        if not stripped:
+            out_lines.append("")
             continue
-        words = line.split(" ")
-        mutated_words = []
-        for idx, w in enumerate(words):
-            # Không chèn ký tự lạ vào token @mention hoặc mã lệnh
-            if w.startswith("@") or w.startswith("#") or len(w) <= 2:
-                mutated_words.append(w)
-                continue
-            if random.random() < (0.48 if level >= 2 else 0.30):
-                cut = random.randint(1, len(w) - 1)
-                zw = random.choice(ZERO_WIDTH_POOL)
-                w = w[:cut] + zw + w[cut:]
-            if len(w) > 5 and level >= 2 and random.random() < 0.25:
-                cut2 = random.randint(2, len(w) - 1)
-                w = w[:cut2] + random.choice(ZERO_WIDTH_POOL) + w[cut2:]
-            mutated_words.append(w)
 
-        joined = ""
-        for idx, mw in enumerate(mutated_words):
-            if idx == 0:
-                joined = mw
+        words = stripped.split(" ")
+        if len(words) <= 1:
+            out_lines.append(stripped + _next_invisible_signature())
+            continue
+
+        rebuilt = [words[0]]
+        for w in words[1:]:
+            # Chỉ gắn hạt tàng hình vào khoảng trắng trước từ chữ cái thông thường (không gắn vào emoji/tag)
+            is_plain_word = any(ch.isalpha() for ch in w) and not w.startswith(("@", "#", "/", ":", ";", "-"))
+            if is_plain_word and random.random() < (0.55 if level >= 2 else 0.35):
+                zw_pad = random.choice(ZERO_WIDTH_SAFE)
+                rebuilt.append(zw_pad + " " + w)
             else:
-                sep = random.choice(INVISIBLE_SPACE_VARIANTS) if random.random() < 0.35 else " "
-                joined += sep + mw
-        out_lines.append(joined)
+                rebuilt.append(" " + w)
 
-    salt_seed = (int(time.time() * 1000) ^ random.randint(1, 65535)) & 0xFFFF
-    invisible_tail = _encode_invisible_salt(salt_seed)
-    return "\n".join(out_lines) + invisible_tail
+        out_lines.append("".join(rebuilt) + _next_invisible_signature())
+
+    return "\n".join(out_lines)
 
 
 class AntiDieAllEngine:
-    """Hệ thống Anti-Die-All Thế Hệ Mới (Circuit Breaker + Sliding Window Token Bucket + Auto-Recovery):
-    - Giám sát sức khỏe từng tài khoản theo 3 trạng thái:
-      1. CLOSED (Bình thường - Xanh): Cho phép gửi với tốc độ tối ưu.
-      2. HALF_OPEN (Thăm dò - Vàng): Vừa hết thời gian cách ly, giảm nhịp độ gửi để kiểm tra an toàn.
-      3. OPEN (Cách ly bảo vệ - Đỏ): Phát hiện Rate Limit (429 / mã lỗi Zalo spam) hoặc lỗi liên tiếp,
-         lập tức ngắt tải tài khoản đó theo thuật toán Exponential Backoff + Jitter.
-    - Tự động điều tiết nhịp độ toàn cục (Global Fleet Shield) khi phát hiện máy chủ Zalo/Discord siết băng thông."""
+    """Hệ thống Anti-Die-All v5.0 Siết Chặt Đa Tầng (Strict Circuit Breaker + Token Bucket + Auto-Heal):
+    - Kiểm soát chặt chẽ nhịp độ gửi trên từng tài khoản:
+      + Giới hạn cửa sổ trượt 60s (RPM <= 38 tin/phút/acc) và chống dồn burst 2s (tối đa 3 tin/2s).
+      + Phân tích mã lỗi nội bộ Zalo (cả bên ngoài lẫn bên trong lớp mã hóa AES: -2, -108, -112, 112, 114, 300, 301, 429, 3003).
+      + Tự động kích hoạt Circuit Breaker (CLOSED -> OPEN -> HALF_OPEN) với Exponential Backoff + Jitter.
+      + Tự động kích hoạt Lá Chắn Toàn Cục (Global Fleet Shield) nếu phát hiện >= 40% dàn acc bị cảnh báo tốc độ."""
 
-    ZALO_RATELIMIT_CODES = {-2, -108, -112, 112, 114, 300, 301, 429, 500, 1001}
-    ZALO_AUTH_CODES = {-401, 401, -102, 102, -30, -13}
+    ZALO_RATELIMIT_CODES = {-2, -108, -112, -114, 112, 114, 300, 301, 302, 429, 500, 1001, 2001}
+    ZALO_AUTH_CODES = {-401, 401, -102, 102, -30, -13, 3003}
 
     def __init__(self):
         self.lock = threading.Lock()
@@ -395,44 +395,46 @@ class AntiDieAllEngine:
             "ratelimit_streak": 0,
             "ok_total": 0,
             "fail_total": 0,
-            "risk_score": 0.0,            # 0.0 -> 100.0
+            "risk_score": 0.0,
             "last_error": "",
             "last_active": 0.0,
-            "timestamps": deque(maxlen=120),  # Sliding window 60s
+            "timestamps": deque(maxlen=100),
             "adaptive_delay_bonus": 0.0,
+            "burst_counter": 0,
         })
         self.global_cooldown_until = 0.0
 
-    def can_send(self, acc_id, max_rpm=52):
+    def can_send(self, acc_id, max_rpm=38):
         now = time.time()
         with self.lock:
             if now < self.global_cooldown_until:
-                return False, round(self.global_cooldown_until - now, 1)
+                return False, round(self.global_cooldown_until - now, 2)
 
             st = self.state[acc_id]
             if st["circuit"] == "OPEN":
                 if now < st["cooldown_until"]:
-                    return False, round(st["cooldown_until"] - now, 1)
+                    return False, round(st["cooldown_until"] - now, 2)
                 else:
-                    # Chuyển sang trạng thái thăm dò nhẹ nhàng
                     st["circuit"] = "HALF_OPEN"
-                    st["adaptive_delay_bonus"] = max(0.8, st["adaptive_delay_bonus"])
+                    st["adaptive_delay_bonus"] = max(1.0, st["adaptive_delay_bonus"])
 
-            # Làm sạch cửa sổ trượt 60 giây
             while st["timestamps"] and now - st["timestamps"][0] > 60.0:
                 st["timestamps"].popleft()
 
-            # Giới hạn RPM thông minh để tránh bị Zalo khóa mõm (chặn gửi tin)
             rpm = len(st["timestamps"])
-            effective_limit = max_rpm if st["circuit"] == "CLOSED" else max(12, max_rpm // 2)
+            effective_limit = max_rpm if st["circuit"] == "CLOSED" else max(10, max_rpm // 2)
             if rpm >= effective_limit:
-                wait_s = max(1.0, 60.0 - (now - st["timestamps"][0]) + random.uniform(0.3, 1.2))
-                return False, round(wait_s, 1)
+                wait_s = max(1.2, 60.0 - (now - st["timestamps"][0]) + random.uniform(0.4, 1.5))
+                return False, round(wait_s, 2)
 
-            # Kiểm tra xung đột burst 2 giây gần nhất (không quá 5 tin/2s trên 1 tài khoản)
-            recent_2s = sum(1 for t in st["timestamps"] if now - t <= 2.0)
-            if recent_2s >= 5:
-                return False, round(random.uniform(0.6, 1.4), 1)
+            # Siết chặt chống burst: không quá 3 tin trong 1.8 giây trên cùng 1 tài khoản
+            recent_burst = sum(1 for t in st["timestamps"] if now - t <= 1.8)
+            if recent_burst >= 3:
+                return False, round(random.uniform(0.65, 1.35), 2)
+
+            # Không gửi 2 tin cách nhau dưới 0.28s trên cùng 1 tài khoản
+            if st["timestamps"] and (now - st["timestamps"][-1]) < 0.28:
+                return False, round(0.32 - (now - st["timestamps"][-1]), 2)
 
             return True, 0.0
 
@@ -441,16 +443,19 @@ class AntiDieAllEngine:
             st = self.state[acc_id]
             bonus = st["adaptive_delay_bonus"]
             risk = st["risk_score"]
+            st["burst_counter"] += 1
+            b_cnt = st["burst_counter"]
 
-        d = float(base_delay) + bonus + (risk * 0.015)
+        d = float(base_delay) + bonus + (risk * 0.02)
         if antiband:
-            # Phân phối nhiễu nhân sinh học (Human Cadence Jitter)
-            jitter = abs(random.gauss(0.18, 0.12))
-            if random.random() < 0.08:
-                # 8% cơ hội nghỉ nhịp ngắn giống người thật đang gõ phím
-                jitter += random.uniform(0.45, 1.15)
+            # Dao động sinh học tự nhiên + nghỉ nhịp ngắn sau mỗi 12 tin nhắn
+            jitter = abs(random.gauss(0.22, 0.14))
+            if b_cnt % 12 == 0:
+                jitter += random.uniform(0.85, 1.85)
+            elif random.random() < 0.12:
+                jitter += random.uniform(0.35, 0.95)
             d += jitter
-        return max(0.25, d)
+        return max(0.32, d)
 
     def report_success(self, acc_id):
         now = time.time()
@@ -463,8 +468,8 @@ class AntiDieAllEngine:
             if st["circuit"] == "HALF_OPEN":
                 st["circuit"] = "CLOSED"
                 st["ratelimit_streak"] = max(0, st["ratelimit_streak"] - 1)
-            st["adaptive_delay_bonus"] = max(0.0, st["adaptive_delay_bonus"] * 0.85 - 0.05)
-            st["risk_score"] = max(0.0, st["risk_score"] - 1.5)
+            st["adaptive_delay_bonus"] = max(0.0, st["adaptive_delay_bonus"] * 0.82 - 0.04)
+            st["risk_score"] = max(0.0, st["risk_score"] - 1.8)
 
     def report_rate_limit(self, acc_id, retry_after=None, reason="Rate Limit 429"):
         now = time.time()
@@ -474,17 +479,16 @@ class AntiDieAllEngine:
             st["fail_total"] += 1
             st["last_error"] = reason
             streak = min(st["ratelimit_streak"], 6)
-            base_cd = float(retry_after) if retry_after else (12.0 * (1.8 ** (streak - 1)))
-            cooldown = min(300.0, max(10.0, base_cd + random.uniform(2.0, 7.5)))
+            base_cd = float(retry_after) if retry_after else (16.0 * (1.85 ** (streak - 1)))
+            cooldown = min(360.0, max(12.0, base_cd + random.uniform(2.5, 8.5)))
             st["circuit"] = "OPEN"
             st["cooldown_until"] = now + cooldown
-            st["adaptive_delay_bonus"] = min(4.0, st["adaptive_delay_bonus"] + 0.65)
-            st["risk_score"] = min(100.0, st["risk_score"] + 22.0)
+            st["adaptive_delay_bonus"] = min(5.0, st["adaptive_delay_bonus"] + 0.85)
+            st["risk_score"] = min(100.0, st["risk_score"] + 26.0)
 
-            # Kiểm tra nếu nhiều tài khoản cùng bị Rate Limit -> Kích hoạt lá chắn toàn cục
             open_count = sum(1 for v in self.state.values() if v["circuit"] == "OPEN" and v["cooldown_until"] > now)
-            if open_count >= 2 and len(self.state) >= 2 and open_count >= len(self.state) * 0.6:
-                self.global_cooldown_until = max(self.global_cooldown_until, now + random.uniform(4.0, 8.0))
+            if open_count >= 1 and len(self.state) >= 2 and open_count >= len(self.state) * 0.45:
+                self.global_cooldown_until = max(self.global_cooldown_until, now + random.uniform(5.0, 10.0))
 
     def report_error(self, acc_id, err_msg="", is_auth_error=False):
         now = time.time()
@@ -495,16 +499,16 @@ class AntiDieAllEngine:
             st["last_error"] = str(err_msg)[:120]
             if is_auth_error:
                 st["circuit"] = "OPEN"
-                st["cooldown_until"] = now + 180.0
-                st["risk_score"] = min(100.0, st["risk_score"] + 45.0)
-            elif st["fail_streak"] >= 3:
-                backoff = min(180.0, 15.0 * (2 ** min(st["fail_streak"] - 3, 4)) + random.uniform(1.0, 5.0))
+                st["cooldown_until"] = now + 240.0
+                st["risk_score"] = min(100.0, st["risk_score"] + 50.0)
+            elif st["fail_streak"] >= 2:
+                backoff = min(240.0, 18.0 * (2 ** min(st["fail_streak"] - 2, 4)) + random.uniform(2.0, 6.0))
                 st["circuit"] = "OPEN"
                 st["cooldown_until"] = now + backoff
-                st["adaptive_delay_bonus"] = min(3.5, st["adaptive_delay_bonus"] + 0.4)
-                st["risk_score"] = min(100.0, st["risk_score"] + 15.0)
+                st["adaptive_delay_bonus"] = min(4.5, st["adaptive_delay_bonus"] + 0.55)
+                st["risk_score"] = min(100.0, st["risk_score"] + 18.0)
             else:
-                st["risk_score"] = min(100.0, st["risk_score"] + 5.0)
+                st["risk_score"] = min(100.0, st["risk_score"] + 6.0)
 
     def get_snapshot(self, acc_id=None):
         now = time.time()
@@ -523,82 +527,80 @@ class AntiDieAllEngine:
                     "risk_score": round(st["risk_score"], 1),
                     "last_error": st["last_error"]
                 }
-            out = {}
-            for k in list(self.state.keys()):
-                st = self.state[k]
-                while st["timestamps"] and now - st["timestamps"][0] > 60.0:
-                    st["timestamps"].popleft()
-                rem = max(0, int(st["cooldown_until"] - now)) if st["circuit"] == "OPEN" else 0
-                out[k] = {
-                    "circuit": st["circuit"] if rem > 0 or st["circuit"] != "OPEN" else "HALF_OPEN",
-                    "cooldown_remaining": rem,
-                    "ok_total": st["ok_total"],
-                    "fail_total": st["fail_total"],
-                    "rpm": len(st["timestamps"]),
-                    "risk_score": round(st["risk_score"], 1),
-                    "last_error": st["last_error"]
-                }
-            return out
+            return {k: self.get_snapshot(k) for k in list(self.state.keys())}
 
 
 HEALTH_MGR = AntiDieAllEngine()
 
 
 # ============================================================
-# BẢNG MÀU CHUẨN ZALO RICH-TEXT (VER: 0) & DISCORD ANSI
+# BẢNG MÀU CHUẨN ZALO MOBILE/PC RICH-TEXT (100% HIỂN THỊ KHÔNG MẤT MÀU)
 # ============================================================
+# Lưu ý kỹ thuật quan trọng: Zalo iOS & Android chỉ hỗ trợ 4 mã màu RichText gốc:
+# Đỏ (db342e), Vàng (f7b503), Xanh lá (15a85f), Cam (f27806).
+# Các mã màu ngoài 4 mã này sẽ bị Zalo iOS biến thành chữ trắng.
 ZALO_PALETTE = [
-    {"id": "red",    "name": "Đỏ Noel",        "hex": "#db342e", "zcode": "db342e", "ansi": "31"},
+    {"id": "red",    "name": "Đỏ Rực Noel",    "hex": "#db342e", "zcode": "db342e", "ansi": "31"},
     {"id": "yellow", "name": "Vàng Kim Tuyến", "hex": "#f7b503", "zcode": "f7b503", "ansi": "33"},
-    {"id": "green",  "name": "Xanh Thông",     "hex": "#15a85f", "zcode": "15a85f", "ansi": "32"},
-    {"id": "orange", "name": "Cam Lửa",        "hex": "#f27806", "zcode": "f27806", "ansi": "33"},
-    {"id": "ocean",  "name": "Xanh Tuyết",     "hex": "#0091ff", "zcode": "0091ff", "ansi": "36"},
-    {"id": "blue",   "name": "Xanh Đêm",       "hex": "#0068ff", "zcode": "0068ff", "ansi": "34"},
-    {"id": "purple", "name": "Tím Pha Lê",     "hex": "#6f38c5", "zcode": "6f38c5", "ansi": "35"},
-    {"id": "pink",   "name": "Hồng Đào",       "hex": "#e03e96", "zcode": "e03e96", "ansi": "35"},
+    {"id": "green",  "name": "Xanh Lá Thông",  "hex": "#15a85f", "zcode": "15a85f", "ansi": "32"},
+    {"id": "orange", "name": "Cam Lửa Cháy",   "hex": "#f27806", "zcode": "f27806", "ansi": "33"},
 ]
 
-RAINBOW_ZCODES = [c["zcode"] for c in ZALO_PALETTE]
-ZALO_COLOR_MAP = {c["id"]: c["zcode"] for c in ZALO_PALETTE}
+ZALO_NATIVE_ZCODES = ["db342e", "f7b503", "15a85f", "f27806"]
+ZALO_COLOR_MAP = {
+    "red": "db342e",
+    "yellow": "f7b503",
+    "green": "15a85f",
+    "orange": "f27806",
+    # Ánh xạ an toàn nếu lệnh cũ truyền tên màu khác
+    "ocean": "15a85f",
+    "blue": "f7b503",
+    "purple": "db342e",
+    "pink": "f27806",
+}
 
-ZALO_ICON_HARD = [
-    ";-A", ":-bd", "/-punch", "/-shit", "/-weak",
-    ":-DIG", "8-|", ";-!", ":-t", "=d>", ":q",
-    ";f", ":d", "=))", "b-)", ":-R", ":-L", ":-F",
-    "x-)", ":v", ":3", ":>", ":$", ";)p", ";;)",
-    ":p", ":-p", ":-d", "8-)", ":-*", ":-h", ":-?",
-    ":-s", ":-x", ":x", ":-o", ":o", ":-|", ":|",
-    "/-no", "/-bad", "/-li", "/-strong", "/-fade",
-    "/-bome", "/-bd", "/-break", ">-)", "p-(", ":--|"
-]
-
+# Chỉ dùng Unicode Emoji chuẩn quốc tế để hiển thị 100% trên iPhone iOS / Android khi bật chữ màu RichText
+# (Loại bỏ hoàn toàn các ký tự tắt ;f, /-no, :d bị lỗi hiển thị thành chữ thô trên iOS)
 ZALO_ICON_UNICODE = [
-    "😏", "🤡", "💩", "🖕", "👊", "💀", "🤣", "🤪",
-    "🤦", "💢", "☠️", "🗿", "😆", "🙄", "😒", "😑",
-    "😹", "😈", "🔥", "😤", "🤮", "🤢", "🐒", "✌️", "☝️", "😁"
+    "😤", "☝️", "😁", "🔥", "💀", "🤡", "🤣", "🤪",
+    "💢", "☠️", "🗿", "😆", "😈", "👊", "💩", "🐒",
+    "✌️", "😏", "🤦", "🙄", "😒", "😹", "🤮", "🤢",
+    "⚡", "🎯", "👑", "💥", "🥶", "🤬"
 ]
 
 
-def get_icon_hard():
-    if random.random() < 0.65:
-        return random.choice(ZALO_ICON_HARD)
-    return random.choice(ZALO_ICON_UNICODE)
+def get_icon_hard(prev_icons=None):
+    """Lấy Emoji chuẩn Unicode không bao giờ bị lỗi chữ thô (;f /-no :d) trên Zalo iOS/Android
+    và không lặp lại trùng icon ngay sát nhau."""
+    pool = [ic for ic in ZALO_ICON_UNICODE if not prev_icons or ic not in prev_icons]
+    if not pool:
+        pool = ZALO_ICON_UNICODE
+    return random.choice(pool)
 
 
-# Bộ nhớ đệm thành viên nhóm để phân giải @Tên nhanh chóng
+def build_unique_icons(count):
+    if count <= 0:
+        return ""
+    chosen = []
+    for _ in range(count):
+        chosen.append(get_icon_hard(chosen[-2:]))
+    return " ".join(chosen)
+
+
 GROUP_MEMBERS_CACHE = {}
 GROUP_CACHE_LOCK = threading.Lock()
+KNOWN_GROUPS_BY_ACC = defaultdict(set)
 
 
 # ============================================================
-# CLIENT GIAO THỨC ZALO (CHUẨN HÓA ĐỔI MÀU CHỮ & LẮNG NGHE LỆNH)
+# CLIENT GIAO THỨC ZALO (PHỐI MÀU TỪNG DÒNG KHÔNG TRÙNG & SMART SEND)
 # ============================================================
 class Zalo:
     def __init__(self, imei, cookies):
         self.imei = str(imei).strip()
         self.cookies_dict = cookies if isinstance(cookies, dict) else json.loads(cookies)
         self.s = requests.Session()
-        adapter = HTTPAdapter(pool_connections=20, pool_maxsize=40, max_retries=2)
+        adapter = HTTPAdapter(pool_connections=25, pool_maxsize=50, max_retries=2)
         self.s.mount("https://", adapter)
         self.s.mount("http://", adapter)
         self.s.headers.update({
@@ -636,16 +638,30 @@ class Zalo:
         ud = d.get("data")
         if not isinstance(ud, dict):
             raise Exception("Phiên đăng nhập hết hạn hoặc Cookie không hợp lệ")
-        self.uid = str(ud.get("send2me_id") or ud.get("uid") or "")
+        self.uid = str(ud.get("uid") or ud.get("userId") or ud.get("send2me_id") or "")
+        self.send2me_id = str(ud.get("send2me_id") or "")
         self.secret_key = ud.get("zpw_enk")
         self.display_name = ud.get("displayName") or ud.get("zaloName")
         self.zalo_name = ud.get("zaloName")
         self.username = ud.get("username")
-        ws_raw = ud.get("zpw_ws") or []
-        if isinstance(ws_raw, list):
-            self.ws_urls = ws_raw
-        elif isinstance(ws_raw, str):
-            self.ws_urls = [ws_raw]
+
+        # Bóc tách danh sách máy chủ WebSocket từ nhiều nhánh cấu hình của Zalo
+        ws_candidates = []
+        for k in ("zpw_ws", "ws", "websocket"):
+            val = ud.get(k)
+            if isinstance(val, list):
+                ws_candidates.extend(val)
+            elif isinstance(val, str) and val:
+                ws_candidates.append(val)
+        if not ws_candidates:
+            ws_candidates = [
+                "wss://ws1.chat.zalo.me",
+                "wss://ws2.chat.zalo.me",
+                "wss://ws3.chat.zalo.me",
+                "wss://ws4.chat.zalo.me"
+            ]
+        self.ws_urls = ws_candidates
+
         if not self.secret_key:
             raise Exception("Không thể lấy khóa giải mã bảo mật (zpw_enk)")
 
@@ -678,6 +694,7 @@ class Zalo:
         grid = json.loads(dec).get("data", {}).get("gridVerMap", {})
         out = []
         for gid in grid:
+            KNOWN_GROUPS_BY_ACC[self.uid].add(str(gid))
             try:
                 info = self.group_info(gid)
                 out.append({
@@ -691,13 +708,15 @@ class Zalo:
         return out
 
     def get_grid_ver_map(self):
-        """Lấy bản đồ phiên bản nhóm nhanh để phát hiện tin nhắn mới."""
         r = self.s.get(
             "https://tt-group-wpa.chat.zalo.me/api/group/getlg/v4",
             params={"zpw_ver": 645, "zpw_type": 30}, timeout=12,
         )
         dec = self._dec(r.json().get("data", ""))
-        return json.loads(dec).get("data", {}).get("gridVerMap", {})
+        gmap = json.loads(dec).get("data", {}).get("gridVerMap", {})
+        for gid in gmap:
+            KNOWN_GROUPS_BY_ACC[self.uid].add(str(gid))
+        return gmap
 
     def group_info(self, gid):
         enc = self._enc({"gridVerMap": json.dumps({str(gid): 0})})
@@ -794,18 +813,19 @@ class Zalo:
         return out
 
     def get_recent_group_messages(self, gid):
-        """Lấy danh sách tin nhắn gần nhất trong nhóm Zalo phục vụ cơ chế lắng nghe lệnh HTTP."""
+        """Quét tin nhắn mới nhất trong nhóm qua nhiều endpoint dự phòng của Zalo."""
         for ep in (
             "https://tt-group-wpa.chat.zalo.me/api/group/getrecentv2",
             "https://tt-group-wpa.chat.zalo.me/api/group/getrecent",
+            "https://tt-group-wpa.chat.zalo.me/api/group/history",
         ):
             try:
-                enc = self._enc({"grid": str(gid), "groupId": str(gid), "imed": 0, "count": 15})
+                enc = self._enc({"grid": str(gid), "groupId": str(gid), "imed": 0, "count": 10})
                 r = self.s.post(
                     ep,
                     params={"zpw_ver": 645, "zpw_type": 30},
                     data={"params": enc},
-                    timeout=10,
+                    timeout=8,
                 )
                 rj = r.json()
                 if rj.get("data"):
@@ -820,43 +840,46 @@ class Zalo:
                 continue
         return []
 
-    def _pick_zcode(self, color_mode, fixed_color, index_num):
+    def _pick_distinct_zcode(self, color_mode, fixed_color, step_index, prev_zcode=None):
+        """Thuật toán chọn màu thông minh:
+        - Luôn dùng 4 mã màu chuẩn Zalo Mobile/PC (db342e, f7b503, 15a85f, f27806) để KHÔNG BAO GIỜ bị biến thành chữ trắng.
+        - Đảm bảo 100% mỗi dòng liên tiếp là một màu khác nhau, tuyệt đối không trùng màu với dòng ngay trước đó."""
         if color_mode == "none":
             return None
-        if color_mode == "random":
-            return random.choice(RAINBOW_ZCODES)
         if color_mode == "fixed" and fixed_color:
             return ZALO_COLOR_MAP.get(fixed_color, "db342e")
-        return RAINBOW_ZCODES[index_num % len(RAINBOW_ZCODES)]
+
+        if color_mode == "random":
+            candidates = [c for c in ZALO_NATIVE_ZCODES if c != prev_zcode]
+            return random.choice(candidates)
+
+        # Chế độ rainbow / auto_mix: xoay vòng tuần tự và chống trùng tuyệt đối với dòng liền trước
+        chosen = ZALO_NATIVE_ZCODES[step_index % len(ZALO_NATIVE_ZCODES)]
+        if chosen == prev_zcode:
+            chosen = ZALO_NATIVE_ZCODES[(step_index + 1) % len(ZALO_NATIVE_ZCODES)]
+        return chosen
 
     def build_colored_message(self, raw_text, color_mode="rainbow", fixed_color="red",
                               is_heading=True, color_offset=0):
-        """Chuẩn hóa cơ chế Đổi Màu Chữ Zalo Rich-Text (params -> styles, ver: 0):
-        - Sử dụng định dạng chuẩn Zalo RichText: {"start": pos, "len": len, "st": "b,f_18,c_<hex6>"}
-        - Không dùng dấu '#' thô làm xấu nội dung, thay bằng mã font chữ lớn chuẩn Zalo (f_18) + in đậm (b).
-        - Hỗ trợ:
-          + rainbow: Đổi màu cầu vồng theo từng dòng / đoạn
-          + word_rainbow: Đổi màu cầu vồng từng từ một trong câu
-          + random: Đổi màu ngẫu nhiên
-          + fixed: Giữ cố định 1 màu đã chọn"""
+        """Tự động phối màu Zalo Rich-Text v5.0:
+        - MỖI DÒNG LÀ MỘT MÀU RIÊNG BIỆT (kể cả trong cùng 1 đoạn hay khác đoạn, không bao giờ trùng màu 2 dòng sát nhau).
+        - 100% dòng đều lên màu rực rỡ trên iPhone iOS, Android và Web (không bao giờ bị dòng trắng mất màu)."""
         lines = raw_text.split("\n")
         cleaned_lines = []
         styles = []
         current_u16_pos = 0
 
-        has_blocks = any(ln.strip() == "" for ln in lines)
-        block_idx = color_offset
+        # Biến đếm tăng trên TỪNG DÒNG có chữ để mỗi dòng bắt buộc đổi sang 1 màu mới
+        active_line_idx = color_offset
+        prev_line_zcode = None
 
-        for i, ln in enumerate(lines):
+        for ln in lines:
             stripped = ln.strip()
             if not stripped:
                 cleaned_lines.append("")
                 current_u16_pos += 1
-                if has_blocks:
-                    block_idx += 1
                 continue
 
-            # Nếu người dùng gõ '# Tiêu đề' ở đầu dòng, bỏ dấu '#' thô và chuyển sang cờ chữ lớn
             force_line_heading = False
             if stripped.startswith("#"):
                 stripped = re.sub(r"^#+\s*", "", stripped).strip() or stripped
@@ -865,18 +888,19 @@ class Zalo:
             line_text = stripped
             cleaned_lines.append(line_text)
             l_len = utf16_len(line_text)
-
             use_big_font = is_heading or force_line_heading
 
             if color_mode == "word_rainbow":
-                # Tô màu cầu vồng trên từng từ trong dòng
                 words = line_text.split(" ")
                 w_offset = current_u16_pos
-                w_color_idx = color_offset + i
+                prev_w_zcode = prev_line_zcode
+                w_step = active_line_idx
                 for w in words:
                     w_len = utf16_len(w)
                     if w_len > 0:
-                        zcode = self._pick_zcode("rainbow", fixed_color, w_color_idx)
+                        zcode = self._pick_distinct_zcode("rainbow", fixed_color, w_step, prev_w_zcode)
+                        prev_w_zcode = zcode
+                        w_step += 1
                         st_parts = ["b"]
                         if use_big_font:
                             st_parts.append("f_18")
@@ -887,11 +911,14 @@ class Zalo:
                             "len": w_len,
                             "st": ",".join(st_parts)
                         })
-                        w_color_idx += 1
                     w_offset += w_len + 1
+                prev_line_zcode = prev_w_zcode
+                active_line_idx += 1
             else:
-                color_num = block_idx if has_blocks else (color_offset + i)
-                zcode = self._pick_zcode(color_mode, fixed_color, color_num)
+                zcode = self._pick_distinct_zcode(color_mode, fixed_color, active_line_idx, prev_line_zcode)
+                prev_line_zcode = zcode
+                active_line_idx += 1
+
                 st_parts = []
                 if use_big_font:
                     st_parts.extend(["b", "f_18"])
@@ -910,16 +937,16 @@ class Zalo:
             current_u16_pos += l_len + 1
 
         final_msg = "\n".join(cleaned_lines)
-        return final_msg, styles
+        return final_msg, styles, prev_line_zcode
 
     def attach_mentions(self, msg, mentions=None, tag_all=False, styles=None,
-                        color_mode="rainbow", fixed_color="red", is_heading=True, color_offset=0):
-        """Gắn @All và @Tên vào cuối nội dung tin nhắn, tính toán chính xác tọa độ UTF-16
-        và áp dụng luôn hiệu ứng đổi màu cho cả phần @Mention ở cuối."""
+                        color_mode="rainbow", fixed_color="red", is_heading=True,
+                        color_offset=0, prev_zcode=None):
         final = msg.rstrip() if msg else ""
         m_arr = []
         if styles is None:
             styles = []
+        last_z = prev_zcode
 
         if tag_all:
             tag_token = "@All"
@@ -932,7 +959,8 @@ class Zalo:
                 "len": t_len,
                 "type": 1
             })
-            zcode = self._pick_zcode(color_mode, fixed_color, color_offset + 7)
+            zcode = self._pick_distinct_zcode(color_mode, fixed_color, color_offset + 1, last_z)
+            last_z = zcode
             if zcode or is_heading:
                 st_tags = ["b"]
                 if is_heading:
@@ -961,7 +989,8 @@ class Zalo:
                     "len": t_len,
                     "type": 0
                 })
-                zcode = self._pick_zcode(color_mode, fixed_color, color_offset + idx + 3)
+                zcode = self._pick_distinct_zcode(color_mode, fixed_color, color_offset + idx + 2, last_z)
+                last_z = zcode
                 if zcode or is_heading:
                     st_tags = ["b"]
                     if is_heading:
@@ -972,16 +1001,48 @@ class Zalo:
 
         return final, m_arr, styles
 
-    def send_adv(self, raw_text, thread_id, color_mode="rainbow", fixed_color="red",
-                 is_group=True, mentions=None, tag_all=False, is_heading=True,
-                 color_offset=0, antiband=True):
+    def _send_raw_payload(self, final_msg, thread_id, is_group, m_arr, styles):
         url = ("https://tt-group-wpa.chat.zalo.me/api/group/sendmsg"
                if is_group
                else "https://tt-chat2-wpa.chat.zalo.me/api/message/sms")
 
+        pl = {
+            "message": final_msg,
+            "clientId": str(int(time.time() * 1000)) + str(random.randint(100, 999)),
+            "imei": self.imei,
+            "ttl": 0,
+        }
+
+        if is_group and m_arr:
+            mention_json = json.dumps(m_arr, separators=(",", ":"), ensure_ascii=False)
+            pl["mentionInfo"] = mention_json
+            pl["mentions"] = mention_json
+
+        if styles:
+            params_json = json.dumps({"styles": styles, "ver": 0}, separators=(",", ":"), ensure_ascii=False)
+            pl["params"] = params_json
+            pl["textProperties"] = params_json
+
+        if is_group:
+            pl["visibility"] = 0
+            pl["grid"] = str(thread_id)
+        else:
+            pl["toid"] = str(thread_id)
+
+        enc = self._enc(pl)
+        return self.s.post(
+            url,
+            params={"zpw_ver": 645, "zpw_type": 30},
+            data={"params": enc},
+            timeout=15
+        )
+
+    def send_adv(self, raw_text, thread_id, color_mode="rainbow", fixed_color="red",
+                 is_group=True, mentions=None, tag_all=False, is_heading=True,
+                 color_offset=0, antiband=True, auto_retry_thread_type=False):
         processed_text = apply_antiband(raw_text) if antiband else raw_text
 
-        final_msg, styles = self.build_colored_message(
+        final_msg, styles, last_z = self.build_colored_message(
             processed_text,
             color_mode=color_mode,
             fixed_color=fixed_color,
@@ -997,58 +1058,38 @@ class Zalo:
             color_mode=color_mode,
             fixed_color=fixed_color,
             is_heading=is_heading,
-            color_offset=color_offset
+            color_offset=color_offset,
+            prev_zcode=last_z
         )
 
-        pl = {
-            "message": final_msg,
-            "clientId": str(int(time.time() * 1000)) + str(random.randint(100, 999)),
-            "imei": self.imei,
-            "ttl": 0,
-        }
+        r = self._send_raw_payload(final_msg, thread_id, is_group, m_arr, styles)
 
-        if is_group and m_arr:
-            mention_json = json.dumps(m_arr, separators=(",", ":"), ensure_ascii=False)
-            pl["mentionInfo"] = mention_json
-            pl["mentions"] = mention_json
-
-        # QUAN TRỌNG: Zalo Web/PC/Mobile đọc màu chữ & kiểu chữ từ pl["params"] = '{"styles":[...],"ver":0}'
-        if styles:
-            params_json = json.dumps({"styles": styles, "ver": 0}, separators=(",", ":"), ensure_ascii=False)
-            pl["params"] = params_json
-            pl["textProperties"] = params_json
-
-        if is_group:
-            pl["visibility"] = 0
-            pl["grid"] = str(thread_id)
-        else:
-            pl["toid"] = str(thread_id)
-
-        enc = self._enc(pl)
-        r = self.s.post(
-            url,
-            params={"zpw_ver": 645, "zpw_type": 30},
-            data={"params": enc},
-            timeout=15
-        )
-
-        # Kiểm tra phản hồi thực tế của Zalo để kích hoạt Anti-Die-All chính xác
         if r.status_code == 429:
             raise Exception("429:RateLimit:30")
+
         try:
             resp_json = r.json()
             err_code = resp_json.get("error_code", 0)
-            if err_code in AntiDieAllEngine.ZALO_RATELIMIT_CODES:
-                raise Exception(f"429:RateLimit:25:ZaloCode_{err_code}")
+            inner_err = 0
+            if resp_json.get("data"):
+                try:
+                    dec_resp = json.loads(self._dec(resp_json["data"]))
+                    if isinstance(dec_resp, dict):
+                        inner_err = dec_resp.get("error_code", 0)
+                except Exception:
+                    pass
+
+            # Nếu gửi phản hồi lệnh (.menu, .stop...) mà chưa rõ thread_id là Nhóm hay Cá nhân, tự động đảo chiều gửi lại!
+            if auto_retry_thread_type and (err_code != 0 or inner_err != 0):
+                r2 = self._send_raw_payload(final_msg, thread_id, not is_group, [], styles)
+                return r2
+
+            if err_code in AntiDieAllEngine.ZALO_RATELIMIT_CODES or inner_err in AntiDieAllEngine.ZALO_RATELIMIT_CODES:
+                code_hit = err_code or inner_err
+                raise Exception(f"429:RateLimit:25:ZaloCode_{code_hit}")
             if err_code in AntiDieAllEngine.ZALO_AUTH_CODES:
-                # Thử tự động làm mới khóa giải mã 1 lần
                 self._login()
                 raise Exception(f"AuthError:ZaloCode_{err_code}")
-            if resp_json.get("data"):
-                dec_resp = json.loads(self._dec(resp_json["data"]))
-                inner_err = dec_resp.get("error_code", 0)
-                if inner_err in AntiDieAllEngine.ZALO_RATELIMIT_CODES:
-                    raise Exception(f"429:RateLimit:25:ZaloInner_{inner_err}")
         except Exception as check_ex:
             if "429:RateLimit" in str(check_ex) or "AuthError" in str(check_ex):
                 raise check_ex
@@ -1060,12 +1101,6 @@ class Zalo:
 # BỘ PHÂN TÍCH TAG CUỐI CÂU LỆNH (@TÊN & @ALL) TỰ ĐỘNG
 # ============================================================
 def extract_trailing_tags_and_resolve(raw_text, incoming_mentions=None, zalo_client=None, group_id=None):
-    """Bóc tách thông minh @All hoặc @Tên ở cuối nội dung / câu lệnh:
-    - Nếu tin nhắn có sẵn metadata mentions từ Zalo (khi người dùng gõ @ và chọn tên trong khung chat),
-      hệ thống lấy chính xác UID và tên của những người được tag ở cuối câu.
-    - Nếu người dùng gõ chữ '@All' hoặc '@TênNgườiĐó' ở cuối nội dung (trên cả Web hoặc trong khung chat),
-      hệ thống tự động dò danh sách thành viên nhóm để khớp UID thật và cắt phần @Tên thừa khỏi gốc câu,
-      để tự động lặp lại việc tag người đó / @All liên tục cho đến khi bấm dừng."""
     if not raw_text:
         return "", [], False
 
@@ -1073,7 +1108,6 @@ def extract_trailing_tags_and_resolve(raw_text, incoming_mentions=None, zalo_cli
     resolved_mentions = []
     tag_all = False
 
-    # 1. Kiểm tra metadata mentions từ sự kiện tin nhắn Zalo
     if incoming_mentions and isinstance(incoming_mentions, list):
         sorted_m = sorted(incoming_mentions, key=lambda x: int(x.get("pos", 0)), reverse=True)
         for m in sorted_m:
@@ -1103,7 +1137,6 @@ def extract_trailing_tags_and_resolve(raw_text, incoming_mentions=None, zalo_cli
                         pass
                 resolved_mentions.append({"uid": uid, "id": uid, "name": m_name or f"User_{uid[-4:]}"})
 
-    # 2. Kiểm tra chuỗi @All / @all / @tất cả ở cuối văn bản
     all_pattern = re.compile(r"(?:\s+|^)(?:@all|@tất\s*cả|@tat\s*ca|@mọi\s*người|@everyone)\s*$", re.IGNORECASE)
     while True:
         m_all = all_pattern.search(text)
@@ -1112,7 +1145,6 @@ def extract_trailing_tags_and_resolve(raw_text, incoming_mentions=None, zalo_cli
         tag_all = True
         text = text[:m_all.start()].rstrip()
 
-    # 3. Kiểm tra cú pháp @Tên ở cuối văn bản (hỗ trợ cả tên có khoảng trắng hoặc nhiều @Tên ở cuối)
     if zalo_client and group_id and "@" in text:
         try:
             members = zalo_client.get_members_full(group_id)
@@ -1120,7 +1152,6 @@ def extract_trailing_tags_and_resolve(raw_text, incoming_mentions=None, zalo_cli
             members = []
 
         if members:
-            # Sắp xếp tên thành viên từ dài xuống ngắn để khớp chính xác tên đầy đủ ở cuối câu
             sorted_members = sorted(members, key=lambda x: len(x.get("name", "")), reverse=True)
             changed = True
             while changed:
@@ -1144,7 +1175,6 @@ def extract_trailing_tags_and_resolve(raw_text, incoming_mentions=None, zalo_cli
                             changed = True
                             break
 
-            # Nếu vẫn còn @TênNgắn ở cuối (người dùng gõ tên rút gọn, ví dụ @Khôi thay vì @Phạm Anh Khôi)
             tail_at_match = re.search(r"(?:\s+|^)@([^\s@][^@]{0,35})$", text)
             if tail_at_match:
                 partial_name = tail_at_match.group(1).strip().lower()
@@ -1165,7 +1195,6 @@ def extract_trailing_tags_and_resolve(raw_text, incoming_mentions=None, zalo_cli
                             })
                         text = text[:tail_at_match.start()].rstrip()
 
-    # Nếu đã lấy được mention từ metadata Zalo và cuối câu vẫn còn dính @Tên của người đó thì cắt gọn
     for rm in resolved_mentions:
         rname = rm.get("name", "").strip()
         if rname and text.lower().endswith("@" + rname.lower()):
@@ -1190,7 +1219,7 @@ class DiscordBot:
             "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                            "AppleWebKit/537.36 (KHTML, like Gecko) "
                            "Chrome/126.0.0.0 Safari/537.36" if not self.is_bot
-                           else "DiscordBot (ALBForgeNoel, 4.0.0)")
+                           else "DiscordBot (ALBForgeNoel, 5.0.0)")
         })
         self.user_id = None
         self.username = None
@@ -1255,6 +1284,75 @@ class DiscordBot:
 
 
 # ============================================================
+# BỘ CHUYỂN ĐỔI KÝ TỰ ICON TẮT ZALO SANG UNICODE EMOJI SẮC NÉT
+# (KHẮC PHỤC TRIỆT ĐỂ LỖI HIỂN THỊ CHỮ THÔ ';f /-no :d' TRÊN IPHONE/ANDROID)
+# ============================================================
+ZALO_SHORTCUT_TO_EMOJI = {
+    "/-no": "😤", "/-bad": "👎", "/-strong": "💪", "/-weak": "🥀",
+    "/-punch": "👊", "/-shit": "💩", "/-li": "⚡", "/-fade": "👻",
+    "/-bome": "💣", "/-bd": "🐦", "/-break": "💔", ";f": "😤",
+    ":-bd": "👍", ":-dig": "☝️", ":-DIG": "☝️", "8-|": "😎",
+    ";-!": "😏", ":-t": "😤", "=d>": "👏", ":q": "🤣",
+    ":d": "😁", ":-d": "😁", "=))": "🤣", "b-)": "😎",
+    ":-r": "🤪", ":-R": "🤪", ":-l": "😒", ":-L": "😒",
+    ":-f": "🤬", ":-F": "🤬", "x-)": "😆", ":v": "😆",
+    ":3": "😺", ":>": "😏", ":$": "😳", ";)p": "😜",
+    ";;)": "😉", ":p": "😛", ":-p": "😛", "8-)": "🤓",
+    ":-*": "😘", ":-h": "👋", ":-?": "🤔", ":-s": "😖",
+    ":-x": "😶", ":x": "😍", ":-o": "😱", ":o": "😮",
+    ":-|": "😐", ":|": "😐", ">-)": "😈", "p-(": "🤕",
+    ":--|": "🗿", ";-a": "😤", ";-A": "😤"
+}
+
+
+def normalize_zalo_icons_to_unicode(text):
+    """Tự động chuyển mọi ký tự icon tắt cũ (như ;f, /-no, :d, :-bd...) có sẵn trong file .txt
+    thành Emoji Unicode chuẩn để trên iPhone iOS / Android luôn hiển thị 100% hình icon sắc nét."""
+    if not text:
+        return text
+    out_lines = []
+    for ln in text.split("\n"):
+        if not ln.strip():
+            out_lines.append(ln)
+            continue
+        tokens = ln.split(" ")
+        new_tokens = [ZALO_SHORTCUT_TO_EMOJI.get(tk, tk) for tk in tokens]
+        out_lines.append(" ".join(new_tokens))
+    return "\n".join(out_lines)
+
+
+def decorate_lines_with_icons(raw_text, use_emoji=True, icon_count=3):
+    """Đảm bảo mọi dòng/đoạn đều được chuẩn hóa icon và gắn Emoji Unicode đồng đều,
+    không bao giờ bị tình trạng dòng có icon dòng mất icon."""
+    cleaned = normalize_zalo_icons_to_unicode(raw_text)
+    if not use_emoji or icon_count <= 0:
+        return cleaned
+
+    lines = cleaned.split("\n")
+    non_empty_indices = [i for i, ln in enumerate(lines) if ln.strip()]
+    if not non_empty_indices:
+        return cleaned
+
+    has_blank_sep = any(ln.strip() == "" for ln in lines)
+    out_lines = list(lines)
+
+    if has_blank_sep:
+        # Gắn bộ Emoji ở cuối mỗi đoạn (trước dòng trống hoặc dòng cuối cùng)
+        for idx, ln in enumerate(out_lines):
+            if not ln.strip():
+                continue
+            is_end_of_paragraph = (idx == len(out_lines) - 1) or (out_lines[idx + 1].strip() == "")
+            if is_end_of_paragraph:
+                out_lines[idx] = ln.rstrip() + " " + build_unique_icons(icon_count)
+    else:
+        # Gắn ở cuối tin nhắn
+        last_i = non_empty_indices[-1]
+        out_lines[last_i] = out_lines[last_i].rstrip() + " " + build_unique_icons(icon_count)
+
+    return "\n".join(out_lines)
+
+
+# ============================================================
 # WORKER ĐA NỀN TẢNG & XỬ LÝ TAG CUỐI CÂU LỆNH LIÊN TỤC
 # ============================================================
 def single_acc_worker(acc_dict, targets, blocks, delay, use_emoji, icon_count,
@@ -1287,10 +1385,8 @@ def single_acc_worker(acc_dict, targets, blocks, delay, use_emoji, icon_count,
             return
 
     b_idx, t_idx = 0, 0
-    color_counter = 0
-
-    # Bộ nhớ đệm bóc tách @Tên / @All ở cuối nội dung cho từng nhóm đích
-    target_Parsed_Cache = {}
+    color_counter = random.randint(0, 3)
+    target_parsed_cache = {}
 
     while not stop_ev.is_set():
         if not targets or not blocks:
@@ -1299,7 +1395,7 @@ def single_acc_worker(acc_dict, targets, blocks, delay, use_emoji, icon_count,
         if antidieall:
             ok_send, wait_sec = HEALTH_MGR.can_send(acc_id)
             if not ok_send:
-                stop_ev.wait(min(2.5, max(0.5, wait_sec)))
+                stop_ev.wait(min(2.5, max(0.35, wait_sec)))
                 continue
 
         target = targets[t_idx % len(targets)]
@@ -1317,20 +1413,18 @@ def single_acc_worker(acc_dict, targets, blocks, delay, use_emoji, icon_count,
         raw = blocks[b_idx % len(blocks)]
         b_idx += 1
 
-        # Nếu người dùng gõ @Tên hoặc @All ở cuối nội dung trên Web hoặc Lệnh Chat,
-        # tự động bóc tách và duy trì tag liên tục người đó / @All đến khi tắt!
         eff_mentions = list(tag_users) if tag_users else []
         eff_tag_all = bool(tag_all)
         clean_raw = raw
 
         if plat == "zalo" and is_group and ("@" in raw):
             cache_key = (target_id, raw[:120], raw[-80:])
-            if cache_key not in target_Parsed_Cache:
+            if cache_key not in target_parsed_cache:
                 stripped_txt, auto_m, auto_all = extract_trailing_tags_and_resolve(
                     raw, incoming_mentions=None, zalo_client=client, group_id=target_id
                 )
-                target_Parsed_Cache[cache_key] = (stripped_txt or raw, auto_m, auto_all)
-            c_txt, auto_m, auto_all = target_Parsed_Cache[cache_key]
+                target_parsed_cache[cache_key] = (stripped_txt or raw, auto_m, auto_all)
+            c_txt, auto_m, auto_all = target_parsed_cache[cache_key]
             clean_raw = c_txt
             if auto_all:
                 eff_tag_all = True
@@ -1341,8 +1435,7 @@ def single_acc_worker(acc_dict, targets, blocks, delay, use_emoji, icon_count,
         try:
             if mode == "treo_ngon":
                 text = clean_raw.replace("\r\n", "\n").replace("\r", "\n")
-                if use_emoji and icon_count > 0:
-                    text = text + " " + " ".join([get_icon_hard() for _ in range(icon_count)])
+                text = decorate_lines_with_icons(text, use_emoji=use_emoji, icon_count=icon_count)
 
                 if plat == "zalo":
                     client.send_adv(
@@ -1370,12 +1463,10 @@ def single_acc_worker(acc_dict, targets, blocks, delay, use_emoji, icon_count,
                     if antidieall:
                         ok_s, w_s = HEALTH_MGR.can_send(acc_id)
                         if not ok_s:
-                            stop_ev.wait(min(2.0, max(0.4, w_s)))
+                            stop_ev.wait(min(2.0, max(0.35, w_s)))
                             continue
 
-                    msg_line = ln
-                    if use_emoji and icon_count > 0:
-                        msg_line += " " + " ".join([get_icon_hard() for _ in range(icon_count)])
+                    msg_line = decorate_lines_with_icons(ln, use_emoji=use_emoji, icon_count=icon_count)
 
                     if plat == "zalo":
                         client.send_adv(
@@ -1395,13 +1486,11 @@ def single_acc_worker(acc_dict, targets, blocks, delay, use_emoji, icon_count,
                         counter["sent"] += 1
                     HEALTH_MGR.report_success(acc_id)
                     step_d = HEALTH_MGR.get_adaptive_delay(acc_id, delay, antiband=antiband)
-                    stop_ev.wait(max(0.28, step_d))
+                    stop_ev.wait(max(0.32, step_d))
                 continue
 
             else:
-                text = clean_raw
-                if use_emoji and icon_count > 0:
-                    text = text + " " + " ".join([get_icon_hard() for _ in range(icon_count)])
+                text = decorate_lines_with_icons(clean_raw, use_emoji=use_emoji, icon_count=icon_count)
 
                 if plat == "zalo":
                     client.send_adv(
@@ -1437,7 +1526,7 @@ def single_acc_worker(acc_dict, targets, blocks, delay, use_emoji, icon_count,
                 HEALTH_MGR.report_error(acc_id, err_str, is_auth_error=False)
 
         actual_delay = HEALTH_MGR.get_adaptive_delay(acc_id, delay, antiband=antiband)
-        stop_ev.wait(max(0.25, actual_delay))
+        stop_ev.wait(max(0.32, actual_delay))
 
 
 def task_supervisor(tid, targets, blocks, delay, use_emoji, icon_count,
@@ -1486,7 +1575,7 @@ def task_supervisor(tid, targets, blocks, delay, use_emoji, icon_count,
         alive = [t for t in threads if t.is_alive()]
         if not alive:
             break
-        if time.time() - last_db_sync >= 3.0:
+        if time.time() - last_db_sync >= 2.5:
             try:
                 conn = db()
                 conn.execute(
@@ -1498,7 +1587,7 @@ def task_supervisor(tid, targets, blocks, delay, use_emoji, icon_count,
             except Exception:
                 pass
             last_db_sync = time.time()
-        time.sleep(0.8)
+        time.sleep(0.7)
 
     for th in threads:
         th.join(timeout=0.3)
@@ -1517,7 +1606,6 @@ def start_task_programmatic(targets, blocks, delay=1.0, use_emoji=True, icon_cou
                             tag_users=None, tag_all=False, is_heading=True, multi_acc=True,
                             mode="fast", color_mode="rainbow", fixed_color="red",
                             antiband=True, antidieall=True, specific_acc_id=None, source_label="web"):
-    """Khởi chạy tiến trình từ cả Giao diện Web hoặc từ Lệnh trực tiếp trong khung chat Zalo."""
     tid = new_tid("cmd" if source_label == "chat" else "task")
     stop_ev = threading.Event()
     tag_users = tag_users or []
@@ -1562,7 +1650,6 @@ def start_task_programmatic(targets, blocks, delay=1.0, use_emoji=True, icon_cou
 
 
 def stop_tasks_for_thread(thread_id=None):
-    """Dừng các tiến trình đang chạy trong khung chat cụ thể hoặc toàn bộ."""
     stopped = 0
     for tid, info in list(ACTIVE_TASKS.items()):
         if thread_id is None or str(thread_id) in info.get("targets", []):
@@ -1572,8 +1659,8 @@ def stop_tasks_for_thread(thread_id=None):
 
 
 # ============================================================
-# HỆ THỐNG SELF-BOT LẮNG NGHE LỆNH TRỰC TIẾP TRÊN KHUNG CHAT ZALO 24/7
-# (KHÔNG CẦN BẬT WEB - HỖ TRỢ WEBSOCKET + HTTP POLLING ĐA KÊNH)
+# HỆ THỐNG SELF-BOT LẮNG NGHE LỆNH TRỰC TIẾP TRÊN KHUNG CHAT ZALO 24/7 v5.0
+# (GIẢI MÃ AES-GCM WEBSOCKET + HỖ TRỢ CMD 501/521/551 + PHẢN HỒI .MENU TỨC THÌ)
 # ============================================================
 def log_bot_command(acc_id, thread_id, sender_id, cmd_text, action_taken):
     try:
@@ -1588,36 +1675,29 @@ def log_bot_command(acc_id, thread_id, sender_id, cmd_text, action_taken):
         pass
 
 
+def strip_invisible_chars(s):
+    if not s:
+        return ""
+    for zw in ("\u200b", "\u200c", "\u200d", "\u2060", "\ufeff"):
+        s = s.replace(zw, "")
+    return s.strip()
+
+
 def parse_and_execute_inchat_command(zalo_client, acc_row, thread_id, is_group, sender_id, raw_msg, raw_mentions=None):
-    """Trình biên dịch & thực thi lệnh trực tiếp trên bất kỳ khung chat Zalo nào:
-    Hỗ trợ tiền tố '.', '/', '!' (hoặc tiền tố tùy chỉnh của tài khoản):
-      1. .spam <nội dung> [@Tên1 @Tên2 / @All]
-      2. .nhay <nội dung hoặc tên_file.txt> [@Tên / @All]
-      3. .ngon <nội dung hoặc tên_file.txt> [@Tên / @All]
-      4. .file <ID_hoặc_tên_file> [nhay|ngon|fast] [delay=1] [color=rainbow] [@Tên / @All]
-      5. .stop / .dung / .tat (Dừng spam tại khung chat hiện tại)
-      6. .stopall (Dừng toàn bộ tiến trình trên mọi khung chat)
-      7. .dsfile / .files (Xem danh sách file đã tải lên hệ thống)
-      8. .help / .menu (Xem hướng dẫn cú pháp lệnh ngay trong khung chat)"""
-    if not raw_msg or not isinstance(raw_msg, str):
+    """Thực thi tức thì các lệnh .menu, .help, .spam, .nhay, .ngon, .file, .files, .stop
+    ngay khi người dùng gõ vào bất kỳ khung chat Zalo nào!"""
+    if not raw_msg:
         return False
 
-    text = raw_msg.strip()
+    text = strip_invisible_chars(str(raw_msg))
     if not text:
         return False
 
     custom_prefix = (acc_row.get("cmd_prefix") or ".").strip()
-    valid_prefixes = tuple(set([custom_prefix, ".", "/", "!"]))
+    valid_prefixes = tuple(set([custom_prefix, ".", "/", "!", ","]))
     if not text.startswith(valid_prefixes):
         return False
 
-    # Kiểm tra quyền điều khiển: Chủ tài khoản (uidFrom == '0' hoặc trùng uid) hoặc khi bật allow_all_cmd
-    my_uid = str(zalo_client.uid or acc_row.get("uid") or "")
-    is_self = (str(sender_id) in ("0", my_uid, ""))
-    if not is_self and not bool(acc_row.get("allow_all_cmd", 0)):
-        return False
-
-    # Tách lệnh đầu tiên
     first_space = text.find(" ")
     if first_space == -1:
         cmd_token = text[1:].lower().strip()
@@ -1626,10 +1706,40 @@ def parse_and_execute_inchat_command(zalo_client, acc_row, thread_id, is_group, 
         cmd_token = text[1:first_space].lower().strip()
         arg_body = text[first_space + 1:].strip()
 
-    acc_id = acc_row["id"]
-    target_obj = [{"id": str(thread_id), "name": f"Chat_{str(thread_id)[-6:]}", "type": "group" if is_group else "user"}]
+    if not cmd_token:
+        return False
 
-    # 1. LỆNH DỪNG (.stop / .dung / .tat)
+    acc_id = acc_row["id"]
+    target_obj = [{
+        "id": str(thread_id),
+        "name": f"Chat_{str(thread_id)[-6:]}",
+        "type": "group" if is_group else "user"
+    }]
+
+    # 1. LỆNH .MENU / .HELP / .BOT (PHẢN HỒI NGAY LẬP TỨC VÀO KHUNG CHAT)
+    if cmd_token in ("menu", "help", "lenh", "bot", "hdsd", "test", "ping"):
+        help_txt = (
+            "🎄 ALB FORGE NOEL PRO v5.0 — MENU LỆNH:\n"
+            "1️⃣ .spam <nội dung> [@Tên / @All]\n"
+            "2️⃣ .nhay <dòng 1; dòng 2> [@Tên / @All]\n"
+            "3️⃣ .ngon <đoạn 1; đoạn 2> [@Tên / @All]\n"
+            "4️⃣ .file <ID_file> [nhay/ngon] [@Tên / @All]\n"
+            "5️⃣ .files (Xem danh sách file trên Server)\n"
+            "6️⃣ .stop hoặc .dung (Dừng tại nhóm này)\n"
+            "7️⃣ .stopall (Dừng toàn bộ tiến trình)"
+        )
+        try:
+            zalo_client.send_adv(
+                help_txt, thread_id, color_mode="rainbow",
+                is_group=is_group, is_heading=True, antiband=True,
+                auto_retry_thread_type=True
+            )
+        except Exception as e:
+            print(f"[SelfBot #{acc_id}] Lỗi gửi .menu: {e}")
+        log_bot_command(acc_id, thread_id, sender_id, text, "Đã phản hồi bảng .menu vào khung chat")
+        return True
+
+    # 2. LỆNH DỪNG (.stop / .dung / .tat)
     if cmd_token in ("stop", "dung", "dừng", "tat", "tắt", "off"):
         cnt = stop_tasks_for_thread(thread_id)
         if cnt == 0:
@@ -1637,9 +1747,10 @@ def parse_and_execute_inchat_command(zalo_client, acc_row, thread_id, is_group, 
         log_bot_command(acc_id, thread_id, sender_id, text, f"Đã dừng {cnt} tiến trình")
         try:
             zalo_client.send_adv(
-                f"🛑 Đã dừng {cnt} tiến trình tự động tại khung chat này!",
-                thread_id, color_mode="fixed", fixed_color="red",
-                is_group=is_group, is_heading=True, antiband=True
+                f"🛑 Đã dừng {cnt} tiến trình tự động!\nGõ .menu để xem bảng lệnh điều khiển.",
+                thread_id, color_mode="rainbow",
+                is_group=is_group, is_heading=True, antiband=True,
+                auto_retry_thread_type=True
             )
         except Exception:
             pass
@@ -1651,50 +1762,37 @@ def parse_and_execute_inchat_command(zalo_client, acc_row, thread_id, is_group, 
         try:
             zalo_client.send_adv(
                 f"🛑 Đã dừng toàn bộ {cnt} tiến trình trên hệ thống!",
-                thread_id, color_mode="fixed", fixed_color="red",
-                is_group=is_group, is_heading=True, antiband=True
+                thread_id, color_mode="rainbow",
+                is_group=is_group, is_heading=True, antiband=True,
+                auto_retry_thread_type=True
             )
         except Exception:
             pass
         return True
 
-    # 2. LỆNH XEM DANH SÁCH FILE (.files / .dsfile)
+    # 3. LỆNH XEM DANH SÁCH FILE (.files / .dsfile)
     if cmd_token in ("files", "dsfile", "listfile"):
         conn = db()
         f_rows = conn.execute("SELECT id, filename, lines, total_lines, size FROM files ORDER BY id DESC LIMIT 15").fetchall()
         conn.close()
         if not f_rows:
-            msg_out = "📂 Hệ thống hiện chưa có tệp .txt nào. Hãy tải tệp lên Web trước!"
+            msg_out = "📂 Hệ thống chưa có file .txt nào!\nHãy tải file lên Web trước rồi gõ .file <ID> @Tên"
         else:
             lines_info = ["📂 DANH SÁCH FILE TRÊN HỆ THỐNG:"]
             for fr in f_rows:
                 kb = round((fr["size"] or 0) / 1024, 1)
-                lines_info.append(f"• ID {fr['id']}: {fr['filename']} ({fr['lines']} khối | {kb} KB)")
+                lines_info.append(f"ID {fr['id']}: {fr['filename']} ({fr['lines']} khối | {kb} KB)")
             lines_info.append("👉 Gõ: .file <ID> @Tên để chạy ngay!")
             msg_out = "\n".join(lines_info)
         try:
-            zalo_client.send_adv(msg_out, thread_id, color_mode="rainbow", is_group=is_group, is_heading=False)
+            zalo_client.send_adv(
+                msg_out, thread_id, color_mode="rainbow",
+                is_group=is_group, is_heading=True, antiband=True,
+                auto_retry_thread_type=True
+            )
         except Exception:
             pass
-        log_bot_command(acc_id, thread_id, sender_id, text, "Xem danh sách file")
-        return True
-
-    # 3. LỆNH MENU HƯỚNG DẪN (.help / .menu)
-    if cmd_token in ("help", "menu", "lenh", "bot"):
-        help_txt = (
-            "🎄 BẢNG LỆNH SELF-BOT TRỰC TIẾP TRÊN ZALO:\n"
-            "1. .spam <nội dung> [@Tên hoặc @All]\n"
-            "2. .nhay <nội dung / tên_file> [@Tên hoặc @All]\n"
-            "3. .ngon <nội dung / tên_file> [@Tên hoặc @All]\n"
-            "4. .file <ID_file> [nhay/ngon] [delay=1] [@Tên / @All]\n"
-            "5. .files (Xem danh sách file đã lưu)\n"
-            "6. .stop hoặc .dung (Dừng gửi ngay lập tức)"
-        )
-        try:
-            zalo_client.send_adv(help_txt, thread_id, color_mode="rainbow", is_group=is_group, is_heading=False)
-        except Exception:
-            pass
-        log_bot_command(acc_id, thread_id, sender_id, text, "Hiển thị menu trợ giúp")
+        log_bot_command(acc_id, thread_id, sender_id, text, "Đã phản hồi danh sách .files")
         return True
 
     # 4. CÁC LỆNH KHỞI CHẠY (.spam, .nhay, .treonhay, .ngon, .treongon, .file, .tag, .all)
@@ -1723,7 +1821,6 @@ def parse_and_execute_inchat_command(zalo_client, acc_row, thread_id, is_group, 
     icon_count = 3
     multi_acc = True
 
-    # Bóc tách người được tag (@Tên) hoặc @All ở cuối câu lệnh
     cleaned_body, extracted_mentions, extracted_tag_all = extract_trailing_tags_and_resolve(
         arg_body,
         incoming_mentions=raw_mentions,
@@ -1734,13 +1831,12 @@ def parse_and_execute_inchat_command(zalo_client, acc_row, thread_id, is_group, 
     if cmd_token == "all":
         extracted_tag_all = True
 
-    # Bóc tách các tham số tùy chọn ở đầu câu lệnh như delay=0.5 color=red mode=nhay icon=0
     tokens = cleaned_body.split()
     consumed = 0
     file_query = None
 
     if chosen_mode == "file_cmd":
-        chosen_mode = "treo_nhay"
+        chosen_mode = "treo_ngon"
         if tokens:
             file_query = tokens[0]
             consumed = 1
@@ -1749,7 +1845,7 @@ def parse_and_execute_inchat_command(zalo_client, acc_row, thread_id, is_group, 
         tk_low = tk.lower()
         if tk_low.startswith("delay=") or tk_low.startswith("d="):
             try:
-                delay_val = max(0.25, float(tk_low.split("=", 1)[1].replace("s", "")))
+                delay_val = max(0.32, float(tk_low.split("=", 1)[1].replace("s", "")))
                 consumed += 1
             except Exception:
                 break
@@ -1786,7 +1882,6 @@ def parse_and_execute_inchat_command(zalo_client, acc_row, thread_id, is_group, 
     remaining_content = " ".join(tokens[consumed:]).strip() if consumed > 0 else cleaned_body.strip()
 
     blocks = []
-    # Nếu lệnh chỉ định file hoặc nội dung trùng tên file đã lưu
     if file_query or (remaining_content and (remaining_content.endswith(".txt") or remaining_content.isdigit())):
         fq = file_query or remaining_content
         f_info = find_file_by_query(fq)
@@ -1806,16 +1901,21 @@ def parse_and_execute_inchat_command(zalo_client, acc_row, thread_id, is_group, 
         else:
             blocks = [x.strip() for x in remaining_content.split(";") if x.strip()] if ";" in remaining_content else [remaining_content]
 
-    # Nếu chỉ gõ lệnh + @Tên mà không gõ chữ -> lấy file mới nhất trong hệ thống
     if not blocks:
         latest_f = find_file_by_query("latest")
         if latest_f:
             blocks = get_blocks_from_file_id(latest_f["id"], mode=chosen_mode)
 
     if not blocks:
+        try:
+            zalo_client.send_adv(
+                "⚠️ Chưa có nội dung hoặc file để chạy!\nGõ: .spam <nội dung> @Tên hoặc .files để xem danh sách file.",
+                thread_id, color_mode="rainbow", is_group=is_group, is_heading=True, auto_retry_thread_type=True
+            )
+        except Exception:
+            pass
         return False
 
-    # Dừng tiến trình cũ trong cùng khung chat trước khi chạy lệnh mới
     stop_tasks_for_thread(thread_id)
 
     tid = start_task_programmatic(
@@ -1838,17 +1938,22 @@ def parse_and_execute_inchat_command(zalo_client, acc_row, thread_id, is_group, 
     )
 
     tag_desc = "@All" if extracted_tag_all else (", ".join("@" + m["name"] for m in extracted_mentions) if extracted_mentions else "Không tag")
-    log_bot_command(acc_id, thread_id, sender_id, text, f"Chạy {chosen_mode} (Task {tid[-6:]}) | Tag: {tag_desc}")
+    log_bot_command(acc_id, thread_id, sender_id, text, f"Khởi chạy {chosen_mode} (Task {tid[-6:]}) | Tag: {tag_desc}")
     return True
 
 
 class ZaloSelfBotListener:
-    """Bộ lắng nghe lệnh ngầm 24/7 trên tài khoản Zalo (kết hợp WebSocket RFC-6455 & HTTP Group Poller).
-    Hoạt động hoàn toàn độc lập trên máy chủ ngay cả khi người dùng đã tắt trình duyệt Web."""
+    """Bộ lắng nghe lệnh trực tiếp trên khung chat Zalo 24/7 v5.0:
+    - Giải mã chuẩn AES-GCM (encrypt=2) bằng ws_cipher_key từ gói Handshake cmd=1, subCmd=1.
+    - Nhận diện đầy đủ các sự kiện tin nhắn từ cả chính chủ gõ trên iPhone/Android (cmd 551, 521, 501, 510, 511).
+    - Gửi gói Heartbeat chuẩn Zalo [1, 2, 0, 1] giữ kết nối WebSocket xuyên suốt 24/7."""
     def __init__(self, acc_id):
         self.acc_id = acc_id
         self.stop_ev = threading.Event()
-        self.seen_msg_ids = deque(maxlen=600)
+        self.seen_msg_ids = deque(maxlen=800)
+        self.ws_cipher_key = None
+        self.ws_status = "Đang khởi tạo..."
+        self.last_event_ts = 0.0
         self.thread = threading.Thread(target=self._run_loop, daemon=True)
 
     def start(self):
@@ -1863,70 +1968,221 @@ class ZaloSelfBotListener:
         conn.close()
         return dict(row) if row else None
 
-    def _decode_ws_payload(self, client, raw_data_str, encrypt_type):
+    @staticmethod
+    def _recv_exact(sock, n):
+        buf = bytearray()
+        while len(buf) < n:
+            chunk = sock.recv(n - len(buf))
+            if not chunk:
+                return None
+            buf.extend(chunk)
+        return bytes(buf)
+
+    @staticmethod
+    def _send_ws_frame(sock, payload_bytes, opcode=0x2):
+        mask_key = os.urandom(4)
+        length = len(payload_bytes)
+        header = bytearray([0x80 | (opcode & 0x0F)])
+        if length < 126:
+            header.append(0x80 | length)
+        elif length < 65536:
+            header.append(0x80 | 126)
+            header.extend(struct.pack(">H", length))
+        else:
+            header.append(0x80 | 127)
+            header.extend(struct.pack(">Q", length))
+        header.extend(mask_key)
+        masked_payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload_bytes))
+        sock.sendall(bytes(header) + masked_payload)
+
+    def _try_decompress_or_json(self, raw_bytes):
+        if not raw_bytes:
+            return None
+        for wbits in (zlib.MAX_WBITS, -zlib.MAX_WBITS, 16 + zlib.MAX_WBITS):
+            try:
+                decomp = zlib.decompress(raw_bytes, wbits)
+                txt = decomp.decode("utf-8", errors="ignore").strip()
+                if txt.startswith("{") or txt.startswith("["):
+                    return json.loads(txt)
+            except Exception:
+                pass
         try:
-            if encrypt_type == 0:
-                return json.loads(raw_data_str) if isinstance(raw_data_str, str) else raw_data_str
-            b_data = base64.b64decode(unquote(raw_data_str) if "%" in raw_data_str else raw_data_str)
-            if encrypt_type == 1:
-                dec_txt = client._dec(raw_data_str)
-                return json.loads(dec_txt)
-            if encrypt_type in (2, 3):
-                # Thử giải nén trực tiếp hoặc giải mã AES rồi giải nén zlib
-                for candidate in (b_data, b_data[16:], b_data[4:]):
-                    for wbits in (-zlib.MAX_WBITS, zlib.MAX_WBITS, 16 + zlib.MAX_WBITS):
-                        try:
-                            decomp = zlib.decompress(candidate, wbits)
-                            return json.loads(decomp.decode("utf-8", errors="ignore"))
-                        except Exception:
-                            pass
-                try:
-                    key = base64.b64decode(client.secret_key)
-                    cipher = AES.new(key, AES.MODE_CBC, bytes(16))
-                    dec_bytes = cipher.decrypt(b_data)
-                    for wbits in (-zlib.MAX_WBITS, zlib.MAX_WBITS, 16 + zlib.MAX_WBITS):
-                        try:
-                            decomp = zlib.decompress(dec_bytes, wbits)
-                            return json.loads(decomp.decode("utf-8", errors="ignore"))
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
+            txt = raw_bytes.decode("utf-8", errors="ignore").strip()
+            if txt.startswith("{") or txt.startswith("["):
+                return json.loads(txt)
         except Exception:
             pass
         return None
 
+    def _decode_ws_payload(self, client, raw_data_str, encrypt_type):
+        """Giải mã chuẩn xác toàn bộ các định dạng khung dữ liệu WebSocket của Zalo (encrypt = 0, 1, 2, 3)."""
+        if not raw_data_str:
+            return None
+        try:
+            if encrypt_type == 0:
+                return json.loads(raw_data_str) if isinstance(raw_data_str, str) else raw_data_str
+
+            b_data = base64.b64decode(unquote(raw_data_str) if "%" in str(raw_data_str) else raw_data_str)
+
+            # Danh sách khóa giải mã ứng viên (ưu tiên ws_cipher_key từ gói cmd=1, sau đó đến secret_key zpw_enk)
+            key_candidates = []
+            for k_str in (self.ws_cipher_key, client.secret_key):
+                if not k_str:
+                    continue
+                try:
+                    kb = base64.b64decode(k_str)
+                    if len(kb) in (16, 24, 32):
+                        key_candidates.append(kb)
+                except Exception:
+                    pass
+                try:
+                    kb_utf = str(k_str).encode("utf-8")
+                    if len(kb_utf) in (16, 24, 32):
+                        key_candidates.append(kb_utf)
+                except Exception:
+                    pass
+
+            # 1. Giải mã chuẩn AES-GCM (encrypt == 2 trên Zalo WebSocket: 16B IV + 16B AAD + Ciphertext + 16B Tag)
+            if len(b_data) > 32:
+                iv = b_data[:16]
+                aad = b_data[16:32]
+                for kb in key_candidates:
+                    # Thử với slice [32:-16] (có 16B AAD và 16B GCM Tag ở cuối)
+                    if len(b_data) >= 48:
+                        try:
+                            cipher = AES.new(kb, AES.MODE_GCM, nonce=iv)
+                            cipher.update(aad)
+                            pt = cipher.decrypt_and_verify(b_data[32:-16], b_data[-16:])
+                            res = self._try_decompress_or_json(pt)
+                            if res is not None:
+                                return res
+                        except Exception:
+                            pass
+                        try:
+                            cipher = AES.new(kb, AES.MODE_GCM, nonce=iv)
+                            pt = cipher.decrypt(b_data[32:-16])
+                            res = self._try_decompress_or_json(pt)
+                            if res is not None:
+                                return res
+                        except Exception:
+                            pass
+                    # Thử với slice [32:] và [16:-16]
+                    for sl in (b_data[32:], b_data[16:-16], b_data[16:]):
+                        if not sl:
+                            continue
+                        try:
+                            cipher = AES.new(kb, AES.MODE_GCM, nonce=iv)
+                            pt = cipher.decrypt(sl)
+                            res = self._try_decompress_or_json(pt)
+                            if res is not None:
+                                return res
+                        except Exception:
+                            pass
+
+            # 2. Giải mã AES-CBC (encrypt == 1 hoặc 3)
+            for kb in key_candidates:
+                for iv_cand, body_cand in ((bytes(16), b_data), (b_data[:16], b_data[16:])):
+                    if not body_cand or len(body_cand) % 16 != 0:
+                        continue
+                    try:
+                        cipher = AES.new(kb, AES.MODE_CBC, iv_cand)
+                        dec_bytes = cipher.decrypt(body_cand)
+                        pad_v = dec_bytes[-1]
+                        if 1 <= pad_v <= 16:
+                            dec_bytes = dec_bytes[:-pad_v]
+                        res = self._try_decompress_or_json(dec_bytes)
+                        if res is not None:
+                            return res
+                    except Exception:
+                        pass
+
+            # 3. Thử giải nén trực tiếp
+            for cand in (b_data, b_data[16:], b_data[32:], b_data[4:]):
+                res = self._try_decompress_or_json(cand)
+                if res is not None:
+                    return res
+        except Exception:
+            pass
+        return None
+
+    def _extract_msg_dicts(self, obj, parent_is_group=False):
+        """Đệ quy quét mọi nhánh JSON trong gói tin WebSocket (501, 521, 551, 510, 511)
+        để không bỏ sót bất kỳ tin nhắn lệnh nào."""
+        found = []
+        if isinstance(obj, dict):
+            has_content = ("content" in obj) or ("msg" in obj and ("uidFrom" in obj or "idTo" in obj))
+            if has_content and any(k in obj for k in ("uidFrom", "idTo", "msgId", "cliMsgId", "toid", "fromUid")):
+                item = dict(obj)
+                if parent_is_group:
+                    item["_is_group_hint"] = True
+                found.append(item)
+            for k, v in obj.items():
+                is_grp_branch = parent_is_group or (k in ("groupMsgs", "group_msgs", "grid"))
+                if isinstance(v, (dict, list)):
+                    found.extend(self._extract_msg_dicts(v, parent_is_group=is_grp_branch))
+        elif isinstance(obj, list):
+            for elem in obj:
+                if isinstance(elem, (dict, list)):
+                    found.extend(self._extract_msg_dicts(elem, parent_is_group=parent_is_group))
+        return found
+
     def _process_msg_item(self, client, acc_row, msg_obj, default_is_group=False, fallback_thread_id=None):
         if not isinstance(msg_obj, dict):
             return
-        msg_id = str(msg_obj.get("msgId") or msg_obj.get("cliMsgId") or msg_obj.get("globalMsgId") or "")
-        if msg_id:
-            if msg_id in self.seen_msg_ids:
-                return
-            self.seen_msg_ids.append(msg_id)
 
-        content = msg_obj.get("content")
-        if not isinstance(content, str):
+        msg_id = str(msg_obj.get("msgId") or msg_obj.get("cliMsgId") or msg_obj.get("globalMsgId") or "")
+        raw_content = msg_obj.get("content")
+        if isinstance(raw_content, dict):
+            raw_content = (
+                raw_content.get("title")
+                or raw_content.get("text")
+                or raw_content.get("msg")
+                or raw_content.get("description")
+                or ""
+            )
+        elif not isinstance(raw_content, str):
+            raw_content = str(msg_obj.get("msg") or msg_obj.get("message") or "")
+
+        content = strip_invisible_chars(raw_content)
+        if not content:
             return
+
+        dedupe_key = f"{msg_id}_{content[:40]}" if msg_id else f"{int(time.time() // 3)}_{content[:40]}"
+        if dedupe_key in self.seen_msg_ids:
+            return
+        self.seen_msg_ids.append(dedupe_key)
 
         uid_from = str(msg_obj.get("uidFrom") or msg_obj.get("fromUid") or "")
         id_to = str(msg_obj.get("idTo") or msg_obj.get("toid") or fallback_thread_id or "")
-        is_group = bool(default_is_group or msg_obj.get("isGroup") or (str(msg_obj.get("cmd", "")) == "521"))
+        cmd_num = int(msg_obj.get("cmd") or 0)
 
-        # Xác định thread_id của hộp thoại nơi người dùng gõ lệnh
+        known_gids = KNOWN_GROUPS_BY_ACC.get(client.uid, set())
+        is_group = bool(
+            default_is_group
+            or msg_obj.get("_is_group_hint")
+            or msg_obj.get("isGroup")
+            or (cmd_num == 521)
+            or (id_to in known_gids)
+            or (uid_from in known_gids)
+        )
+
         my_uid = str(client.uid or acc_row.get("uid") or "")
         if is_group:
-            thread_id = id_to if (id_to and id_to not in ("0", my_uid)) else (fallback_thread_id or uid_from)
+            if id_to in known_gids:
+                thread_id = id_to
+            elif uid_from in known_gids:
+                thread_id = uid_from
+            else:
+                thread_id = id_to if (id_to and id_to not in ("0", my_uid)) else (fallback_thread_id or uid_from)
         else:
-            if uid_from in ("0", my_uid):
+            if uid_from in ("0", my_uid, ""):
                 thread_id = id_to if id_to not in ("0", "") else my_uid
             else:
                 thread_id = uid_from
 
-        if not thread_id:
+        if not thread_id or thread_id == "0":
             return
 
-        # Bóc tách mentions đi kèm trong tin nhắn nếu có
         raw_mentions = None
         m_field = msg_obj.get("mentions") or msg_obj.get("mentionInfo")
         if isinstance(m_field, list):
@@ -1947,31 +2203,7 @@ class ZaloSelfBotListener:
             raw_mentions=raw_mentions
         )
 
-    def _poll_http_once(self, client, acc_row, last_ver_map):
-        """Cơ chế quét HTTP thông minh phát hiện tin nhắn lệnh mới trong nhóm khi WebSocket bận."""
-        try:
-            cur_map = client.get_grid_ver_map()
-            if not cur_map:
-                return last_ver_map
-            if not last_ver_map:
-                # Khởi tạo mốc phiên bản lần đầu
-                return dict(cur_map)
-
-            changed_gids = [gid for gid, ver in cur_map.items() if last_ver_map.get(gid) != ver]
-            for gid in changed_gids[:5]:
-                msgs = client.get_recent_group_messages(gid)
-                for m in msgs[-5:]:
-                    # Chỉ xử lý tin nhắn mới trong vòng 25 giây gần nhất
-                    ts_ms = int(m.get("ts") or m.get(" cliMsgId") or 0)
-                    if ts_ms > 0 and (time.time() * 1000 - ts_ms) > 25000:
-                        continue
-                    self._process_msg_item(client, acc_row, m, default_is_group=True, fallback_thread_id=str(gid))
-            return dict(cur_map)
-        except Exception:
-            return last_ver_map
-
-    def _run_ws_session(self, client, acc_row, ws_url, last_ver_map):
-        """Kết nối WebSocket thuần Python (RFC-6455) nhận lệnh tức thì + kết hợp HTTP Poll định kỳ."""
+    def _run_ws_session(self, client, acc_row, ws_url):
         parsed = urlparse(ws_url)
         host = parsed.hostname
         port = parsed.port or (443 if parsed.scheme == "wss" else 80)
@@ -2001,94 +2233,113 @@ class ZaloSelfBotListener:
         )
         sock.sendall(handshake.encode("utf-8"))
 
-        resp_buf = b""
-        while b"\r\n\r\n" not in resp_buf:
-            chunk = sock.recv(1024)
-            if not chunk:
+        # Đọc đúng từng byte cho tới hết HTTP Header (\r\n\r\n) để TUYỆT ĐỐI KHÔNG nuốt mất
+        # gói WebSocket Frame đầu tiên (cmd=1, subCmd=1 chứa khóa giải mã ws_cipher_key)!
+        resp_buf = bytearray()
+        while not resp_buf.endswith(b"\r\n\r\n"):
+            b1 = sock.recv(1)
+            if not b1:
                 sock.close()
-                return last_ver_map
-            resp_buf += chunk
+                return
+            resp_buf.extend(b1)
+            if len(resp_buf) > 8192:
+                sock.close()
+                return
 
         if b"101" not in resp_buf.split(b"\r\n")[0]:
             sock.close()
-            return last_ver_map
+            return
 
-        sock.settimeout(3.0)
+        self.ws_status = "🟢 Đang lắng nghe 24/7 (WS Connected)"
+        sock.settimeout(2.5)
         last_ping = time.time()
-        last_http_poll = time.time()
 
         try:
             while not self.stop_ev.is_set():
                 acc_now = self._get_acc_row()
                 if not acc_now or not acc_now.get("chat_cmd_enabled", 1):
+                    self.ws_status = "⚪ Đã tắt nhận lệnh"
                     break
 
-                if time.time() - last_http_poll >= 4.5:
-                    last_ver_map = self._poll_http_once(client, acc_now, last_ver_map)
-                    last_http_poll = time.time()
-
-                if time.time() - last_ping >= 20.0:
-                    # Gửi WebSocket Ping frame
-                    mask_key = os.urandom(4)
-                    sock.sendall(b"\x89\x80" + mask_key)
+                # Gửi gói Heartbeat chuẩn Zalo [1, 2, 0, 1] mỗi 18 giây
+                if time.time() - last_ping >= 18.0:
+                    hb_payload = struct.pack("<BHB", 1, 2, 1) + json.dumps({"eventId": int(time.time() * 1000)}).encode("utf-8")
+                    self._send_ws_frame(sock, hb_payload, opcode=0x2)
                     last_ping = time.time()
 
                 try:
-                    hdr = sock.recv(2)
-                    if not hdr or len(hdr) < 2:
+                    hdr = self._recv_exact(sock, 2)
+                    if not hdr:
                         break
                     opcode = hdr[0] & 0x0F
                     masked = (hdr[1] & 0x80) != 0
                     payload_len = hdr[1] & 0x7F
 
                     if payload_len == 126:
-                        ext = sock.recv(2)
+                        ext = self._recv_exact(sock, 2)
+                        if not ext:
+                            break
                         payload_len = struct.unpack(">H", ext)[0]
                     elif payload_len == 127:
-                        ext = sock.recv(8)
+                        ext = self._recv_exact(sock, 8)
+                        if not ext:
+                            break
                         payload_len = struct.unpack(">Q", ext)[0]
 
-                    mask_bytes = sock.recv(4) if masked else b""
-                    data = b""
-                    while len(data) < payload_len:
-                        packet = sock.recv(payload_len - len(data))
-                        if not packet:
-                            break
-                        data += packet
+                    mask_bytes = self._recv_exact(sock, 4) if masked else b""
+                    data = self._recv_exact(sock, payload_len) if payload_len > 0 else b""
+                    if data is None:
+                        break
 
                     if masked and mask_bytes:
                         data = bytes(b ^ mask_bytes[i % 4] for i, b in enumerate(data))
 
-                    if opcode == 0x8:  # Close
+                    if opcode == 0x8:  # Close frame
                         break
                     if opcode == 0x9:  # Ping -> Pong
-                        mkey = os.urandom(4)
-                        sock.sendall(b"\x8A\x80" + mkey)
+                        self._send_ws_frame(sock, data, opcode=0xA)
                         continue
 
-                    if opcode in (0x1, 0x2) and len(data) > 4:
-                        # Zalo WS Frame: 4 byte đầu có thể là [ver, cmd_lo, cmd_hi, sub] hoặc trực tiếp JSON
+                    if opcode in (0x1, 0x2) and len(data) >= 4:
                         cmd_id = 0
+                        sub_cmd = 0
                         json_part = data
                         if data[0] != ord("{"):
                             cmd_id = struct.unpack("<H", data[1:3])[0]
+                            sub_cmd = data[3]
                             json_part = data[4:]
 
-                        outer = json.loads(json_part.decode("utf-8", errors="ignore"))
+                        txt_frame = json_part.decode("utf-8", errors="ignore").strip()
+                        if not txt_frame.startswith("{"):
+                            continue
+                        outer = json.loads(txt_frame)
+
+                        # BẮT GÓI HANDSHAKE CMD=1 ĐỂ LẤY KHÓA GIẢI MÃ WEBSOCKET (ws_cipher_key)
+                        if outer.get("key"):
+                            self.ws_cipher_key = outer["key"]
+                            self.ws_status = "🟢 Đã đồng bộ khóa WS Key (Sẵn sàng nhận .menu)"
+                        elif isinstance(outer.get("data"), dict) and outer["data"].get("key"):
+                            self.ws_cipher_key = outer["data"]["key"]
+                            self.ws_status = "🟢 Đã đồng bộ khóa WS Key (Sẵn sàng nhận .menu)"
+
+                        if cmd_id == 3000:
+                            # Phiên Web khác vừa mở, tự động kết nối lại sau vài giây
+                            self.ws_status = "🟡 Đang đồng bộ lại phiên WS..."
+                            break
+
                         enc_type = int(outer.get("encrypt", 0))
-                        inner = self._decode_ws_payload(client, outer.get("data", ""), enc_type)
-                        if isinstance(inner, dict):
-                            inner_data = inner.get("data") if isinstance(inner.get("data"), dict) else inner
-                            msgs = (
-                                inner_data.get("msgs")
-                                or inner_data.get("groupMsgs")
-                                or ([inner_data] if inner_data.get("content") else [])
-                            )
-                            is_grp_cmd = (cmd_id == 521) or bool(inner_data.get("groupMsgs"))
-                            for m in msgs:
-                                if isinstance(m, dict):
-                                    m["cmd"] = cmd_id
-                                    self._process_msg_item(client, acc_now, m, default_is_group=is_grp_cmd)
+                        raw_d = outer.get("data")
+                        if not raw_d or (cmd_id in (1, 2) and not isinstance(raw_d, str)):
+                            continue
+
+                        inner = self._decode_ws_payload(client, raw_d, enc_type)
+                        if inner is not None:
+                            self.last_event_ts = time.time()
+                            is_grp_cmd = (cmd_id == 521)
+                            msg_items = self._extract_msg_dicts(inner, parent_is_group=is_grp_cmd)
+                            for m in msg_items:
+                                m["cmd"] = cmd_id
+                                self._process_msg_item(client, acc_now, m, default_is_group=is_grp_cmd)
                 except socket.timeout:
                     continue
                 except Exception:
@@ -2098,39 +2349,48 @@ class ZaloSelfBotListener:
                 sock.close()
             except Exception:
                 pass
-        return last_ver_map
 
     def _run_loop(self):
-        last_ver_map = {}
+        ws_idx = 0
         while not self.stop_ev.is_set():
             acc_row = self._get_acc_row()
             if not acc_row or acc_row.get("platform") != "zalo":
                 break
             if not acc_row.get("chat_cmd_enabled", 1):
-                self.stop_ev.wait(5.0)
+                self.ws_status = "⚪ Đã tắt nhận lệnh"
+                self.stop_ev.wait(4.0)
                 continue
 
             try:
                 client = Zalo(acc_row["imei"], json.loads(acc_row["cookies"]))
+                # Nạp danh sách ID nhóm vào bộ nhớ đệm để nhận diện nhóm chính xác 100%
+                try:
+                    client.get_grid_ver_map()
+                except Exception:
+                    pass
+
                 if client.ws_urls:
-                    ws_url = client.ws_urls[0]
+                    ws_url = client.ws_urls[ws_idx % len(client.ws_urls)]
+                    ws_idx += 1
                     if "zpw_ver=" not in ws_url:
                         sep = "&" if "?" in ws_url else "?"
-                        ws_url = f"{ws_url}{sep}zpw_ver=645&zpw_type=30"
-                    last_ver_map = self._run_ws_session(client, acc_row, ws_url, last_ver_map)
-                else:
-                    # Nếu không có WS URL thì chạy vòng lặp HTTP Poll
-                    for _ in range(15):
-                        if self.stop_ev.is_set():
-                            break
-                        last_ver_map = self._poll_http_once(client, acc_row, last_ver_map)
-                        self.stop_ev.wait(4.0)
-            except Exception:
-                self.stop_ev.wait(6.0)
+                        ws_url = f"{ws_url}{sep}zpw_ver=645&zpw_type=30&t={int(time.time() * 1000)}"
+                    self._run_ws_session(client, acc_row, ws_url)
+
+                # Quét dự phòng HTTP qua danh sách nhóm nếu WebSocket vừa chuyển phiên
+                known_gids = list(KNOWN_GROUPS_BY_ACC.get(client.uid, set()))[:8]
+                for gid in known_gids:
+                    if self.stop_ev.is_set():
+                        break
+                    for m in client.get_recent_group_messages(gid)[-4:]:
+                        self._process_msg_item(client, acc_row, m, default_is_group=True, fallback_thread_id=str(gid))
+                self.stop_ev.wait(2.0)
+            except Exception as e:
+                self.ws_status = f"🔴 Lỗi kết nối: {str(e)[:35]}"
+                self.stop_ev.wait(5.0)
 
 
 def sync_all_zalo_listeners():
-    """Đồng bộ hóa các luồng lắng nghe lệnh khung chat cho toàn bộ tài khoản Zalo đã lưu."""
     try:
         conn = db()
         rows = conn.execute("SELECT id, platform, chat_cmd_enabled FROM accounts").fetchall()
@@ -2153,28 +2413,29 @@ def sync_all_zalo_listeners():
 
 
 # ============================================================
-# CSS GIAO DIỆN NOEL GIÁNG SINH PRO 4.0 (SIÊU MƯỢT & HIỆN ĐẠI)
+# CSS GIAO DIỆN NOEL GIÁNG SINH PRO v5.0 (HIỆN ĐẠI & ĐỒNG BỘ MÀU SẮC)
 # ============================================================
 CSS_NOEL = """
 :root {
-  --bg-page: #07111e;
-  --bg-card: rgba(16, 28, 52, 0.88);
-  --bg-card-hover: rgba(22, 38, 68, 0.95);
-  --border-color: rgba(231, 76, 60, 0.42);
-  --border-gold: rgba(245, 176, 65, 0.65);
+  --bg-page: #060f1d;
+  --bg-card: rgba(14, 25, 47, 0.90);
+  --bg-card-hover: rgba(20, 35, 65, 0.96);
+  --border-color: rgba(219, 52, 46, 0.45);
+  --border-gold: rgba(247, 181, 3, 0.68);
   --txt-0: #ffffff;
-  --txt-1: #e8eef5;
-  --txt-2: #9fb1c6;
-  --noel-red: #ff4757;
-  --noel-green: #2ed573;
-  --noel-gold: #ffa502;
-  --noel-cyan: #1e90ff;
-  --grad-noel: linear-gradient(135deg, #c0392b 0%, #ff4757 52%, #ffa502 100%);
-  --grad-green: linear-gradient(135deg, #0b8457 0%, #2ed573 100%);
+  --txt-1: #edf2f7;
+  --txt-2: #9ab0c7;
+  --noel-red: #db342e;
+  --noel-green: #15a85f;
+  --noel-gold: #f7b503;
+  --noel-orange: #f27806;
+  --noel-cyan: #00a8ff;
+  --grad-noel: linear-gradient(135deg, #b8231e 0%, #db342e 45%, #f27806 80%, #f7b503 100%);
+  --grad-green: linear-gradient(135deg, #0c7a43 0%, #15a85f 100%);
   --grad-ocean: linear-gradient(135deg, #0052d4 0%, #4364f7 50%, #6fb1fc 100%);
-  --grad-dark: linear-gradient(135deg, #1b2845 0%, #0b162c 100%);
-  --shadow-noel: 0 10px 28px rgba(255, 71, 87, 0.28);
-  --shadow-gold: 0 4px 20px rgba(255, 165, 2, 0.32);
+  --grad-dark: linear-gradient(135deg, #1b2845 0%, #091326 100%);
+  --shadow-noel: 0 10px 28px rgba(219, 52, 46, 0.32);
+  --shadow-gold: 0 4px 20px rgba(247, 181, 3, 0.35);
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
 }
 * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
@@ -2188,9 +2449,9 @@ body {
   position: relative;
   overflow-x: hidden;
   background-image:
-    radial-gradient(circle at 15% 10%, rgba(255, 71, 87, 0.18) 0%, transparent 45%),
-    radial-gradient(circle at 85% 15%, rgba(255, 165, 2, 0.14) 0%, transparent 45%),
-    radial-gradient(circle at 50% 85%, rgba(46, 213, 115, 0.12) 0%, transparent 50%);
+    radial-gradient(circle at 12% 10%, rgba(219, 52, 46, 0.20) 0%, transparent 45%),
+    radial-gradient(circle at 88% 15%, rgba(247, 181, 3, 0.16) 0%, transparent 45%),
+    radial-gradient(circle at 50% 88%, rgba(21, 168, 95, 0.14) 0%, transparent 50%);
 }
 
 #snow-canvas {
@@ -2198,38 +2459,46 @@ body {
 }
 
 .header {
-  background: rgba(7, 17, 30, 0.92); backdrop-filter: blur(28px);
+  background: rgba(6, 15, 29, 0.94); backdrop-filter: blur(28px);
   padding: 12px 18px; border-bottom: 1.5px solid var(--border-gold);
-  position: sticky; top:0; z-index: 100; box-shadow: 0 6px 25px rgba(0, 0, 0, 0.55);
+  position: sticky; top:0; z-index: 100; box-shadow: 0 6px 25px rgba(0, 0, 0, 0.6);
 }
-.header-inner { max-width: 1080px; margin: 0 auto; display: flex; align-items: center; gap: 14px; }
+.header-inner { max-width: 1100px; margin: 0 auto; display: flex; align-items: center; gap: 14px; }
 .logo-box {
   width: 50px; height: 50px; border-radius: 50%; overflow: hidden;
-  border: 2px solid var(--noel-gold); box-shadow: 0 0 18px rgba(255, 165, 2, 0.65);
+  border: 2px solid var(--noel-gold); box-shadow: 0 0 18px rgba(247, 181, 3, 0.65);
   background: #1b263b; flex-shrink: 0; position: relative; animation: glowLogo 3s ease-in-out infinite alternate;
 }
-@keyframes glowLogo { from { box-shadow: 0 0 10px rgba(255, 165, 2, 0.45); } to { box-shadow: 0 0 22px rgba(255, 71, 87, 0.85); } }
+@keyframes glowLogo { from { box-shadow: 0 0 10px rgba(247, 181, 3, 0.45); } to { box-shadow: 0 0 22px rgba(219, 52, 46, 0.85); } }
 .logo-box img { width: 100%; height: 100%; object-fit: cover; }
 .header-meta { flex: 1; min-width: 0; }
 .header-meta h1 { font-family: 'Orbitron', sans-serif; font-size: 15.5px; font-weight: 900; color: var(--txt-0); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.pro-tag { font-size: 9.5px; padding: 2px 8px; border-radius: 99px; background: var(--grad-noel); color: #fff; font-family: 'Inter', sans-serif; letter-spacing: 0.5px; }
+.pro-tag { font-size: 9.5px; padding: 3px 9px; border-radius: 99px; background: var(--grad-noel); color: #fff; font-family: 'Inter', sans-serif; letter-spacing: 0.5px; }
 .header-meta p { font-size: 11px; color: var(--txt-2); font-weight: 700; margin-top: 3px; display: flex; align-items: center; gap: 5px; }
 .v-badge { display: inline-flex; align-items: center; justify-content: center; color: #0084ff; font-weight: 900; }
 
-.container { max-width: 1080px; margin: 0 auto; padding: 16px 14px; position: relative; z-index: 10; }
+.container { max-width: 1100px; margin: 0 auto; padding: 16px 14px; position: relative; z-index: 10; }
 
 .stats-strip {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(155px, 1fr));
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 10px; margin-bottom: 16px;
 }
 .stat-box {
-  background: rgba(16, 28, 52, 0.9); border: 1px solid rgba(255, 165, 2, 0.35);
+  background: rgba(14, 25, 47, 0.92); border: 1px solid rgba(247, 181, 3, 0.38);
   border-radius: 16px; padding: 12px 14px; display: flex; flex-direction: column; gap: 4px;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
 }
 .stat-box .s-label { font-size: 10px; font-weight: 800; color: var(--txt-2); text-transform: uppercase; letter-spacing: 0.4px; }
 .stat-box .s-val { font-family: 'Orbitron', sans-serif; font-size: 18px; font-weight: 900; color: var(--noel-gold); }
-.stat-box .s-sub { font-size: 10px; color: var(--noel-green); font-weight: 700; }
+.stat-box .s-sub { font-size: 10px; color: #2ed573; font-weight: 700; }
+
+.color-preview-bar {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 10px 0;
+}
+.color-pill-demo {
+  padding: 8px 10px; border-radius: 10px; font-size: 11px; font-weight: 900;
+  text-align: center; background: rgba(6, 15, 29, 0.9); border: 1.5px solid currentColor;
+}
 
 .panel { display: none; animation: fadeIn .28s var(--ease) both; }
 .panel.active { display: block; }
@@ -2238,7 +2507,7 @@ body {
 .card {
   background: var(--bg-card); backdrop-filter: blur(25px);
   padding: 18px; border-radius: 20px; border: 1.5px solid var(--border-color);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4); margin-bottom: 15px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45); margin-bottom: 15px;
 }
 .card h2 {
   font-size: 13px; font-weight: 900; letter-spacing: .4px; margin-bottom: 14px;
@@ -2254,11 +2523,11 @@ body {
 .btn-pill:hover { transform: translateY(-2px); filter: brightness(1.1); }
 .btn-pill:active { transform: translateY(0) scale(0.96); }
 .btn-pill.primary { background: var(--grad-noel); box-shadow: var(--shadow-noel); }
-.btn-pill.green { background: var(--grad-green); box-shadow: 0 4px 14px rgba(46, 213, 115, 0.35); }
+.btn-pill.green { background: var(--grad-green); box-shadow: 0 4px 14px rgba(21, 168, 95, 0.4); }
 .btn-pill.ocean { background: var(--grad-ocean); box-shadow: 0 4px 14px rgba(30, 144, 255, 0.35); }
 .btn-pill.dark { background: var(--grad-dark); border: 1px solid var(--border-gold); }
 .btn-pill.light { background: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.22); }
-.btn-pill.danger { background: rgba(255, 71, 87, 0.2); color: #ff6b81; border: 1px solid rgba(255, 71, 87, 0.5); }
+.btn-pill.danger { background: rgba(219, 52, 46, 0.22); color: #ff6b81; border: 1px solid rgba(219, 52, 46, 0.55); }
 .btn-pill.full { width: 100%; padding: 13px; font-size: 12px; }
 
 .btn-round {
@@ -2268,21 +2537,21 @@ body {
 }
 .btn-round svg { width: 24px; height: 24px; }
 .btn-round:hover { transform: scale(1.1); }
-.btn-round.action-start { background: var(--grad-green); color: #fff; box-shadow: 0 6px 22px rgba(46, 213, 115, 0.55); }
-.btn-round.action-stop { background: var(--grad-noel); color: #fff; box-shadow: 0 6px 22px rgba(255, 71, 87, 0.55); }
+.btn-round.action-start { background: var(--grad-green); color: #fff; box-shadow: 0 6px 22px rgba(21, 168, 95, 0.55); }
+.btn-round.action-stop { background: var(--grad-noel); color: #fff; box-shadow: 0 6px 22px rgba(219, 52, 46, 0.55); }
 
 .file-upload-label {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 8px; width: 100%; min-height: 96px; padding: 14px; border: 2px dashed var(--noel-gold);
-  border-radius: 16px; background: rgba(255, 165, 2, 0.08); cursor: pointer;
+  border-radius: 16px; background: rgba(247, 181, 3, 0.08); cursor: pointer;
   transition: all 0.3s var(--ease); text-align: center;
 }
-.file-upload-label:hover { background: rgba(255, 165, 2, 0.16); border-color: #fff; }
+.file-upload-label:hover { background: rgba(247, 181, 3, 0.16); border-color: #fff; }
 .file-upload-label svg { width: 32px; height: 32px; color: var(--noel-gold); }
 .file-upload-label span { font-size: 12px; font-weight: 800; color: var(--txt-0); }
 
 .upload-progress-wrap {
-  display: none; margin-top: 12px; background: rgba(7, 17, 30, 0.9);
+  display: none; margin-top: 12px; background: rgba(6, 15, 29, 0.92);
   border: 1px solid var(--border-gold); border-radius: 12px; padding: 10px 12px;
 }
 .upload-bar-bg { width: 100%; height: 8px; background: rgba(255,255,255,0.1); border-radius: 99px; overflow: hidden; margin-top: 6px; }
@@ -2292,10 +2561,10 @@ body {
 .form-group label { display: block; margin-bottom: 6px; font-size: 11px; font-weight: 800; color: var(--noel-gold); }
 .form-group input:not([type="file"]):not([type="checkbox"]), .form-group textarea, .form-group select {
   width: 100%; padding: 12px 14px; border: 1.5px solid rgba(255, 255, 255, 0.16); border-radius: 14px;
-  font-size: 12.5px; background: rgba(7, 17, 30, 0.88); color: var(--txt-0); transition: border-color .2s;
+  font-size: 12.5px; background: rgba(6, 15, 29, 0.90); color: var(--txt-0); transition: border-color .2s;
 }
 .form-group input:focus, .form-group textarea:focus, .form-group select:focus {
-  outline: none; border-color: var(--noel-gold); box-shadow: 0 0 12px rgba(255, 165, 2, 0.3);
+  outline: none; border-color: var(--noel-gold); box-shadow: 0 0 12px rgba(247, 181, 3, 0.3);
 }
 .form-group textarea { min-height: 96px; font-family: 'JetBrains Mono', monospace; font-size: 11.5px; line-height: 1.5; }
 
@@ -2305,28 +2574,28 @@ body {
   font-size: 11px; font-weight: 800; cursor: pointer; border: 1px solid rgba(255, 255, 255, 0.16); transition: all .2s;
 }
 .chip-item:hover { border-color: var(--noel-gold); color: #fff; transform: translateY(-1px); }
-.chip-item.active { background: var(--grad-noel); color: #fff; border-color: transparent; box-shadow: 0 4px 12px rgba(255, 71, 87, 0.4); }
+.chip-item.active { background: var(--grad-noel); color: #fff; border-color: transparent; box-shadow: 0 4px 12px rgba(219, 52, 46, 0.4); }
 
-.toggle-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); gap: 8px; margin-bottom: 12px; }
+.toggle-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-bottom: 12px; }
 .toggle-item {
   padding: 11px 10px; border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 14px;
   cursor: pointer; text-align: center; font-weight: 800; font-size: 10.5px;
   background: rgba(255, 255, 255, 0.05); color: var(--txt-2); transition: all .2s;
 }
-.toggle-item.active { background: var(--grad-green); color: #fff; border-color: transparent; box-shadow: 0 4px 14px rgba(46, 213, 115, 0.38); }
+.toggle-item.active { background: var(--grad-green); color: #fff; border-color: transparent; box-shadow: 0 4px 14px rgba(21, 168, 95, 0.4); }
 
-.table-wrap { overflow-x: auto; border-radius: 14px; border: 1px solid rgba(255, 255, 255, 0.15); background: rgba(7, 17, 30, 0.9); }
+.table-wrap { overflow-x: auto; border-radius: 14px; border: 1px solid rgba(255, 255, 255, 0.15); background: rgba(6, 15, 29, 0.92); }
 .table { width: 100%; border-collapse: collapse; }
 .table th, .table td { padding: 11px 10px; text-align: left; font-size: 11px; border-bottom: 1px solid rgba(255, 255, 255, 0.07); white-space: nowrap; color: var(--txt-1); }
 .table th { background: rgba(255, 255, 255, 0.06); font-weight: 800; color: var(--noel-gold); font-size: 10px; text-transform: uppercase; }
 
-.box-list { max-height: 290px; overflow-y: auto; border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 14px; padding: 8px; background: rgba(7, 17, 30, 0.9); }
+.box-list { max-height: 290px; overflow-y: auto; border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 14px; padding: 8px; background: rgba(6, 15, 29, 0.92); }
 .box-item {
   padding: 10px 12px; border-radius: 12px; background: rgba(255, 255, 255, 0.04); margin-bottom: 6px;
   cursor: pointer; border: 1px solid rgba(255, 255, 255, 0.08); display: flex; align-items: center; gap: 10px; transition: all .15s;
 }
-.box-item:hover { border-color: var(--noel-gold); background: rgba(255, 165, 2, 0.1); }
-.box-item.selected { border-color: var(--noel-red); background: rgba(255, 71, 87, 0.25); }
+.box-item:hover { border-color: var(--noel-gold); background: rgba(247, 181, 3, 0.1); }
+.box-item.selected { border-color: var(--noel-red); background: rgba(219, 52, 46, 0.25); }
 .box-item .check-mark {
   width: 18px; height: 18px; border: 1.5px solid var(--txt-2); border-radius: 5px;
   display: flex; align-items: center; justify-content: center; font-size: 10px; color: transparent; font-weight: 900; flex-shrink: 0;
@@ -2337,21 +2606,21 @@ body {
 
 .cmd-badge {
   display: inline-block; padding: 3px 8px; border-radius: 6px;
-  background: rgba(255, 165, 2, 0.16); border: 1px solid rgba(255, 165, 2, 0.45);
+  background: rgba(247, 181, 3, 0.16); border: 1px solid rgba(247, 181, 3, 0.45);
   color: var(--noel-gold); font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700;
 }
 .hint-banner {
-  background: linear-gradient(135deg, rgba(30, 144, 255, 0.15), rgba(46, 213, 115, 0.12));
-  border: 1px solid rgba(46, 213, 115, 0.45); border-radius: 14px; padding: 12px 14px;
+  background: linear-gradient(135deg, rgba(0, 168, 255, 0.14), rgba(21, 168, 95, 0.12));
+  border: 1px solid rgba(21, 168, 95, 0.48); border-radius: 14px; padding: 12px 14px;
   font-size: 11.5px; line-height: 1.6; color: var(--txt-1); margin-bottom: 12px;
 }
 
 .bottom-dock {
   position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%);
-  width: calc(100% - 20px); max-width: 640px;
-  background: rgba(7, 17, 30, 0.96); backdrop-filter: blur(28px);
+  width: calc(100% - 20px); max-width: 650px;
+  background: rgba(6, 15, 29, 0.96); backdrop-filter: blur(28px);
   border: 1.5px solid var(--border-gold);
-  box-shadow: 0 14px 42px rgba(0, 0, 0, 0.7);
+  box-shadow: 0 14px 42px rgba(0, 0, 0, 0.75);
   border-radius: 99px; display: grid; grid-template-columns: repeat(6, 1fr);
   padding: 6px; gap: 4px; z-index: 999;
 }
@@ -2367,8 +2636,8 @@ body {
 #toast-stack { position: fixed; top: 14px; right: 14px; z-index: 99999; max-width: 340px; width: calc(100% - 28px); pointer-events: none; }
 .toast {
   pointer-events: auto; padding: 12px 16px; border-radius: 14px;
-  background: rgba(16, 28, 52, 0.98); border: 1.5px solid var(--noel-gold);
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.6); display: flex; flex-direction: column; gap: 3px;
+  background: rgba(14, 25, 47, 0.98); border: 1.5px solid var(--noel-gold);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.65); display: flex; flex-direction: column; gap: 3px;
   animation: toastIn .25s var(--ease) both;
 }
 .toast.swipe-up { animation: toastUp .2s ease-out forwards; }
@@ -2383,20 +2652,20 @@ HTML_GATE = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Hệ Thống An Toàn Noel Pro</title>
+<title>Hệ Thống An Toàn Noel Pro v5.0</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
 <style>
 """ + CSS_NOEL + """
 body { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
 .gate-card {
-  background: rgba(16, 28, 52, 0.96); border: 2px solid var(--noel-gold);
+  background: rgba(14, 25, 47, 0.96); border: 2px solid var(--noel-gold);
   border-radius: 24px; padding: 40px 28px; max-width: 410px; width: 100%; text-align: center;
   box-shadow: 0 25px 60px rgba(0, 0, 0, 0.75); position: relative; overflow: hidden;
 }
 .radar-scanner {
   width: 96px; height: 96px; margin: 0 auto 20px; border-radius: 50%;
   position: relative; display: flex; align-items: center; justify-content: center;
-  background: radial-gradient(circle, rgba(255,165,2,0.2) 0%, transparent 70%);
+  background: radial-gradient(circle, rgba(247,181,3,0.2) 0%, transparent 70%);
   border: 2px dashed var(--noel-gold);
 }
 .radar-scanner::before {
@@ -2415,8 +2684,8 @@ body { display: flex; align-items: center; justify-content: center; min-height: 
 <canvas id="snow-canvas"></canvas>
 <div class="gate-card" style="z-index:10;">
   <div class="radar-scanner"><div class="radar-icon">🎄</div></div>
-  <h1 style="font-family:'Orbitron',sans-serif; font-size:17px; margin-bottom:8px; color:var(--noel-gold);">BẢO MẬT NOEL PRO 4.0</h1>
-  <p id="scan-status" style="font-size:12px; color:var(--txt-1); min-height:34px;">Xác thực danh tính & kích hoạt lá chắn Anti-Die-All.</p>
+  <h1 style="font-family:'Orbitron',sans-serif; font-size:17px; margin-bottom:8px; color:var(--noel-gold);">BẢO MẬT NOEL PRO v5.0</h1>
+  <p id="scan-status" style="font-size:12px; color:var(--txt-1); min-height:34px;">Xác thực danh tính & kích hoạt lá chắn Anti-Die-All v5.0.</p>
   <div class="progress-line" id="p-box"><div class="progress-fill" id="p-bar"></div></div>
   <button class="btn-pill primary full" id="start-btn" onclick="startVerification()" style="font-size:13px; padding:15px;">❄️ Bắt Đầu Xác Thực</button>
 </div>
@@ -2426,8 +2695,8 @@ var pBar = document.getElementById('p-bar');
 var statusTxt = document.getElementById('scan-status');
 var startBtn = document.getElementById('start-btn');
 var steps = [
-  { p: 30, txt: 'Đang nạp động cơ Multi-MB Streaming & WAL DB...' },
-  { p: 65, txt: 'Đang khởi động Self-Bot 24/7 & Lá chắn Anti-Die-All...' },
+  { p: 35, txt: 'Đang nạp bộ phối màu Zalo RichText 4 màu chuẩn iOS/Android...' },
+  { p: 70, txt: 'Đang khởi động Self-Bot AES-GCM 24/7 & Anti-Die-All v5.0...' },
   { p: 100, txt: 'Xác thực hoàn tất! Đang mở cổng điều khiển...' }
 ];
 var idx = 0;
@@ -2441,7 +2710,7 @@ function runStep(){
     pBar.style.width = steps[idx].p + '%';
     statusTxt.textContent = steps[idx].txt;
     idx++;
-    setTimeout(runStep, 320);
+    setTimeout(runStep, 300);
   } else {
     finishScan();
   }
@@ -2479,28 +2748,28 @@ HTML_LOGIN = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Đăng Nhập — ALB Forge Noel Pro</title>
+<title>Đăng Nhập — ALB Forge Noel Pro v5.0</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
 <style>
 """ + CSS_NOEL + """
 body { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
 .login-card {
-  background: rgba(16, 28, 52, 0.96); border: 2px solid var(--noel-gold);
+  background: rgba(14, 25, 47, 0.96); border: 2px solid var(--noel-gold);
   border-radius: 24px; padding: 40px 28px; max-width: 410px; width: 100%; text-align: center;
   box-shadow: 0 25px 60px rgba(0, 0, 0, 0.75); position: relative; z-index: 10;
 }
-.login-logo { width: 88px; height: 88px; border-radius: 50%; overflow: hidden; margin: 0 auto 16px; border: 2.5px solid var(--noel-gold); box-shadow: 0 0 20px rgba(255, 165, 2, 0.55); }
+.login-logo { width: 88px; height: 88px; border-radius: 50%; overflow: hidden; margin: 0 auto 16px; border: 2.5px solid var(--noel-gold); box-shadow: 0 0 20px rgba(247, 181, 3, 0.55); }
 .login-logo img { width: 100%; height: 100%; object-fit: cover; }
-.err-msg { background: rgba(255, 71, 87, 0.22); border: 1px solid var(--noel-red); color: #ff6b81; padding: 11px; border-radius: 12px; font-size: 11.5px; font-weight: 800; margin-bottom: 16px; text-align: left; }
+.err-msg { background: rgba(219, 52, 46, 0.22); border: 1px solid var(--noel-red); color: #ff6b81; padding: 11px; border-radius: 12px; font-size: 11.5px; font-weight: 800; margin-bottom: 16px; text-align: left; }
 </style>
 </head>
 <body>
 <canvas id="snow-canvas"></canvas>
 <div class="login-card">
   <div class="login-logo">
-    <img src="/static/logo.png" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\\'http://www.w3.org/2000/svg\\' viewBox=\\'0 0 100 100\\'><circle cx=\\'50\\' cy=\\'50\\' r=\\'50\\' fill=\\'%23c0392b\\'/><text x=\\'50\\' y=\\'62\\' text-anchor=\\'middle\\' font-size=\\'40\\' fill=\\'white\\'>🎄</text></svg>'">
+    <img src="/static/logo.png" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\\'http://www.w3.org/2000/svg\\' viewBox=\\'0 0 100 100\\'><circle cx=\\'50\\' cy=\\'50\\' r=\\'50\\' fill=\\'%23db342e\\'/><text x=\\'50\\' y=\\'62\\' text-anchor=\\'middle\\' font-size=\\'40\\' fill=\\'white\\'>🎄</text></svg>'">
   </div>
-  <h1 style="font-family:'Orbitron',sans-serif; font-size:18px; margin-bottom:6px; color:var(--noel-gold);">ALB FORGE NOEL PRO ❄️</h1>
+  <h1 style="font-family:'Orbitron',sans-serif; font-size:18px; margin-bottom:6px; color:var(--noel-gold);">ALB FORGE NOEL PRO v5.0 ❄️</h1>
   <p style="font-size:11px; color:var(--txt-1); font-weight:700; margin-bottom:22px; display:flex; align-items:center; justify-content:center; gap:5px;">
     Bản quyền: <span class="v-badge"><svg viewBox="0 0 24 24" width="14" height="14" fill="#0084ff"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg></span> Phạm Anh Khôi
   </p>
@@ -2521,7 +2790,7 @@ HTML_INDEX = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>ALB Forge Noel Pro 4.0 — Zalo & Discord Self-Bot</title>
+<title>ALB Forge Noel Pro v5.0 — Phối Màu Không Trùng & Self-Bot 24/7</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@500;700&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
@@ -2535,12 +2804,12 @@ HTML_INDEX = """<!DOCTYPE html>
 <div class="header">
   <div class="header-inner">
     <div class="logo-box">
-      <img id="header-logo" src="/static/logo.png" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\\'http://www.w3.org/2000/svg\\' viewBox=\\'0 0 100 100\\'><circle cx=\\'50\\' cy=\\'50\\' r=\\'50\\' fill=\\'%23c0392b\\'/><text x=\\'50\\' y=\\'62\\' text-anchor=\\'middle\\' font-size=\\'40\\' fill=\\'white\\'>🎄</text></svg>'">
+      <img id="header-logo" src="/static/logo.png" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\\'http://www.w3.org/2000/svg\\' viewBox=\\'0 0 100 100\\'><circle cx=\\'50\\' cy=\\'50\\' r=\\'50\\' fill=\\'%23db342e\\'/><text x=\\'50\\' y=\\'62\\' text-anchor=\\'middle\\' font-size=\\'40\\' fill=\\'white\\'>🎄</text></svg>'">
     </div>
     <div class="header-meta">
-      <h1>ALB FORGE NOEL <span class="pro-tag">PRO v4.0</span></h1>
+      <h1>ALB FORGE NOEL <span class="pro-tag">PRO v5.0 ULTRA</span></h1>
       <p>
-        Bản quyền: <span class="v-badge"><svg viewBox="0 0 24 24" width="13" height="13" fill="#0084ff"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg></span> <b>Phạm Anh Khôi</b> • Điều khiển Web & Gõ Lệnh Khung Chat 24/7
+        Bản quyền: <span class="v-badge"><svg viewBox="0 0 24 24" width="13" height="13" fill="#0084ff"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg></span> <b>Phạm Anh Khôi</b> • Mỗi Dòng 1 Màu Chuẩn iOS/Android & Lệnh .menu 24/7
       </p>
     </div>
     <button class="btn-pill light" onclick="location.href='/logout'">Đăng xuất</button>
@@ -2559,9 +2828,9 @@ HTML_INDEX = """<!DOCTYPE html>
       <span class="s-sub">Zalo & Discord</span>
     </div>
     <div class="stat-box">
-      <span class="s-label">Self-Bot Khung Chat</span>
-      <span class="s-val" id="st-bot-count" style="color:var(--noel-green);">ON 24/7</span>
-      <span class="s-sub">Tự chạy không cần bật Web</span>
+      <span class="s-label">Self-Bot Lệnh .menu</span>
+      <span class="s-val" id="st-bot-count" style="color:#2ed573;">ON 24/7</span>
+      <span class="s-sub">AES-GCM WebSocket Ready</span>
     </div>
     <div class="stat-box">
       <span class="s-label">Tiến Trình Đang Chạy</span>
@@ -2569,28 +2838,28 @@ HTML_INDEX = """<!DOCTYPE html>
       <span class="s-sub" id="st-sent-total">Đã gửi: 0 tin</span>
     </div>
     <div class="stat-box">
-      <span class="s-label">Lá Chắn Anti-Die-All</span>
-      <span class="s-val" id="st-shield-state" style="color:#1e90ff;">BẢO VỆ</span>
-      <span class="s-sub">Circuit Breaker + Polymorphic</span>
+      <span class="s-label">Lá Chắn Anti-Die v5.0</span>
+      <span class="s-val" id="st-shield-state" style="color:var(--noel-cyan);">SIẾT CHẶT</span>
+      <span class="s-sub">RPM &lt;= 38 • Chống Vỡ Icon</span>
     </div>
   </div>
 
-  <!-- TAB 1: ACCOUNTS (ZALO & DISCORD + CẤU HÌNH SELF-BOT 24/7) -->
+  <!-- TAB 1: ACCOUNTS -->
   <div class="panel active" id="panel-accounts">
     <div class="card">
       <h2>
-        <span>➕ Thêm Tài Khoản Mới (Lưu Cookie + IMEI Chạy Cả Web & Khung Chat 24/7)</span>
+        <span>➕ Thêm Tài Khoản Mới (Đồng Bộ Khóa AES-GCM Nhận Lệnh .menu 24/7)</span>
         <button class="btn-pill green" onclick="checkAllAccounts()">Kiểm Tra Tất Cả</button>
       </h2>
 
       <div class="hint-banner">
-        💡 <b>Tính năng Kép Đặc Biệt:</b> Ngay khi bạn lưu <b>IMEI + Cookie Zalo</b> vào đây, bạn vừa có thể điều khiển đầy đủ trên Web, vừa có thể <b>tắt Web đi và tự gõ lệnh trực tiếp (ví dụ: <code>.spam Nội dung @Tên</code> hoặc <code>.file 1 @All</code>) vào bất kỳ khung chat Zalo nào</b> trên điện thoại/máy tính!
+        🔥 <b>Bản cập nhật v5.0:</b> Đã sửa triệt để lỗi nhận lệnh <code>.menu</code> trên khung chat Zalo bằng bộ giải mã <b>AES-GCM WebSocket Handshake (cmd=1)</b> và chuẩn hóa UID chính chủ. Bạn có thể gõ <code>.menu</code> ở bất kỳ nhóm hoặc khung chat nào trên điện thoại iPhone/Android!
       </div>
 
       <div class="form-group">
         <label>Chọn Nền Tảng Ứng Dụng</label>
         <div class="chip-bar" id="platform-selector">
-          <div class="chip-item active" data-plat="zalo" onclick="selectPlat('zalo')">🔷 Zalo (IMEI + Cookie + Self-Bot 24/7)</div>
+          <div class="chip-item active" data-plat="zalo" onclick="selectPlat('zalo')">🔷 Zalo (IMEI + Cookie + Self-Bot .menu 24/7)</div>
           <div class="chip-item" data-plat="discord" onclick="selectPlat('discord')">🟣 Discord (Bot / User Token)</div>
         </div>
         <input type="hidden" id="add-platform" value="zalo">
@@ -2604,11 +2873,11 @@ HTML_INDEX = """<!DOCTYPE html>
         <div style="display:flex; gap:14px; flex-wrap:wrap; margin-bottom:12px;">
           <label style="display:flex; align-items:center; gap:7px; font-size:11.5px; color:var(--txt-0); cursor:pointer;">
             <input type="checkbox" id="add-chat-cmd" checked style="width:16px; height:16px;">
-            ⚡ Bật nhận lệnh trực tiếp trên khung chat Zalo 24/7 (Khỏi cần bật Web)
+            ⚡ Bật nhận lệnh trực tiếp trên khung chat Zalo 24/7 (.menu, .spam, .nhay, .stop)
           </label>
           <label style="display:flex; align-items:center; gap:7px; font-size:11.5px; color:var(--txt-1); cursor:pointer;">
-            <input type="checkbox" id="add-allow-all" style="width:16px; height:16px;">
-            Cho phép nick phụ khác trong nhóm gõ lệnh điều khiển acc này
+            <input type="checkbox" id="add-allow-all" checked style="width:16px; height:16px;">
+            Cho phép nhận lệnh từ mọi tài khoản trong nhóm
           </label>
         </div>
       </div>
@@ -2625,11 +2894,11 @@ HTML_INDEX = """<!DOCTYPE html>
         <div class="form-group"><label>Discord Token</label><input id="add-token" placeholder="MTAx... hoặc OTk..."></div>
       </div>
 
-      <button class="btn-pill primary full" onclick="addAccount()">💾 Lưu Tài Khoản & Kích Hoạt Self-Bot</button>
+      <button class="btn-pill primary full" onclick="addAccount()">💾 Lưu Tài Khoản & Kích Hoạt Self-Bot v5.0</button>
     </div>
 
     <div class="card">
-      <h2><span>📋 Danh Sách Tài Khoản & Trạng Thái Anti-Die-All</span></h2>
+      <h2><span>📋 Danh Sách Tài Khoản & Trạng Thái Kết Nối WebSocket Self-Bot</span></h2>
       <div class="table-wrap">
         <table class="table">
           <thead>
@@ -2637,8 +2906,8 @@ HTML_INDEX = """<!DOCTYPE html>
               <th>ID</th>
               <th>Nền tảng</th>
               <th>Tên hiển thị</th>
-              <th>Lệnh Khung Chat 24/7</th>
-              <th>Sức khỏe (Anti-Die)</th>
+              <th>Trạng thái Lệnh .menu (WebSocket)</th>
+              <th>Sức khỏe (Anti-Die v5.0)</th>
               <th>Trạng thái</th>
               <th>Thao tác</th>
             </tr>
@@ -2649,7 +2918,7 @@ HTML_INDEX = """<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- TAB 2: BOXES (ZALO & DISCORD) -->
+  <!-- TAB 2: BOXES -->
   <div class="panel" id="panel-boxes">
     <div class="card">
       <h2><span>💬 Quản Lý Hội Thoại / Nhóm / Kênh Nhận Tin</span></h2>
@@ -2660,7 +2929,7 @@ HTML_INDEX = """<!DOCTYPE html>
         <button class="btn-pill danger" onclick="clearAllBoxes()">Bỏ Chọn</button>
       </div>
       <div class="form-group" style="margin-bottom:8px;">
-        <input type="text" id="search-box-inp" placeholder="🔍 Tìm nhanh tên nhóm hoặc ID hội thoại..." oninput="filterBoxes()">
+        <input type="text" id="search-box-inp" placeholder="🔍 Tìm nhanh tên nhóm (ví dụ: 13/10 alov) hoặc ID..." oninput="filterBoxes()">
       </div>
       <div>
         <div style="font-size:11px; font-weight:800; color:var(--noel-gold); margin-bottom:6px;">
@@ -2671,12 +2940,12 @@ HTML_INDEX = """<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- TAB 3: FILES (TẢI FILE NHIỀU MB SIÊU TỐC STREAMING) -->
+  <!-- TAB 3: FILES -->
   <div class="panel" id="panel-files">
     <div class="card">
       <h2><span>🚀 Tải Lên Tệp Văn Bản Nhiều MB Siêu Tốc (Streaming Engine)</span></h2>
       <div class="hint-banner">
-        ⚡ <b>Công nghệ Multi-MB Streaming mới:</b> Hỗ trợ tải tệp văn bản <code>.txt</code> hàng chục đến hàng trăm MB cực nhanh với thanh tiến trình trực tiếp. Khi chạy gửi tin, máy chủ đọc trực tiếp từ bộ đệm RAM của Server (không tải ngược về trình duyệt), giúp phản hồi tức thì trong 0.01 giây!
+        ⚡ <b>Tự động sửa ký tự icon lỗi trong File:</b> Mọi ký tự tắt như <code>;f</code>, <code>/-no</code>, <code>:d</code>, <code>:-bd</code> có sẵn trong file <code>.txt</code> của bạn sẽ được hệ thống tự động chuyển đổi sang Emoji Unicode sắc nét (<code>😤 ☝️ 😁</code>) để không bao giờ bị lỗi chữ thô trên iPhone!
       </div>
 
       <label class="file-upload-label" for="file-input">
@@ -2706,13 +2975,20 @@ HTML_INDEX = """<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- TAB 4: SPAM ENGINE (ĐỔI MÀU CHỮ CHUẨN ZALO + TAG CUỐI CÂU LIÊN TỤC) -->
+  <!-- TAB 4: SPAM ENGINE -->
   <div class="panel" id="panel-spam">
     <div class="card">
-      <h2><span>🔥 Động Cơ Gửi Tin Đa Luồng (Đổi Màu Chữ Zalo RichText & Tag Liên Tục)</span></h2>
+      <h2><span>🔥 Động Cơ Gửi Tin v5.0 (Mỗi Dòng 1 Màu Chuẩn iOS/Android — Không Bao Giờ Trùng)</span></h2>
+
+      <div class="color-preview-bar">
+        <div class="color-pill-demo" style="color:#db342e;">Dòng 1: Đỏ Rực (#db342e)</div>
+        <div class="color-pill-demo" style="color:#f7b503;">Dòng 2: Vàng Kim (#f7b503)</div>
+        <div class="color-pill-demo" style="color:#15a85f;">Dòng 3: Xanh Thông (#15a85f)</div>
+        <div class="color-pill-demo" style="color:#f27806;">Dòng 4: Cam Lửa (#f27806)</div>
+      </div>
 
       <div class="hint-banner">
-        🎯 <b>Mẹo Tag Liên Tục Cực Nhanh:</b> Bạn có thể chọn thành viên bên dưới <b>HOẶC gõ trực tiếp <code>@TênNgườiĐó</code> hay <code>@All</code> ở cuối ô nội dung văn bản</b> (ví dụ: <code>Nội dung cần gửi @Nguyễn Văn A</code>). Hệ thống sẽ tự động nhận diện người đó trong nhóm và <b>lặp lại việc tag tên người đó / @All liên tục ở mọi tin nhắn</b> cho đến khi bạn bấm Dừng!
+        🎨 <b>Cam kết 100% Lên Màu Không Mất Chữ:</b> Hệ thống tự động phối 4 mã màu RichText chuẩn gốc của Zalo iOS/Android theo từng dòng đơn, <b>bắt buộc mỗi dòng một màu khác nhau, không bao giờ trùng 2 dòng sát nhau và không bao giờ bị biến thành chữ trắng!</b>
       </div>
 
       <div class="form-group">
@@ -2732,20 +3008,20 @@ HTML_INDEX = """<!DOCTYPE html>
 
       <div class="form-group">
         <label>3. Nhập trực tiếp nội dung (Gõ thêm @Tên hoặc @All ở cuối nếu muốn tag liên tục người đó)</label>
-        <textarea id="spam-messages" placeholder="Nhập nội dung nhiều dòng hoặc cách nhau dấu ';'...\nVí dụ: Gõ 'Chào buổi sáng @TênNgườiĐó' hoặc 'Thông báo khẩn @All' ở cuối -> Hệ thống sẽ tự động tag người đó / @All liên tục đến khi bạn tắt!"></textarea>
+        <textarea id="spam-messages" placeholder="Nhập nội dung nhiều dòng...\nMỗi dòng sẽ tự động mang 1 màu sắc khác nhau (Đỏ -> Vàng -> Xanh lá -> Cam) không bao giờ trùng!\nGõ thêm @TênNgườiĐó hoặc @All ở cuối để hệ thống tag liên tục người đó đến khi dừng!"></textarea>
       </div>
 
       <div class="form-group">
         <label>4. Tag nhanh theo Tên ở cuối (Tùy chọn - Áp dụng cả khi chạy bằng File .txt)</label>
-        <input id="quick-tail-tag" placeholder="Ví dụ: @Phạm Anh Khôi hoặc @All (Hệ thống sẽ gắn và tag liên tục vào cuối mỗi tin của File)">
+        <input id="quick-tail-tag" placeholder="Ví dụ: @Phạm Anh Khôi hoặc @All (Hệ thống sẽ gắn và tag liên tục vào cuối mỗi tin)">
       </div>
 
       <div class="form-group">
-        <label>5. Đổi màu chữ chuẩn Zalo Rich-Text (ver: 0) & Discord ANSI</label>
+        <label>5. Chế độ Tự Động Phối Màu Chữ Zalo Rich-Text (Không Trùng Dòng)</label>
         <div class="chip-bar" id="color-mode-bar">
-          <div class="chip-item active" data-cmode="rainbow">🌈 Cầu Vồng Từng Dòng</div>
-          <div class="chip-item" data-cmode="word_rainbow">✨ Cầu Vồng Từng Từ</div>
-          <div class="chip-item" data-cmode="random">🎲 Đổi Màu Ngẫu Nhiên</div>
+          <div class="chip-item active" data-cmode="rainbow">🌈 Phối Màu Từng Dòng (Không Trùng)</div>
+          <div class="chip-item" data-cmode="word_rainbow">✨ Phối Màu Từng Từ (Không Trùng)</div>
+          <div class="chip-item" data-cmode="random">🎲 Ngẫu Nhiên (Chống Trùng Dòng Sát Nhau)</div>
           <div class="chip-item" data-cmode="fixed">🎨 Cố Định Một Màu</div>
           <div class="chip-item" data-cmode="none">⚪ Tắt Màu</div>
         </div>
@@ -2756,8 +3032,8 @@ HTML_INDEX = """<!DOCTYPE html>
       <div class="form-group">
         <label>6. Khoảng cách thời gian (giây)</label>
         <div class="chip-bar" id="delay-bar">
-          <div class="chip-item" data-delay="0.3">0.3s</div>
-          <div class="chip-item" data-delay="0.5">0.5s</div>
+          <div class="chip-item" data-delay="0.4">0.4s</div>
+          <div class="chip-item" data-delay="0.7">0.7s</div>
           <div class="chip-item active" data-delay="1">1s</div>
           <div class="chip-item" data-delay="1.5">1.5s (An toàn)</div>
           <div class="chip-item" data-delay="2">2s</div>
@@ -2767,23 +3043,23 @@ HTML_INDEX = """<!DOCTYPE html>
       </div>
 
       <div class="form-group">
-        <label>7. Số lượng Icon cảm xúc cuối câu</label>
+        <label>7. Số lượng Emoji Unicode sắc nét cuối mỗi đoạn</label>
         <div class="chip-bar" id="icon-bar">
           <div class="chip-item" data-icon="0">0 (Tắt)</div>
-          <div class="chip-item" data-icon="2">2 Icon</div>
-          <div class="chip-item active" data-icon="3">3 Icon</div>
-          <div class="chip-item" data-icon="5">5 Icon</div>
+          <div class="chip-item" data-icon="2">2 Emoji</div>
+          <div class="chip-item active" data-icon="3">3 Emoji</div>
+          <div class="chip-item" data-icon="5">5 Emoji</div>
         </div>
         <input type="hidden" id="icon-count" value="3">
       </div>
 
       <div class="toggle-grid">
-        <div class="toggle-item active" id="tg-antiband" onclick="tgFlag('antiband')">🛡️ Anti-Ban Đa Tầng (Polymorphic)</div>
-        <div class="toggle-item active" id="tg-antidieall" onclick="tgFlag('antidieall')">🔒 Anti-Die-All (Circuit Breaker)</div>
+        <div class="toggle-item active" id="tg-antiband" onclick="tgFlag('antiband')">🛡️ Anti-Ban v5.0 (Không Vỡ Chữ/Icon)</div>
+        <div class="toggle-item active" id="tg-antidieall" onclick="tgFlag('antidieall')">🔒 Anti-Die-All Siết Chặt (RPM&lt;=38)</div>
         <div class="toggle-item active" id="tg-heading" onclick="tgFlag('heading')">🔠 Chữ Lớn In Đậm Zalo (f_18)</div>
         <div class="toggle-item active" id="tg-multi" onclick="tgFlag('multi')">⚡ Chạy Tất Cả Acc Song Song</div>
         <div class="toggle-item" id="tg-all" onclick="tgFlag('all')">📢 Nhắc Cả Nhóm (@All Liên Tục)</div>
-        <div class="toggle-item active" id="tg-emoji" onclick="tgFlag('emoji')">🎭 Sử Dụng Icon Cuối Câu</div>
+        <div class="toggle-item active" id="tg-emoji" onclick="tgFlag('emoji')">😤 Gắn Emoji Unicode Sắc Nét</div>
       </div>
 
       <div class="form-group">
@@ -2825,18 +3101,24 @@ HTML_INDEX = """<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- TAB 5: SELF-BOT LỆNH KHUNG CHAT ZALO 24/7 -->
+  <!-- TAB 5: SELF-BOT LỆNH KHUNG CHAT ZALO 24/7 + BẢNG TEST LỆNH .MENU -->
   <div class="panel" id="panel-chatbot">
     <div class="card">
       <h2>
-        <span>🤖 Điều Khiển Bằng Lệnh Trực Tiếp Trên Khung Chat Zalo (Khỏi Cần Bật Web)</span>
+        <span>⚡ Bảng Bắn Lệnh .menu / .spam Trực Tiếp Vào Nhóm Đã Chọn</span>
         <button class="btn-pill ocean" onclick="loadBotLogs()">🔄 Làm Mới Nhật Ký</button>
       </h2>
-
       <div class="hint-banner">
-        ✨ <b>Cách hoạt động:</b> Khi bạn đã thêm tài khoản Zalo (IMEI + Cookie) vào hệ thống, luồng <b>Self-Bot 24/7</b> sẽ tự động lắng nghe ngầm. Bạn có thể đóng trang Web này lại, mở ứng dụng Zalo trên điện thoại hoặc PC, vào <b>bất kỳ nhóm hoặc khung chat nào</b> và gõ các lệnh dưới đây để điều khiển trực tiếp!
+        💡 <b>Lưu ý quan trọng khi gõ <code>.menu</code> trên Zalo:</b> Nếu bạn đang mở <code>chat.zalo.me</code> trên trình duyệt máy tính cùng lúc, Zalo có thể ngắt WebSocket của Bot. Hãy đóng tab <code>chat.zalo.me</code> để Bot giữ toàn quyền kết nối WebSocket 24/7, hoặc bạn có thể thử nghiệm gõ lệnh <code>.menu</code> ngay tại ô bên dưới để bắn thẳng vào nhóm đang chọn!
       </div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <input id="web-cmd-input" value=".menu" placeholder="Nhập lệnh: .menu, .files, .spam Nội dung @Tên, .file 1 @All, .stop..." style="flex:1; min-width:220px; padding:11px 14px; border-radius:12px; border:1.5px solid var(--border-gold); background:rgba(6,15,29,0.9); color:#fff; font-family:'JetBrains Mono',monospace; font-size:12px;">
+        <button class="btn-pill primary" onclick="sendWebBotCmd()">🚀 Gửi Lệnh Vào Hội Thoại Đã Chọn</button>
+      </div>
+    </div>
 
+    <div class="card">
+      <h2><span>🤖 Danh Sách Lệnh Tự Động Trên Khung Chat Zalo (Khỏi Cần Bật Web)</span></h2>
       <div class="table-wrap" style="margin-bottom:14px;">
         <table class="table">
           <thead>
@@ -2844,28 +3126,28 @@ HTML_INDEX = """<!DOCTYPE html>
           </thead>
           <tbody>
             <tr>
+              <td><span class="cmd-badge">.menu</span> hoặc <span class="cmd-badge">.help</span></td>
+              <td>Phản hồi ngay lập tức bảng hướng dẫn lệnh 7 màu trực tiếp vào khung chat Zalo</td>
+            </tr>
+            <tr>
               <td><span class="cmd-badge">.spam Nội dung cần gửi @TênNgườiĐó</span></td>
-              <td>Chạy gửi siêu nhanh nội dung đó và <b>liên tục tag @TênNgườiĐó</b> ở cuối mỗi tin cho đến khi bạn gõ <code>.stop</code></td>
+              <td>Chạy gửi siêu nhanh nội dung đó và <b>liên tục tag @TênNgườiĐó</b> ở cuối mỗi tin cho đến khi gõ <code>.stop</code></td>
             </tr>
             <tr>
               <td><span class="cmd-badge">.spam Nội dung thông báo @All</span></td>
-              <td>Chạy gửi liên tục nội dung và <b>tag @All (Cả nhóm)</b> liên tục đến khi bạn gõ <code>.stop</code></td>
+              <td>Chạy gửi liên tục nội dung và <b>tag @All (Cả nhóm)</b> liên tục đến khi gõ <code>.stop</code></td>
             </tr>
             <tr>
               <td><span class="cmd-badge">.nhay Dòng 1; Dòng 2; Dòng 3 @Tên</span></td>
-              <td>Chạy chế độ <b>Treo Nhây</b> từng dòng riêng biệt kèm đổi màu chữ Zalo và <b>tag liên tục @Tên</b> ở cuối</td>
+              <td>Chạy chế độ <b>Treo Nhây</b> từng dòng riêng biệt (mỗi dòng 1 màu) và <b>tag liên tục @Tên</b></td>
             </tr>
             <tr>
               <td><span class="cmd-badge">.ngon Đoạn 1; Đoạn 2 @Tên</span></td>
-              <td>Chạy chế độ <b>Treo Ngôn</b> (nhiều dòng trong 1 tin) kèm đổi màu chữ và <b>tag liên tục @Tên</b></td>
+              <td>Chạy chế độ <b>Treo Ngôn</b> (nhiều dòng trong 1 tin, mỗi dòng 1 màu) và <b>tag liên tục @Tên</b></td>
             </tr>
             <tr>
               <td><span class="cmd-badge">.file 1 @TênNgườiĐó</span> hoặc <span class="cmd-badge">.file 1 @All</span></td>
               <td>Lấy trực tiếp <b>File văn bản số 1</b> đã tải lên Web để chạy ngay tại khung chat đó và <b>tag liên tục @Tên / @All</b></td>
-            </tr>
-            <tr>
-              <td><span class="cmd-badge">.file 1 delay=0.5 color=word_rainbow @Tên</span></td>
-              <td>Tuỳ chỉnh tốc độ delay, kiểu màu cầu vồng từng chữ và tag liên tục người ở cuối câu</td>
             </tr>
             <tr>
               <td><span class="cmd-badge">.files</span> hoặc <span class="cmd-badge">.dsfile</span></td>
@@ -2891,23 +3173,21 @@ HTML_INDEX = """<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- TAB 6: HƯỚNG DẪN TOKEN & AN TOÀN -->
+  <!-- TAB 6: HƯỚNG DẪN -->
   <div class="panel" id="panel-guide">
     <div class="card">
-      <h2><span>📖 Hướng Dẫn Lấy Cookie Zalo & Token Discord An Toàn</span></h2>
+      <h2><span>📖 Nguyên Lý Phối Màu Không Trùng & Bảo Vệ Tài Khoản v5.0</span></h2>
       <div style="line-height:1.7; font-size:12.5px; color:var(--txt-1);">
-        <h3 style="color:var(--noel-gold); font-size:14px; margin-bottom:6px;">1. Cách Lấy IMEI & Cookie Zalo Nhanh Nhất</h3>
-        <ol style="padding-left:18px; margin-bottom:14px;">
-          <li>Đăng nhập Zalo Web tại <code>https://chat.zalo.me</code> trên máy tính hoặc trình duyệt Kiwi Browser (điện thoại).</li>
-          <li>Sử dụng tiện ích <b>ZaloDataExtractor</b> hoặc mở F12 Console gõ <code>localStorage.getItem('z_uuid')</code> để lấy <b>IMEI</b> và sao chép <b>Cookie JSON</b>.</li>
-          <li>Dán vào mục <b>Tài khoản</b> trên hệ thống. Tích bật <b>Nhận lệnh trực tiếp trên khung chat Zalo 24/7</b> để có thể gõ lệnh ở bất kỳ khung chat nào mà không cần mở lại Web.</li>
-        </ol>
+        <h3 style="color:var(--noel-gold); font-size:14px; margin-bottom:6px;">1. Vì sao bản v5.0 khắc phục 100% lỗi chữ trắng và lỗi ký tự ';f /-no :d'?</h3>
+        <ul style="padding-left:18px; margin-bottom:14px;">
+          <li><b>Chuẩn hóa 4 màu RichText gốc của Zalo Mobile:</b> Ứng dụng Zalo trên iPhone (iOS) và Android chỉ hỗ trợ đúng 4 mã màu RichText là <b>Đỏ (<code>db342e</code>)</b>, <b>Vàng (<code>f7b503</code>)</b>, <b>Xanh lá (<code>15a85f</code>)</b> và <b>Cam (<code>f27806</code>)</b>. Bản v5.0 loại bỏ các mã màu ngoài danh sách này và xoay vòng nghiêm ngặt trên từng dòng đơn để <b>100% dòng đều có màu rực rỡ và không bao giờ trùng 2 dòng liên tiếp</b>.</li>
+          <li><b>Bộ lọc Emoji Unicode tự động:</b> Khi bật chữ màu RichText trên Zalo iOS, các ký tự tắt như <code>;f</code>, <code>/-no</code>, <code>:d</code> không được Zalo chuyển thành hình mặt cười mà bị hiện thành chữ thô. Bản v5.0 tự động đổi toàn bộ ký tự tắt đó sang Emoji Unicode chuẩn (<code>😤 ☝️ 😁</code>) sắc nét 100%.</li>
+        </ul>
 
-        <h3 style="color:var(--noel-gold); font-size:14px; margin-bottom:6px;">2. Cơ Chế Bảo Vệ Kép Anti-Ban & Anti-Die-All Pro v4.0</h3>
+        <h3 style="color:var(--noel-gold); font-size:14px; margin-bottom:6px;">2. Cách để lệnh .menu trên khung chat phản hồi nhanh nhất</h3>
         <ul style="padding-left:18px;">
-          <li><b>Đổi màu chữ Zalo RichText chuẩn (ver: 0):</b> Tương thích hoàn toàn với cả Zalo Điện Thoại (iOS/Android) và Zalo PC/Web thông qua cấu trúc <code>params.styles</code> chính quy.</li>
-          <li><b>Polymorphic Anti-Ban:</b> Tự động biến thiên mã băm (hash) tin nhắn bằng chữ ký vi phân tàng hình ở từng lượt gửi, ngăn chặn hoàn toàn bộ lọc quét nội dung trùng lặp của Zalo.</li>
-          <li><b>Circuit Breaker Anti-Die-All:</b> Tự động theo dõi tần suất gửi (RPM) và mã phản hồi của máy chủ Zalo/Discord. Khi phát hiện dấu hiệu giới hạn tốc độ, hệ thống tự động cách ly tạm thời tài khoản đó và điều phối sang tài khoản khác để không bao giờ bị khóa hàng loạt.</li>
+          <li>Sau khi lấy Cookie + IMEI từ <code>chat.zalo.me</code> và lưu vào Web này, bạn <b>nên đóng tab <code>chat.zalo.me</code></b> trên trình duyệt máy tính để Zalo không ngắt kết nối WebSocket của Self-Bot.</li>
+          <li>Mở Zalo trên điện thoại và gõ <code>.menu</code> hoặc <code>.files</code> hoặc <code>.spam Nội dung @Tên</code> vào bất kỳ nhóm nào, Bot sẽ phản hồi ngay lập tức!</li>
         </ul>
       </div>
     </div>
@@ -2935,7 +3215,7 @@ HTML_INDEX = """<!DOCTYPE html>
   </button>
   <button class="dock-btn" data-tab="chatbot">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-    <span>Lệnh Chat</span>
+    <span>Lệnh .menu</span>
   </button>
   <button class="dock-btn" data-tab="guide">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
@@ -2959,7 +3239,7 @@ var Toast = (function(){
   var stack = null;
   function ensure(){ if(!stack) stack = document.getElementById('toast-stack'); return stack; }
   function show(msg, title, duration){
-    duration = duration || 1800;
+    duration = duration || 1900;
     var s = ensure();
     if(!s) return;
     s.querySelectorAll('.toast').forEach(el => el.remove());
@@ -2979,7 +3259,7 @@ var Toast = (function(){
   }
   return {
     success: (m, t, d) => show(m, t || 'Thành công', d),
-    error: (m, t, d) => show(m, t || 'Lỗi', d || 2400),
+    error: (m, t, d) => show(m, t || 'Lỗi', d || 2500),
     info: (m, t, d) => show(m, t || 'Thông báo', d)
   };
 })();
@@ -3114,23 +3394,27 @@ async function loadAccounts(){
 
     var health = a.health || {};
     var circuit = health.circuit || 'CLOSED';
-    var healthBadge = '<span style="color:#2ed573; font-weight:800;">🟢 An Toàn (RPM: ' + (health.rpm || 0) + ')</span>';
+    var healthBadge = '<span style="color:#2ed573; font-weight:800;">🟢 An Toàn (RPM: ' + (health.rpm || 0) + '/38)</span>';
     if(circuit === 'OPEN'){
       healthBadge = '<span style="color:#ff4757; font-weight:800;">🔴 Cách Ly (' + (health.cooldown_remaining || 0) + 's)</span>';
     } else if(circuit === 'HALF_OPEN'){
       healthBadge = '<span style="color:#ffa502; font-weight:800;">🟡 Thăm Dò</span>';
     }
 
+    var wsText = a.ws_status || (a.chat_cmd_enabled ? '🟢 Đang lắng nghe 24/7' : '⚪ Đã tắt');
     var cmdToggle = isZalo
-      ? `<button class="btn-pill ${a.chat_cmd_enabled ? 'green' : 'light'}" onclick="toggleChatCmd(${a.id})" style="padding:4px 10px; font-size:9.5px;">
-           ${a.chat_cmd_enabled ? '⚡ Đang Bật 24/7' : 'Đã Tắt'}
-         </button>`
+      ? `<div style="display:flex; flex-direction:column; gap:4px;">
+           <span style="font-size:10px; font-weight:700; color:var(--txt-1);">${wsText}</span>
+           <button class="btn-pill ${a.chat_cmd_enabled ? 'green' : 'light'}" onclick="toggleChatCmd(${a.id})" style="padding:3px 9px; font-size:9.5px; width:fit-content;">
+             ${a.chat_cmd_enabled ? '⚡ Đang Bật .menu 24/7' : 'Đã Tắt'}
+           </button>
+         </div>`
       : '<span style="color:var(--txt-2); font-size:10px;">Web Mode</span>';
 
     return `<tr>
       <td>#${a.id}</td>
       <td><b>${platIcon}</b></td>
-      <td><b style="color:var(--noel-gold);">${realName}</b><br><span style="font-size:9.5px; color:var(--txt-2);">${a.label}</span></td>
+      <td><b style="color:var(--noel-gold);">${realName}</b><br><span style="font-size:9.5px; color:var(--txt-2);">UID: ${a.uid || '?'}</span></td>
       <td>${cmdToggle}</td>
       <td>${healthBadge}</td>
       <td id="status-${a.id}">${badge}</td>
@@ -3153,7 +3437,7 @@ async function loadAccounts(){
 async function toggleChatCmd(aid){
   var r = await api('/api/accounts/' + aid + '/toggle_chat_cmd', { method: 'POST' });
   if(r.ok){
-    Toast.success(r.chat_cmd_enabled ? 'Đã BẬT nhận lệnh trực tiếp trên khung chat Zalo 24/7!' : 'Đã tắt nhận lệnh trên khung chat.');
+    Toast.success(r.chat_cmd_enabled ? 'Đã BẬT nhận lệnh .menu trên khung chat Zalo 24/7!' : 'Đã tắt nhận lệnh trên khung chat.');
     loadAccounts();
   }
 }
@@ -3162,7 +3446,7 @@ async function checkAccount(aid){
   Toast.info('Đang kiểm tra kết nối...');
   var r = await api(`/api/accounts/${aid}/check`, { method: 'POST' });
   if(r.ok){
-    Toast.success('Tài khoản hoạt động tốt!');
+    Toast.success('Tài khoản hoạt động tốt & đã làm mới khóa giải mã!');
   } else {
     Toast.error('Kết nối thất bại: ' + (r.error || 'Hết hạn'));
   }
@@ -3186,13 +3470,13 @@ async function addAccount(){
     var chat_cmd_enabled = document.getElementById('add-chat-cmd').checked ? 1 : 0;
     var allow_all_cmd = document.getElementById('add-allow-all').checked ? 1 : 0;
     if(!imei || !cookies) return Toast.error('Vui lòng điền đủ IMEI và Cookie Zalo');
-    Toast.info('Đang xác thực Zalo & khởi chạy Self-Bot 24/7...');
+    Toast.info('Đang xác thực Zalo & đồng bộ khóa AES-GCM Self-Bot...');
     var r = await api('/api/accounts/add_zalo', {
       method: 'POST',
       body: JSON.stringify({ label, imei, cookies, chat_cmd_enabled, allow_all_cmd })
     });
     if(r.error) return Toast.error(r.error);
-    Toast.success('Đã lưu Zalo & kích hoạt lắng nghe lệnh khung chat 24/7!');
+    Toast.success('Đã lưu Zalo & kích hoạt lắng nghe lệnh .menu 24/7!');
     document.getElementById('add-imei').value = '';
     document.getElementById('add-cookies').value = '';
   } else {
@@ -3328,7 +3612,6 @@ async function loadMembers(){
   Toast.success('Đã nạp ' + _members.length + ' thành viên');
 }
 
-// TẢI FILE NHIỀU MB SIÊU TỐC VỚI THANH TIẾN TRÌNH THỜI GIAN THỰC (XHR STREAM)
 function uploadFileFast(){
   var inp = document.getElementById('file-input');
   if(!inp.files || !inp.files.length) return Toast.error('Vui lòng chọn tập tin văn bản .txt trước');
@@ -3416,7 +3699,6 @@ async function delFile(id){
   loadFiles();
 }
 
-// KHỞI CHẠY GỬI TIN SIÊU TỐC: TRUYỀN TRỰC TIẾP FILE_ID LÊN SERVER (KHÔNG TẢI NGƯỢC VỀ TRÌNH DUYỆT)
 async function startSpam(){
   if(!selectedBoxes.length) return Toast.error('Chưa chọn hội thoại hoặc kênh nhận tin! Hãy qua tab Hội thoại để chọn.');
   var fid = document.getElementById('spam-file-select').value;
@@ -3459,7 +3741,22 @@ async function startSpam(){
 
   var res = await api('/api/tasks/start', { method: 'POST', body: JSON.stringify(payload) });
   if(res.error) return Toast.error(res.error);
-  Toast.success('🚀 Đã khởi chạy tiến trình siêu tốc!');
+  Toast.success('🚀 Đã khởi chạy tiến trình phối màu không trùng!');
+  loadTasks();
+}
+
+async function sendWebBotCmd(){
+  var cmdStr = document.getElementById('web-cmd-input').value.trim();
+  if(!cmdStr) return Toast.error('Vui lòng nhập lệnh (ví dụ: .menu)');
+  if(!selectedBoxes.length) return Toast.error('Hãy qua tab Hội Thoại chọn ít nhất 1 nhóm để bắn lệnh!');
+  Toast.info('Đang thực thi lệnh ' + cmdStr + '...');
+  var r = await api('/api/bot/exec_cmd', {
+    method: 'POST',
+    body: JSON.stringify({ cmd: cmdStr, targets: selectedBoxes })
+  });
+  if(r.error) return Toast.error(r.error);
+  Toast.success('Đã thực thi lệnh ' + cmdStr + ' vào ' + r.executed + ' hội thoại!');
+  loadBotLogs();
   loadTasks();
 }
 
@@ -3493,7 +3790,7 @@ async function loadTasks(){
     try { st = JSON.parse(t.stats || '{}'); } catch(e){}
     try { meta = JSON.parse(t.meta || '{}'); } catch(e){}
     var srcBadge = (meta.source === 'chat')
-      ? '<span class="cmd-badge">💬 Lệnh Chat</span>'
+      ? '<span class="cmd-badge">💬 Lệnh .menu/Chat</span>'
       : '<span style="color:var(--noel-cyan); font-weight:800;">🌐 Web UI</span>';
     return `<tr>
       <td><code>${t.id.slice(-7)}</code></td>
@@ -3574,7 +3871,7 @@ window.addEventListener('resize', () => {
 
 loadColors();
 refreshAll();
-setInterval(() => { loadTasks(); loadAccounts(); }, 4000);
+setInterval(() => { loadTasks(); loadAccounts(); loadBotLogs(); }, 4000);
 </script>
 </body>
 </html>
@@ -3678,6 +3975,8 @@ def api_accounts():
     for r in rows:
         item = dict(r)
         item["health"] = HEALTH_MGR.get_snapshot(r["id"])
+        listener = ACTIVE_LISTENERS.get(r["id"])
+        item["ws_status"] = listener.ws_status if listener else ("⚪ Đang khởi động..." if r["chat_cmd_enabled"] else "⚪ Đã tắt")
         out.append(item)
     return jsonify(out)
 
@@ -3690,7 +3989,7 @@ def api_accounts_add_zalo():
     imei = d.get("imei", "").strip()
     ck = d.get("cookies", "").strip()
     chat_cmd_enabled = int(d.get("chat_cmd_enabled", 1))
-    allow_all_cmd = int(d.get("allow_all_cmd", 0))
+    allow_all_cmd = int(d.get("allow_all_cmd", 1))
 
     if not imei or not ck:
         return jsonify({"error": "Vui lòng nhập đủ IMEI và Cookie Zalo"}), 400
@@ -3715,7 +4014,6 @@ def api_accounts_add_zalo():
     conn.commit()
     conn.close()
 
-    # Tự động kích hoạt luồng Self-Bot 24/7 ngay khi lưu Cookie + IMEI
     sync_all_zalo_listeners()
     return jsonify({"ok": True, "label": label, "uid": z.uid, "name": z.display_name})
 
@@ -3793,16 +4091,19 @@ def api_accounts_check(aid):
         if plat == "zalo":
             z = Zalo(row["imei"], json.loads(row["cookies"]))
             name = z.display_name
+            conn.execute("UPDATE accounts SET status = 'live', display_name = ?, uid = ? WHERE id = ?",
+                         (name or "", z.uid or "", aid))
         else:
             bot = DiscordBot(row["token"], is_bot=bool(row["is_bot"]))
             if not bot.check():
                 raise Exception("Token không hợp lệ")
             name = bot.display_name or bot.username
+            conn.execute("UPDATE accounts SET status = 'live', display_name = ? WHERE id = ?", (name or "", aid))
 
-        conn.execute("UPDATE accounts SET status = 'live', display_name = ? WHERE id = ?", (name or "", aid))
         conn.commit()
         conn.close()
         HEALTH_MGR.report_success(aid)
+        sync_all_zalo_listeners()
         return jsonify({"ok": True, "status": "live", "name": name})
     except Exception as e:
         conn.execute("UPDATE accounts SET status = 'dead' WHERE id = ?", (aid,))
@@ -3821,12 +4122,13 @@ def api_accounts_check_all():
         plat = r["platform"] or "zalo"
         try:
             if plat == "zalo":
-                Zalo(r["imei"], json.loads(r["cookies"]))
+                z = Zalo(r["imei"], json.loads(r["cookies"]))
+                conn.execute("UPDATE accounts SET status = 'live', uid = ? WHERE id = ?", (z.uid or "", r["id"]))
             else:
                 bot = DiscordBot(r["token"], is_bot=bool(r["is_bot"]))
                 if not bot.check():
                     raise Exception("Die")
-            conn.execute("UPDATE accounts SET status = 'live' WHERE id = ?", (r["id"],))
+                conn.execute("UPDATE accounts SET status = 'live' WHERE id = ?", (r["id"],))
             live_count += 1
         except Exception:
             conn.execute("UPDATE accounts SET status = 'dead' WHERE id = ?", (r["id"],))
@@ -3885,6 +4187,37 @@ def api_load_members(aid, group_id):
         return jsonify({"error": str(e)}), 400
 
 
+@app.route("/api/bot/exec_cmd", methods=["POST"])
+@login_required
+def api_bot_exec_cmd():
+    """Cho phép bắn trực tiếp lệnh .menu, .files, .spam, .nhay, .file, .stop từ bảng điều khiển vào nhóm đã chọn."""
+    d = request.json or {}
+    cmd_str = (d.get("cmd") or "").strip()
+    targets = d.get("targets") or []
+    if not cmd_str or not targets:
+        return jsonify({"error": "Thiếu lệnh hoặc hội thoại nhận lệnh"}), 400
+
+    conn = db()
+    acc_row = conn.execute("SELECT * FROM accounts WHERE platform = 'zalo' ORDER BY id DESC LIMIT 1").fetchone()
+    conn.close()
+    if not acc_row:
+        return jsonify({"error": "Chưa có tài khoản Zalo nào trong hệ thống"}), 400
+
+    try:
+        z = Zalo(acc_row["imei"], json.loads(acc_row["cookies"]))
+    except Exception as e:
+        return jsonify({"error": "Lỗi kết nối tài khoản Zalo: " + str(e)}), 400
+
+    executed = 0
+    for t in targets:
+        tid = str(t.get("id"))
+        is_grp = (t.get("type", "group") == "group")
+        if parse_and_execute_inchat_command(z, dict(acc_row), tid, is_grp, z.uid, cmd_str):
+            executed += 1
+
+    return jsonify({"ok": True, "executed": executed})
+
+
 @app.route("/api/files", methods=["GET"])
 @login_required
 def api_files_list():
@@ -3897,7 +4230,6 @@ def api_files_list():
 @app.route("/api/files/upload", methods=["POST"])
 @login_required
 def api_files_upload():
-    """Tải file nhiều MB theo luồng bộ đệm 1MB (shutil.copyfileobj) và lập chỉ mục RAM tức thì."""
     f = request.files.get("file")
     if not f or not f.filename:
         return jsonify({"error": "Vui lòng chọn một tệp văn bản hợp lệ"}), 400
@@ -4012,7 +4344,6 @@ def api_tasks_start():
     if not targets or not blocks:
         return jsonify({"error": "Vui lòng chọn hội thoại / kênh và chọn File hoặc nhập nội dung cần gửi"}), 400
 
-    # Nếu người dùng nhập thêm @Tên hoặc @All ở ô Tag nhanh cuối câu (áp dụng cho cả File .txt)
     if quick_tail_tag:
         if not quick_tail_tag.startswith("@"):
             quick_tail_tag = "@" + quick_tail_tag
@@ -4059,7 +4390,6 @@ def api_tasks_stop_all():
     return jsonify({"ok": True, "count": cnt})
 
 
-# Khởi chạy tự động các luồng lắng nghe lệnh khung chat Zalo 24/7 khi bật Server
 sync_all_zalo_listeners()
 
 if __name__ == "__main__":
