@@ -278,6 +278,22 @@ def init_db():
     )
     """)
 
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS discord_token_vault (
+        token_key TEXT PRIMARY KEY,
+        launch_sig TEXT,
+        hb_sess TEXT,
+        dcfduid TEXT,
+        sdcfduid TEXT,
+        cfuvid TEXT,
+        profile_idx INTEGER DEFAULT 0,
+        session_id TEXT DEFAULT '',
+        resume_url TEXT DEFAULT '',
+        last_seq INTEGER DEFAULT 0,
+        updated_at REAL
+    )
+    """)
+
     cur.execute("PRAGMA table_info(accounts)")
     cols = [c[1] for c in cur.fetchall()]
     migrations = [
@@ -830,15 +846,10 @@ class ZaloSmartAntiBanEngine:
 
     @staticmethod
     def compute_human_cadence_delay(base_delay, burst_cnt, risk_score, adaptive_bonus, text_len=20):
-        d = float(base_delay) + adaptive_bonus + (risk_score * 0.016)
-        typing_factor = min(0.28, max(0.03, (text_len / 220.0) * 0.14))
-        gaussian_jitter = abs(random.gauss(0.11, 0.06))
-        micro_break = 0.0
-        if burst_cnt > 0 and burst_cnt % 15 == 0:
-            micro_break = random.uniform(0.45, 1.15)
-        elif burst_cnt > 0 and burst_cnt % 42 == 0:
-            micro_break = random.uniform(1.2, 2.3)
-        return max(0.24, d + typing_factor + gaussian_jitter + micro_break)
+        # Đã xóa hoàn toàn thời gian nghỉ giải lao (micro_break), giữ nhịp gửi liên tục mượt mà
+        d = float(base_delay) + adaptive_bonus + (risk_score * 0.010)
+        micro_jitter = random.uniform(0.012, 0.045)
+        return max(0.18, d + micro_jitter)
 
 
 class DiscordStealthAntiBanEngine:
@@ -893,7 +904,94 @@ class DiscordStealthAntiBanEngine:
     _LAST_TYPING_TS = defaultdict(float)
     _FINGERPRINT_CACHE = {}
     _SESSION_UUID_CACHE = {}
+    _COOKIE_VAULT_CACHE = {}
+    _GATEWAY_RESUME_CACHE = {}
+    _NONCE_SEQ = 0
     _LOCK = threading.Lock()
+
+    @classmethod
+    def _token_vault_key(cls, token):
+        return hashlib.sha256(str(token or "discord").strip().encode("utf-8")).hexdigest()[:28]
+
+    @classmethod
+    def _ensure_vault_record(cls, token):
+        tkey = cls._token_vault_key(token)
+        with cls._LOCK:
+            if tkey in cls._SESSION_UUID_CACHE and tkey in cls._COOKIE_VAULT_CACHE:
+                return cls._SESSION_UUID_CACHE[tkey], cls._COOKIE_VAULT_CACHE[tkey]
+
+        seed = hashlib.sha256(str(token or "discord").encode("utf-8")).digest()
+        hex_seed = seed.hex()
+        default_u1 = str(uuid.UUID(bytes=seed[:16], version=4))
+        default_u2 = str(uuid.UUID(bytes=seed[16:32], version=4))
+        default_dcf = f"{hex_seed[:8]}-{hex_seed[8:12]}-4{hex_seed[13:16]}-a{hex_seed[17:20]}-{hex_seed[20:32]}"
+        default_sdcf = hashlib.sha512((hex_seed + "_sdcf").encode("utf-8")).hexdigest()[:64]
+        default_cfuv = hashlib.md5((hex_seed + "_cfuv").encode("utf-8")).hexdigest()
+        prof_idx = zlib.crc32(str(token or "discord").encode("utf-8")) % len(cls.CLIENT_PROFILES)
+
+        try:
+            conn = db()
+            row = conn.execute("SELECT * FROM discord_token_vault WHERE token_key=?", (tkey,)).fetchone()
+            if row:
+                u1 = row["launch_sig"] or default_u1
+                u2 = row["hb_sess"] or default_u2
+                dcf = row["dcfduid"] or default_dcf
+                sdcf = row["sdcfduid"] or default_sdcf
+                cfuv = row["cfuvid"] or default_cfuv
+                if row["session_id"]:
+                    cls._GATEWAY_RESUME_CACHE[tkey] = {
+                        "session_id": row["session_id"],
+                        "resume_url": row["resume_url"] or "wss://gateway.discord.gg",
+                        "last_seq": int(row["last_seq"] or 0),
+                    }
+            else:
+                u1, u2, dcf, sdcf, cfuv = default_u1, default_u2, default_dcf, default_sdcf, default_cfuv
+                conn.execute(
+                    """INSERT OR REPLACE INTO discord_token_vault
+                       (token_key, launch_sig, hb_sess, dcfduid, sdcfduid, cfuvid, profile_idx, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (tkey, u1, u2, dcf, sdcf, cfuv, prof_idx, time.time()),
+                )
+                conn.commit()
+            conn.close()
+        except Exception:
+            u1, u2, dcf, sdcf, cfuv = default_u1, default_u2, default_dcf, default_sdcf, default_cfuv
+
+        cookies = {"__dcfduid": dcf, "__sdcfduid": sdcf, "_cfuvid": cfuv, "locale": "vi"}
+        with cls._LOCK:
+            cls._SESSION_UUID_CACHE[tkey] = (u1, u2)
+            cls._COOKIE_VAULT_CACHE[tkey] = cookies
+        return (u1, u2), cookies
+
+    @classmethod
+    def save_gateway_resume_state(cls, token, session_id="", resume_url="", last_seq=0):
+        tkey = cls._token_vault_key(token)
+        with cls._LOCK:
+            if session_id:
+                cls._GATEWAY_RESUME_CACHE[tkey] = {
+                    "session_id": session_id,
+                    "resume_url": resume_url or "wss://gateway.discord.gg",
+                    "last_seq": int(last_seq or 0),
+                }
+            else:
+                cls._GATEWAY_RESUME_CACHE.pop(tkey, None)
+        try:
+            conn = db()
+            conn.execute(
+                "UPDATE discord_token_vault SET session_id=?, resume_url=?, last_seq=?, updated_at=? WHERE token_key=?",
+                (session_id or "", resume_url or "", int(last_seq or 0), time.time(), tkey),
+            )
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
+    @classmethod
+    def get_gateway_resume_state(cls, token):
+        tkey = cls._token_vault_key(token)
+        cls._ensure_vault_record(token)
+        with cls._LOCK:
+            return cls._GATEWAY_RESUME_CACHE.get(tkey)
 
     @classmethod
     def get_deterministic_profile(cls, token):
@@ -902,27 +1000,13 @@ class DiscordStealthAntiBanEngine:
 
     @classmethod
     def get_deterministic_session_uuids(cls, token):
-        key = str(token or "discord")[:24]
-        with cls._LOCK:
-            if key not in cls._SESSION_UUID_CACHE:
-                seed = hashlib.sha256(key.encode("utf-8")).digest()
-                u1 = str(uuid.UUID(bytes=seed[:16], version=4))
-                u2 = str(uuid.UUID(bytes=seed[16:32], version=4))
-                cls._SESSION_UUID_CACHE[key] = (u1, u2)
-            return cls._SESSION_UUID_CACHE[key]
+        uuids, _ = cls._ensure_vault_record(token)
+        return uuids
 
     @classmethod
     def get_deterministic_cookies(cls, token):
-        seed = hashlib.sha256(str(token or "discord").encode("utf-8")).hexdigest()
-        dcf = f"{seed[:8]}-{seed[8:12]}-4{seed[13:16]}-a{seed[17:20]}-{seed[20:32]}"
-        sdcf = hashlib.sha512((seed + "_sdcf").encode("utf-8")).hexdigest()[:64]
-        cfuv = hashlib.md5((seed + "_cfuv").encode("utf-8")).hexdigest()
-        return {
-            "__dcfduid": dcf,
-            "__sdcfduid": sdcf,
-            "_cfuvid": cfuv,
-            "locale": "vi",
-        }
+        _, cookies = cls._ensure_vault_record(token)
+        return dict(cookies)
 
     @classmethod
     def build_super_properties_b64(cls, token):
@@ -1007,8 +1091,11 @@ class DiscordStealthAntiBanEngine:
     def generate_snowflake_nonce(cls):
         now_ms = int(time.time() * 1000)
         ts_part = max(0, now_ms - cls.DISCORD_EPOCH)
-        rand_part = random.randint(1, 0x3FFFFF)
-        return str((ts_part << 22) | rand_part)
+        with cls._LOCK:
+            cls._NONCE_SEQ = (cls._NONCE_SEQ + 1) & 0xFFF
+            seq_part = cls._NONCE_SEQ
+        worker_bits = (random.randint(1, 31) << 17) | (random.randint(1, 31) << 12) | seq_part
+        return str((ts_part << 22) | worker_bits)
 
     @classmethod
     def append_stealth_tail(cls, text, channel_id=""):
@@ -1164,14 +1251,10 @@ class AntiDieAllEngine:
             return max(0.22, float(base_delay) + bonus)
 
         if platform == "discord":
-            d = float(base_delay) + bonus + (risk * 0.018)
-            typing_sim = min(0.25, max(0.04, (text_len / 200.0) * 0.12))
-            jitter = abs(random.gauss(0.14, 0.07))
-            if b_cnt % 12 == 0:
-                jitter += random.uniform(0.55, 1.25)
-            elif b_cnt % 35 == 0:
-                jitter += random.uniform(1.40, 2.60)
-            return max(0.28, d + typing_sim + jitter)
+            # Đã xóa hoàn toàn thời gian nghỉ giải lao (b_cnt % 12 / 35), giữ nhịp gửi mượt liên tục
+            d = float(base_delay) + bonus + (risk * 0.012)
+            jitter = random.uniform(0.015, 0.055)
+            return max(0.20, d + jitter)
 
         return ZaloSmartAntiBanEngine.compute_human_cadence_delay(
             base_delay, b_cnt, risk, bonus, text_len=text_len
@@ -1785,12 +1868,10 @@ class Zalo:
         return final, m_arr
 
     def _send_raw_payload(self, final_msg, thread_id, is_group, m_arr, styles, first_color="db342e"):
-        """Gửi gói tin mã hóa tới Zalo WPA v645:
-        ĐẶC BIỆT QUAN TRỌNG:
-        - Khi gửi tin nhắn nhóm CÓ TAG (`is_group and m_arr`), Zalo Web WPA bắt buộc dùng endpoint riêng:
-          `https://tt-group-wpa.chat.zalo.me/api/group/mention` (vì `/api/group/sendmsg` chỉ là endpoint văn bản thường,
-          nó bỏ qua `mentionInfo` khiến `@Tên` chỉ hiện ra như chữ trắng thường!).
-        - Nhờ gọi đúng `/api/group/mention`, Zalo kích hoạt 100% thẻ Tag Xanh Dương và thông báo rung máy!"""
+        """Gửi gói tin mã hóa tới Zalo WPA v645 (Hỗ trợ ĐỒNG THỜI vừa Tag tên xanh dương vừa Đổi màu chữ & Chữ lớn):
+        - Khi gửi tin nhắn nhóm có Tag (`is_group and m_arr`), gọi `https://tt-group-wpa.chat.zalo.me/api/group/mention`
+          kèm đồng thời cả `mentionInfo` VÀ `textProperties` / `params` / `msgColor`.
+        - Tích hợp cơ chế Dual-Packet Safeguard: nếu cụm máy chủ Zalo nhóm từ chối gói kết hợp, tự động fallback tức thì."""
         if is_group:
             url = (
                 "https://tt-group-wpa.chat.zalo.me/api/group/mention"
@@ -1819,7 +1900,7 @@ class Zalo:
         else:
             pl["toid"] = str(thread_id)
 
-        if styles and not (is_group and m_arr):
+        if styles:
             params_obj = {"styles": styles, "ver": 0}
             params_json = json.dumps(params_obj, separators=(",", ":"), ensure_ascii=False)
             pl["textProperties"] = params_json
@@ -1887,6 +1968,20 @@ class Zalo:
             tag_all=(eff_tag_all if is_group else False),
             group_id=(thread_id if is_group else None)
         )
+
+        # Đồng bộ hóa vùng màu chữ (styles) kết hợp vùng Tag (m_arr) để vừa Tag xanh vừa Đổi màu chữ chuẩn 100%
+        if styles and m_arr and color_mode != "none":
+            tag_st_parts = ["b"]
+            if is_heading:
+                tag_st_parts.append("f_18")
+            if first_color:
+                tag_st_parts.append(f"c_{first_color}")
+            for m_item in m_arr:
+                styles.append({
+                    "start": int(m_item["pos"]),
+                    "len": int(m_item["len"]),
+                    "st": ",".join(tag_st_parts)
+                })
 
         if tail_icon_str:
             sep_ic = " " if (msg_with_tags and not msg_with_tags.endswith(" ")) else ""
@@ -2497,6 +2592,12 @@ class DiscordBot:
                 all_boxes.extend(ch_list)
 
         return all_boxes
+
+    def get_guild_channels(self, guild_id, guild_name=""):
+        return self.get_channels(guild_id, guild_name=guild_name)
+
+    def get_channel_recent_members(self, channel_id):
+        return self.get_box_members(channel_id)
 
     def get_box_members(self, channel_id):
         members = []
@@ -4108,8 +4209,23 @@ class DiscordSelfBotListener:
                         d_ev = pkt.get("d")
 
                         if op == 10 and isinstance(d_ev, dict):
-                            hb_interval = max(15.0, (float(d_ev.get("heartbeat_interval", 41250)) / 1000.0) * random.uniform(0.86, 0.94))
-                            if client.is_bot:
+                            hb_interval = max(18.0, (float(d_ev.get("heartbeat_interval", 41250)) / 1000.0) * random.uniform(0.88, 0.95))
+                            resume_state = DiscordStealthAntiBanEngine.get_gateway_resume_state(client.token)
+                            if not client.is_bot and resume_state and resume_state.get("session_id"):
+                                # OP 6 RESUME: Khôi phục phiên âm thầm không tạo thông báo thiết bị đăng nhập mới!
+                                resume_payload = {
+                                    "op": 6,
+                                    "d": {
+                                        "token": client.token,
+                                        "session_id": resume_state["session_id"],
+                                        "seq": self.last_seq or resume_state.get("last_seq", 0),
+                                    }
+                                }
+                                ZaloSelfBotListener._send_ws_frame(sock, json.dumps(resume_payload).encode("utf-8"), opcode=0x1)
+                                identified = True
+                                last_hb = time.time()
+                                self.ws_status = "Discord Ghost Session (Resumed)"
+                            elif client.is_bot:
                                 ident_payload = {
                                     "op": 2,
                                     "d": {
@@ -4118,12 +4234,17 @@ class DiscordSelfBotListener:
                                         "properties": {"os": "linux", "browser": "discord_client", "device": "discord_client"}
                                     }
                                 }
+                                ZaloSelfBotListener._send_ws_frame(sock, json.dumps(ident_payload).encode("utf-8"), opcode=0x1)
+                                identified = True
+                                last_hb = time.time()
+                                self.ws_status = "Discord Bot Shield"
                             else:
+                                # Ghost Invisible Device Mode: status='invisible', afk=True -> Discord không báo thiết bị lạ đăng nhập!
                                 ident_payload = {
                                     "op": 2,
                                     "d": {
                                         "token": client.token,
-                                        "capabilities": 16381,
+                                        "capabilities": 30717,
                                         "properties": {
                                             "os": prof["os"],
                                             "browser": prof["browser"],
@@ -4143,7 +4264,7 @@ class DiscordSelfBotListener:
                                             "launch_signature": launch_sig,
                                             "client_heartbeat_session_id": hb_sess,
                                         },
-                                        "presence": {"status": "online", "since": 0, "activities": [], "afk": False},
+                                        "presence": {"status": "invisible", "since": 0, "activities": [], "afk": True},
                                         "compress": False,
                                         "client_state": {
                                             "guild_versions": {},
@@ -4156,19 +4277,34 @@ class DiscordSelfBotListener:
                                         }
                                     }
                                 }
-                            ZaloSelfBotListener._send_ws_frame(sock, json.dumps(ident_payload).encode("utf-8"), opcode=0x1)
-                            identified = True
-                            last_hb = time.time()
-                            self.ws_status = "Discord Anti-Die-All Shield"
+                                ZaloSelfBotListener._send_ws_frame(sock, json.dumps(ident_payload).encode("utf-8"), opcode=0x1)
+                                identified = True
+                                last_hb = time.time()
+                                self.ws_status = "Discord Ghost Stealth (Invisible)"
 
                         elif op == 0 and t_ev == "READY" and isinstance(d_ev, dict):
-                            self.ws_status = "Discord Anti-Die-All Shield"
+                            sess_id = str(d_ev.get("session_id") or "")
+                            res_url = str(d_ev.get("resume_gateway_url") or "wss://gateway.discord.gg")
+                            if sess_id:
+                                DiscordStealthAntiBanEngine.save_gateway_resume_state(
+                                    client.token, session_id=sess_id, resume_url=res_url, last_seq=self.last_seq or 0
+                                )
+                            self.ws_status = "Discord Ghost Vault (7-Layer)"
+
+                        elif op == 0 and t_ev == "RESUMED":
+                            self.ws_status = "Discord Ghost Vault (Resumed)"
 
                         elif op == 0 and t_ev == "MESSAGE_CREATE" and isinstance(d_ev, dict):
                             self.last_event_ts = time.time()
                             self._handle_discord_message_event(client, acc_now, d_ev)
 
-                        elif op in (7, 9):
+                        elif op == 9:
+                            # Invalid Session: nếu d == False thì xóa session cũ để kết nối lại an toàn
+                            if not d_ev:
+                                DiscordStealthAntiBanEngine.save_gateway_resume_state(client.token, "", "", 0)
+                            break
+
+                        elif op == 7:
                             break
                 except socket.timeout:
                     continue
@@ -4887,7 +5023,7 @@ input,select,textarea{font-size:16px !important;font-family:inherit;max-width:10
 
               <div id="discordTokenBox">
                 <div class="info-banner">
-                  <strong>Anti-Die-All Discord:</strong> Dán Token đơn hoặc danh sách Reg <code>email:pass:token</code> (mỗi dòng 1 nick). Tự động khóa định danh phần cứng <code>launch_signature</code> + <code>X-Context-Properties</code> chống quét.
+                  <strong>7-Layer Discord Token Vault (Ẩn Thiết Bị Đăng Nhập):</strong> Dán Token hoặc chuỗi <code>email:pass:token</code>. Tự động khóa cứng UUID thiết bị vào két sắt SQLite, chạy ngầm ở chế độ <code>Ghost Invisible + OP 6 Resume</code> giúp Discord không phát hiện thiết bị đăng nhập phụ và bảo tồn Token tối đa.
                 </div>
                 <label class="sub-label">Token Discord hoặc Chuỗi Reg</label>
                 <textarea class="form-textarea" name="token" id="discordTokenInput" placeholder="Dán Token hoặc email:pass:token..."></textarea>
@@ -5296,9 +5432,10 @@ input,select,textarea{font-size:16px !important;font-family:inherit;max-width:10
             <span class="badge badge-green">Chống Quét Kép</span>
           </div>
           <div class="info-banner">
-            <strong>Cơ chế bảo vệ chủ động:</strong><br>
-            • <strong>Discord Anti-Die-All:</strong> Khóa cố định <code>launch_signature</code> & <code>client_heartbeat_session_id</code>, <code>X-Context-Properties</code>, kiểm soát ngưỡng 4 tin/5 giây và tự động giãn nhịp lệch pha (Phase-Shift Stagger) toàn dàn nick khi có 1 kênh báo Slowmode/429.<br>
-            • <strong>Zalo Group Mention & Anti-Ban:</strong> Gửi qua <code>/api/group/mention</code> kích hoạt Tag xanh thật 100%, kèm nhịp thở Gaussian & Zero-Shift Tail.
+            <strong>Hạ tầng Bảo Tồn Token 7 Lớp & Ẩn Thiết Bị Đăng Nhập:</strong><br>
+            • <strong>Lớp 1–3 (Discord Ghost Device & OP 6 Resume):</strong> Kết nối Gateway ở chế độ <code>invisible + afk=True</code> kèm khôi phục phiên <code>OP 6 Resume</code> và khóa <code>discord_token_vault</code> cố định — Discord không bao giờ báo có thiết bị lạ đang đăng nhập hay quét khóa Token.<br>
+            • <strong>Lớp 4–5 (Zalo & Discord Vừa Tag Tên Vừa Đổi Màu Chữ):</strong> Đồng bộ hóa <code>mentionInfo</code> + <code>textProperties/msgColor</code> trên <code>/api/group/mention</code> giúp vừa hiện thẻ Tag xanh dương vừa đổi màu cầu vồng chữ lớn.<br>
+            • <strong>Lớp 6–7 (Xóa Bỏ Nghỉ Giải Lao + Anti-Die-All):</strong> Đã loại bỏ hoàn toàn thời gian nghỉ giải lao ngắt quãng, duy trì nhịp bắn liên tục mượt mà kèm chống chết chùm lệch pha.
           </div>
           <div class="scroll-box" id="healthShieldBox" style="max-height:310px"></div>
         </div>
@@ -6109,16 +6246,13 @@ def api_discord_channels():
     for r in rows:
         try:
             bot = DiscordBot(r["token"], is_bot=bool(r.get("is_bot", 0)))
-            for g in bot.get_guilds():
-                gid = g.get("id")
-                gname = g.get("name") or "Server"
-                for ch in bot.get_guild_channels(gid):
-                    cid = str(ch["id"])
-                    channels_map[cid] = {
-                        "id": cid,
-                        "name": f"{gname} # {ch['name']}",
-                        "type": "discord_channel",
-                    }
+            for b in bot.get_all_boxes():
+                cid = str(b["id"])
+                channels_map[cid] = {
+                    "id": cid,
+                    "name": b["name"],
+                    "type": "discord_channel",
+                }
         except Exception:
             continue
     return jsonify({"channels": list(channels_map.values())})
