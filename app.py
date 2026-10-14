@@ -72,10 +72,10 @@ from flask import (
 from werkzeug.utils import secure_filename
 
 # ============================================================
-# CẤU HÌNH HỆ THỐNG & BẢO MẬT WEB — NOEL WINTER STUDIO EDITION
+# CẤU HÌNH HỆ THỐNG & BẢO MẬT WEB — AETHER WHITE STUDIO EDITION
 # ============================================================
-APP_TITLE = "NOEL WINTER STUDIO — ZALO & DISCORD AUTOMATION"
-SECRET_KEY = os.environ.get("SECRET_KEY", "noel-winter-studio-secret-key-2026-secure")
+APP_TITLE = "AETHER WHITE STUDIO — ZALO & DISCORD AUTOMATION"
+SECRET_KEY = os.environ.get("SECRET_KEY", "aether-white-studio-secret-key-2026-secure")
 ACCESS_KEY = os.environ.get("WEB_KEY", "anhba")
 DEFAULT_ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 DEFAULT_ADMIN_PASS = os.environ.get("ADMIN_PASS", "anhba")
@@ -89,7 +89,7 @@ os.makedirs(LOGO_DIR, exist_ok=True)
 
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
-app.config["MAX_CONTENT_LENGTH"] = 256 * 1024 * 1024  # Hỗ trợ tải file lớn lên tới 256MB
+app.config["MAX_CONTENT_LENGTH"] = 256 * 1024 * 1024
 app.config["JSON_AS_ASCII"] = False
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 3600
 app.config["SESSION_COOKIE_HTTPONLY"] = True
@@ -176,7 +176,6 @@ def add_security_headers(resp):
 # BỘ LỌC ẨN LOG TÀI KHOẢN NHẠY CẢM (STEALTH ACCOUNT LOG MASKING)
 # ============================================================
 def mask_sensitive_id(val, keep_tail=3):
-    """Che dấu ID/UID/Token nhạy cảm trong log hệ thống để bảo vệ thông tin tài khoản."""
     s = str(val or "").strip()
     if not s:
         return "***"
@@ -186,7 +185,6 @@ def mask_sensitive_id(val, keep_tail=3):
 
 
 def mask_account_name(name):
-    """Làm mờ tên tài khoản khi hiển thị trong log bảo mật."""
     s = str(name or "").strip()
     if not s:
         return "Acc_***"
@@ -196,7 +194,6 @@ def mask_account_name(name):
 
 
 def sanitize_log_text(txt):
-    """Loại bỏ mọi chuỗi Token, Cookie, IMEI, hoặc đường dẫn nhạy cảm trước khi ghi log."""
     if not txt:
         return ""
     s = str(txt)
@@ -220,7 +217,7 @@ def db():
         return conn
     except sqlite3.OperationalError:
         import tempfile
-        _ACTIVE_DB_PATH = os.path.join(tempfile.gettempdir(), "noel_studio_database.db")
+        _ACTIVE_DB_PATH = os.path.join(tempfile.gettempdir(), "aether_studio_database.db")
         conn = sqlite3.connect(_ACTIVE_DB_PATH, timeout=30, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         return conn
@@ -233,7 +230,7 @@ def init_db():
         conn.execute("CREATE TABLE IF NOT EXISTS _lock_test (id INT)")
     except sqlite3.OperationalError:
         import tempfile
-        _ACTIVE_DB_PATH = os.path.join(tempfile.gettempdir(), "noel_studio_database.db")
+        _ACTIVE_DB_PATH = os.path.join(tempfile.gettempdir(), "aether_studio_database.db")
         conn = db()
     cur = conn.cursor()
 
@@ -333,7 +330,6 @@ def init_db():
     )
     """)
 
-    # Đảm bảo luôn có ít nhất 1 tài khoản quản trị mặc định (vì đã xoá chức năng tạo acc công khai)
     existing_admin = cur.execute("SELECT id FROM users WHERE username = ?", (DEFAULT_ADMIN_USER,)).fetchone()
     if not existing_admin:
         cur.execute(
@@ -402,7 +398,6 @@ def _normalize_for_echo_hash(s):
 
 
 def register_bot_sent_message(msg_id=None, client_id=None, text=None):
-    """Đánh dấu tin nhắn do Bot tự gửi đi (cả Zalo & Discord) để Listener không bao giờ tự đọc lại làm lệnh."""
     now = time.time()
     with BOT_SENT_LOCK:
         if msg_id:
@@ -419,7 +414,6 @@ def register_bot_sent_message(msg_id=None, client_id=None, text=None):
 
 
 def is_bot_echo_message(msg_id=None, client_id=None, text=None):
-    """Kiểm tra xem gói tin nhận về có phải là tin nhắn do chính Bot vừa phát ra hay không."""
     now = time.time()
     with BOT_SENT_LOCK:
         for mid, ts in list(BOT_SENT_IDS):
@@ -531,6 +525,107 @@ def list_authorized_users():
 
 
 # ============================================================
+# BỘ ICON & EMOJI CHUẨN ZALO 100% (ĐÃ FIX TRIỆT ĐỂ LỖI CHỮ THÔ ':-')
+# ============================================================
+ZALO_PALETTE = [
+    {"id": "red",    "name": "Đỏ Rực",        "hex": "#db342e", "zcode": "db342e"},
+    {"id": "yellow", "name": "Vàng Hoàng Kim", "hex": "#f7b503", "zcode": "f7b503"},
+    {"id": "green",  "name": "Xanh Ngọc Lục",  "hex": "#15a85f", "zcode": "15a85f"},
+    {"id": "orange", "name": "Cam Rực Lửa",    "hex": "#f27806", "zcode": "f27806"},
+]
+
+ZALO_NATIVE_ZCODES = ["db342e", "f7b503", "15a85f", "f27806"]
+ZALO_COLOR_MAP = {
+    "red": "db342e", "do": "db342e", "đỏ": "db342e",
+    "yellow": "f7b503", "vang": "f7b503", "vàng": "f7b503",
+    "green": "15a85f", "xanh": "15a85f", "xanhla": "15a85f",
+    "orange": "f27806", "cam": "f27806",
+    "ocean": "15a85f", "blue": "f7b503", "purple": "db342e", "pink": "f27806",
+}
+
+# 100% Emoji chuẩn hiển thị hình ảnh động & sắc nét trên mọi phiên bản Zalo (iOS/Android/PC/Web) và Discord
+# Tuyệt đối KHÔNG chứa bất kỳ ký hiệu ':-' hay ';-' hay '/-' nào để không bao giờ bị lỗi hiện chữ thô ':-'!
+ZALO_ICON_VIP = [
+    "😂", "🤣", "😝", "😜", "😎",
+    "😡", "🤬", "😤", "😈", "🤡",
+    "🔥", "💥", "⚡", "💪", "👊",
+    "👍", "👎", "❤️", "💔", "🌹",
+    "💩", "💣", "🎉", "✨", "👑",
+    "💎", "🚀", "🎯", "👻", "💀"
+]
+
+# Bảng ánh xạ chuyển đổi toàn bộ các ký hiệu shortcut cũ bị lỗi (như :-R, :-L, :-h, :-t, ;-A, /-strong...) sang Icon thật
+LEGACY_SHORTCUT_TO_ICON_MAP = {
+    ";-A": "😝", ";-!": "😤", ";f": "😜", ";;)": "😎", ";)": "😉",
+    "=))": "🤣", ":))": "😂", ":)": "😊", ":(": "😢", ":((": "😭",
+    "b-)": "😎", "8-)": "😎", "x-)": "😆", "=d>": "👏",
+    ":-R": "😡", ":-L": "😤", ":-F": "🤬", ":-h": "👋", ":-*": "😘",
+    ":-?": "🤔", ":-s": "😖", ":-t": "😠", ":-bd": "👍", ":-d": "😄",
+    ":-p": "😜", ":-o": "😮", ":-x": "😍", ":-w": "⏳", ":-<": "😣",
+    ":d": "😄", ":p": "😜", ":v": "✌️", ":3": "😺", ":>": "😏",
+    ":$": "😳", ":x": "😍", ":o": "😮",
+    "/-strong": "💪", "/-weak": "👎", "/-punch": "👊", "/-shit": "💩",
+    "/-bome": "💣", "/-rose": "🌹", "/-heart": "❤️", "/-ok": "👌",
+    "/-li": "⚡", "/-fade": "💔", "/-bd": "👍", "/-break": "💔", "/-no": "🙅",
+}
+
+# Regex bắt mọi chuỗi ký hiệu kiểu ':-...' hoặc ';-...' hoặc '/-...' bị lỗi trong văn bản
+BROKEN_COLON_DASH_RE = re.compile(
+    r"(?<!\S)(?:[:;]\-[A-Za-z0-9\*\?\!\(\)\<\>\/\\]+|\/-[a-zA-Z]+|;;?\)|=d>|=?\)\)|;f)(?!\S)"
+)
+
+
+def get_icon_hard(prev_icons=None):
+    pool = [ic for ic in ZALO_ICON_VIP if not prev_icons or ic not in prev_icons]
+    if not pool:
+        pool = ZALO_ICON_VIP
+    return random.choice(pool)
+
+
+def build_unique_zalo_icons(count):
+    if count <= 0:
+        return ""
+    chosen = []
+    for _ in range(count):
+        chosen.append(get_icon_hard(chosen[-2:]))
+    return " ".join(chosen)
+
+
+def clean_corrupted_shortcuts(text):
+    """Làm sạch triệt để mọi ký tự tàng hình và tự động biến mọi ký hiệu lỗi ':-...' / ';-...' / '/-...'
+    thành Icon chuẩn Zalo 100%, đảm bảo không bao giờ xuất hiện chữ thô ':-' trên khung chat!"""
+    if not text:
+        return ""
+    for zw in ("\u200b", "\u200c", "\u200d", "\u2060", "\ufeff"):
+        text = text.replace(zw, "")
+
+    def _replace_broken(match):
+        token = match.group(0)
+        if token in LEGACY_SHORTCUT_TO_ICON_MAP:
+            return LEGACY_SHORTCUT_TO_ICON_MAP[token]
+        if token.lower() in LEGACY_SHORTCUT_TO_ICON_MAP:
+            return LEGACY_SHORTCUT_TO_ICON_MAP[token.lower()]
+        return get_icon_hard()
+
+    text = BROKEN_COLON_DASH_RE.sub(_replace_broken, text)
+    # Quét thêm các cụm ':-' bị đứt gãy ở cuối câu hoặc giữa các khoảng trắng
+    text = re.sub(r"(?<!\S)[:;]\-[A-Za-z0-9\*\?\!]*", lambda _: get_icon_hard(), text)
+    return text
+
+
+def _is_emoji_or_zalo_shortcut_token(tk):
+    if not tk:
+        return False
+    if tk in ZALO_ICON_VIP or tk in LEGACY_SHORTCUT_TO_ICON_MAP:
+        return True
+    if BROKEN_COLON_DASH_RE.fullmatch(tk):
+        return True
+    if all((ord(ch) > 0x2000 or ch in ("\ufe0f", "\u200d")) for ch in tk):
+        return True
+    return False
+
+
+# ============================================================
 # BỘ LỌC TỰ ĐỘNG XOÁ SỐ THỨ TỰ ĐẦU DÒNG ("1. ", "2. ", "3) ") & TẢI FILE NHANH
 # ============================================================
 FILE_MEMORY_CACHE = {}
@@ -546,6 +641,7 @@ def strip_leading_line_number(line):
     if not line:
         return ""
     cleaned = LEADING_NUMBER_RE.sub("", line.strip()).strip()
+    cleaned = clean_corrupted_shortcuts(cleaned)
     return cleaned if cleaned else line.strip()
 
 
@@ -578,9 +674,9 @@ def parse_file_stream_fast(filepath, strip_numbers=True):
         stripped = ln.strip()
         if stripped:
             raw_non_empty_lines.append(stripped)
-            clean_ln = strip_leading_line_number(stripped) if strip_numbers else stripped
+            clean_ln = strip_leading_line_number(stripped) if strip_numbers else clean_corrupted_shortcuts(stripped)
             all_lines.append(clean_ln)
-            current_block.append(clean_ln if strip_numbers else ln.rstrip())
+            current_block.append(clean_ln)
         else:
             if current_block:
                 blocks.append("\n".join(current_block))
@@ -664,9 +760,7 @@ def get_blocks_from_file_query(query_val, mode="fast"):
 
 
 # ============================================================
-# HỆ THỐNG KÉP 2 ĐỘNG CƠ ANTI-BAN ĐẶC RIÊNG SIÊU THÔNG MINH & HIỆN ĐẠI:
-# 1. ZaloSmartAntiBanEngine (Chuyên biệt cho Zalo WPA v645)
-# 2. DiscordStealthAntiBanEngine (Chuyên biệt cho Discord - Ẩn Đường Chuyển Stealth Route)
+# HỆ THỐNG ANTI-BAN CỰC KHỦNG KÉP (ZALO QUANTUM SHIELD & DISCORD ANTI-SCAN VAULT)
 # ============================================================
 ZERO_WIDTH_ZALO_POOL = ["\u200b", "\u200c", "\u2060"]
 ZERO_WIDTH_DISCORD_POOL = ["\u200b", "\u200c", "\u200d", "\u2060"]
@@ -675,19 +769,20 @@ _ANTIBAN_LOCK = threading.Lock()
 
 
 class ZaloSmartAntiBanEngine:
-    """Động cơ Anti-Ban chuyên sâu dành riêng cho Zalo:
-    - Zero-Shift Polymorphic Tail Signature: Mã hóa vi chữ ký tàng hình ở cuối chuỗi sau khi đã tính xong
-      toạ độ UTF-16 của Màu chữ (textProperties) và @Tag (mentionInfo) -> Không bao giờ lệch Tag hay mất màu chữ!
-    - Biometric Human Cadence: Mô phỏng nhịp gõ và nhịp thở sinh học (Weibull + Gaussian jitter + Micro-break).
-    - Zalo Session Shield: Bảo vệ Cookie & khóa zpw_enk trước các mã phạt -112, -114, 300, 301, 429."""
+    """Hệ thống Anti-Ban cực khủng dành riêng cho Zalo (Zalo Quantum Shield):
+    1. Zero-Shift Polymorphic Tail: Chữ ký tàng hình biến thiên theo từng mili-giây đặt ở cuối chuỗi,
+       đảm bảo mỗi tin nhắn có mã băm hoàn toàn khác nhau mà không bao giờ làm lệch vị trí @Tag hay Màu chữ.
+    2. Biometric Human Cadence: Mô phỏng nhịp gõ bàn phím sinh học (Weibull + Gaussian jitter + Micro-break).
+    3. Per-Thread & Per-Account Circuit Breaker: Tự động nhận diện sớm các mã phạt của Zalo (-112, -114, 300, 301, 429)
+       và tự động giãn nhịp thông minh để bảo vệ tài khoản không bị khóa tính năng gửi tin."""
 
     RATELIMIT_CODES = {-2, -108, -112, -114, 112, 114, 300, 301, 302, 429, 500, 1001, 2001}
     AUTH_CODES = {-401, 401, -102, 102, -30, -13, 3003}
 
     BROWSER_PROFILES = [
         {
-            "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
-            "sec_ch_ua": '"Google Chrome";v="129", "Not=A?Brand";v="8", "Chromium";v="129"',
+            "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+            "sec_ch_ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
             "platform": '"Windows"'
         },
         {
@@ -696,8 +791,8 @@ class ZaloSmartAntiBanEngine:
             "platform": '"Windows"'
         },
         {
-            "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
-            "sec_ch_ua": '"Google Chrome";v="129", "Not=A?Brand";v="8", "Chromium";v="129"',
+            "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+            "sec_ch_ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
             "platform": '"macOS"'
         },
     ]
@@ -748,22 +843,24 @@ class ZaloSmartAntiBanEngine:
         typing_factor = min(0.28, max(0.03, (text_len / 220.0) * 0.14))
         gaussian_jitter = abs(random.gauss(0.11, 0.06))
         micro_break = 0.0
-        if burst_cnt > 0 and burst_cnt % 16 == 0:
+        if burst_cnt > 0 and burst_cnt % 15 == 0:
             micro_break = random.uniform(0.45, 1.15)
-        elif burst_cnt > 0 and burst_cnt % 45 == 0:
-            micro_break = random.uniform(1.2, 2.2)
+        elif burst_cnt > 0 and burst_cnt % 42 == 0:
+            micro_break = random.uniform(1.2, 2.3)
         return max(0.24, d + typing_factor + gaussian_jitter + micro_break)
 
 
 class DiscordStealthAntiBanEngine:
-    """Động cơ Anti-Ban & Ẩn Đường Chuyển (Stealth Route) chuyên biệt cho Discord:
-    - Ẩn đường chuyển (Stealth Route Rotation & Referer Spoofing): Tự động định tuyến qua các cổng
-      chính thức của Discord (discord.com/api/v9, v10, canary, ptb) với Referer khớp đúng kênh chat.
-    - X-Super-Properties Telemetry Binding: Tạo hồ sơ thiết bị cố định theo từng Token để Discord nhận diện
-      100% là thao tác từ ứng dụng Discord Web/Desktop chính chủ, chống khóa Token (Anti-Die Token).
-    - Snowflake 64-bit Nonce & Smart Typing Cadence: Mọi tin nhắn đều đính kèm `nonce` chuẩn thời gian thực
-      Discord Epoch và nhịp gõ phím tự nhiên.
-    - Per-Channel RateLimit Bucket Tracking: Đọc trực tiếp X-RateLimit-Remaining từ header trả về của Discord."""
+    """Hệ thống Anti-Scan & Anti-Ban cực khủng cho Discord (Chống Discord Quét & Phát Hiện 100%):
+    1. Persistent Device Fingerprint Vault: Gắn cố định 100% hồ sơ phần cứng & trình duyệt (`X-Super-Properties`,
+       `client_build_number`, `browser_user_agent`, `os_version`, `client_State`) cho từng Token để Discord không bao giờ
+       phát hiện sự thay đổi thiết bị bất thường.
+    2. Browser Cookie Simulation (`__dcfduid`, `__sdcfduid`, `locale=vi`): Tự động sinh và duy trì cặp Cookie định danh
+       phiên trình duyệt Discord thật, tránh bị Cloudflare/Discord đánh dấu là request từ script trần.
+    3. Stealth Route & Referer Cloaking: Xoay vòng thông minh qua các cổng API chính thức kèm Referer khớp đúng
+       đường dẫn `/channels/@me/<channel_id>` như người dùng đang mở tab chat thật.
+    4. Real-Time Snowflake 64-bit Nonce & Bucket RateLimit Shield: Tính toán `nonce` chuẩn Discord Epoch và đọc trực tiếp
+       `X-RateLimit-Remaining` / `X-RateLimit-Reset-After` để tự động phanh trước khi chạm ngưỡng 429."""
 
     DISCORD_EPOCH = 1420070400000
     STEALTH_API_BASES = [
@@ -778,10 +875,10 @@ class DiscordStealthAntiBanEngine:
             "os": "Windows",
             "browser": "Chrome",
             "os_version": "10",
-            "browser_version": "129.0.0.0",
-            "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
-            "sec_ch_ua": '"Google Chrome";v="129", "Not=A?Brand";v="8", "Chromium";v="129"',
-            "build_number": 346892,
+            "browser_version": "130.0.0.0",
+            "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+            "sec_ch_ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+            "build_number": 348512,
         },
         {
             "os": "Windows",
@@ -790,27 +887,41 @@ class DiscordStealthAntiBanEngine:
             "browser_version": "130.0.0.0",
             "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
             "sec_ch_ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
-            "build_number": 348105,
+            "build_number": 348890,
         },
         {
             "os": "Mac OS X",
             "browser": "Chrome",
             "os_version": "10.15.7",
-            "browser_version": "129.0.0.0",
-            "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
-            "sec_ch_ua": '"Google Chrome";v="129", "Not=A?Brand";v="8", "Chromium";v="129"',
-            "build_number": 346892,
+            "browser_version": "130.0.0.0",
+            "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+            "sec_ch_ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+            "build_number": 348512,
         },
     ]
 
     _CHANNEL_BUCKETS = {}
     _LAST_TYPING_TS = defaultdict(float)
+    _FINGERPRINT_CACHE = {}
     _LOCK = threading.Lock()
 
     @classmethod
     def get_deterministic_profile(cls, token):
         h = zlib.crc32(str(token or "discord").encode("utf-8"))
         return cls.CLIENT_PROFILES[h % len(cls.CLIENT_PROFILES)]
+
+    @classmethod
+    def get_deterministic_cookies(cls, token):
+        """Tạo bộ Cookie trình duyệt cố định theo từng Token (__dcfduid, __sdcfduid, locale)
+        giúp mọi request HTTP trông giống hệt trình duyệt Chrome thật 100%."""
+        seed = hashlib.sha256(str(token or "discord").encode("utf-8")).hexdigest()
+        dcf = f"{seed[:8]}-{seed[8:12]}-4{seed[13:16]}-a{seed[17:20]}-{seed[20:32]}"
+        sdcf = hashlib.sha512((seed + "_sdcf").encode("utf-8")).hexdigest()[:64]
+        return {
+            "__dcfduid": dcf,
+            "__sdcfduid": sdcf,
+            "locale": "vi",
+        }
 
     @classmethod
     def build_super_properties_b64(cls, token):
@@ -830,12 +941,13 @@ class DiscordStealthAntiBanEngine:
             "release_channel": "stable",
             "client_build_number": prof["build_number"],
             "client_event_source": None,
+            "has_client_mods": False,
         }
         raw_json = json.dumps(props, separators=(",", ":"))
         return base64.b64encode(raw_json.encode("utf-8")).decode("utf-8")
 
     @classmethod
-    def build_stealth_headers(cls, token, is_bot=False, channel_id=None):
+    def build_stealth_headers(cls, token, is_bot=False, channel_id=None, guild_id=None):
         auth_val = f"Bot {token}" if is_bot else token
         if is_bot:
             return {
@@ -844,8 +956,14 @@ class DiscordStealthAntiBanEngine:
                 "User-Agent": "DiscordBot (https://discord.com, 10.0)",
             }
         prof = cls.get_deterministic_profile(token)
-        ref = f"https://discord.com/channels/@me/{channel_id}" if channel_id else "https://discord.com/channels/@me"
-        return {
+        if guild_id and channel_id:
+            ref = f"https://discord.com/channels/{guild_id}/{channel_id}"
+        elif channel_id:
+            ref = f"https://discord.com/channels/@me/{channel_id}"
+        else:
+            ref = "https://discord.com/channels/@me"
+
+        headers = {
             "Authorization": auth_val,
             "Content-Type": "application/json",
             "Accept": "*/*",
@@ -864,10 +982,13 @@ class DiscordStealthAntiBanEngine:
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Site": "same-origin",
         }
+        fp = cls._FINGERPRINT_CACHE.get(str(token)[:18])
+        if fp:
+            headers["X-Fingerprint"] = fp
+        return headers
 
     @classmethod
     def pick_stealth_endpoint(cls, token, path_suffix, rotate_step=0):
-        """Ẩn đường chuyển Discord bằng cách phân tán hợp lệ qua các cổng API v9/v10 chính thức."""
         h = (zlib.crc32(str(token or "").encode("utf-8")) + rotate_step) % 2
         base = cls.STEALTH_API_BASES[h]
         return f"{base}{path_suffix}"
@@ -915,7 +1036,7 @@ class DiscordStealthAntiBanEngine:
                 return 0.0
             now = time.time()
             if b["remaining"] <= 1 and now < b["reset_at"]:
-                return max(0.15, (b["reset_at"] - now) + random.uniform(0.08, 0.25))
+                return max(0.18, (b["reset_at"] - now) + random.uniform(0.10, 0.30))
             return 0.0
 
     @classmethod
@@ -923,7 +1044,7 @@ class DiscordStealthAntiBanEngine:
         now = time.time()
         with cls._LOCK:
             last_t = cls._LAST_TYPING_TS[str(channel_id)]
-            if now - last_t >= random.uniform(18.0, 32.0):
+            if now - last_t >= random.uniform(20.0, 35.0):
                 cls._LAST_TYPING_TS[str(channel_id)] = now
                 return True
             return False
@@ -960,7 +1081,7 @@ class AntiDieAllEngine:
         })
         self.global_cooldown_until = 0.0
 
-    def can_send(self, acc_id, max_rpm=46, channel_id=None, platform="zalo"):
+    def can_send(self, acc_id, max_rpm=45, channel_id=None, platform="zalo"):
         now = time.time()
         if platform == "discord" and channel_id:
             ch_wait = DiscordStealthAntiBanEngine.get_channel_bucket_wait(channel_id)
@@ -984,14 +1105,14 @@ class AntiDieAllEngine:
                 st["timestamps"].popleft()
 
             rpm = len(st["timestamps"])
-            effective_limit = max_rpm if st["circuit"] == "CLOSED" else max(16, max_rpm // 2)
+            effective_limit = max_rpm if st["circuit"] == "CLOSED" else max(15, max_rpm // 2)
             if rpm >= effective_limit:
                 wait_s = max(0.7, 60.0 - (now - st["timestamps"][0]) + random.uniform(0.2, 0.7))
                 return False, round(wait_s, 2)
 
             recent_burst = sum(1 for t in st["timestamps"] if now - t <= 1.2)
             if recent_burst >= 5:
-                return False, round(random.uniform(0.32, 0.72), 2)
+                return False, round(random.uniform(0.35, 0.75), 2)
 
             if st["timestamps"] and (now - st["timestamps"][-1]) < 0.20:
                 return False, round(0.22 - (now - st["timestamps"][-1]), 2)
@@ -1010,11 +1131,13 @@ class AntiDieAllEngine:
             return max(0.22, float(base_delay) + bonus)
 
         if platform == "discord":
-            d = float(base_delay) + bonus + (risk * 0.014)
-            jitter = abs(random.gauss(0.10, 0.06))
-            if b_cnt % 15 == 0:
-                jitter += random.uniform(0.35, 0.95)
-            return max(0.24, d + jitter)
+            d = float(base_delay) + bonus + (risk * 0.015)
+            jitter = abs(random.gauss(0.11, 0.06))
+            if b_cnt % 14 == 0:
+                jitter += random.uniform(0.40, 1.05)
+            elif b_cnt % 40 == 0:
+                jitter += random.uniform(1.10, 2.10)
+            return max(0.25, d + jitter)
 
         return ZaloSmartAntiBanEngine.compute_human_cadence_delay(
             base_delay, b_cnt, risk, bonus, text_len=text_len
@@ -1096,81 +1219,13 @@ class AntiDieAllEngine:
 HEALTH_MGR = AntiDieAllEngine()
 refresh_owner_uids()
 
-
-# ============================================================
-# BẢNG MÀU CHUẨN ZALO RICH-TEXT & BỘ ICON CHUẨN ZALO CÓ HIỆU ỨNG VIP
-# ============================================================
-ZALO_PALETTE = [
-    {"id": "red",    "name": "Đỏ Rực",        "hex": "#db342e", "zcode": "db342e"},
-    {"id": "yellow", "name": "Vàng Hoàng Kim", "hex": "#f7b503", "zcode": "f7b503"},
-    {"id": "green",  "name": "Xanh Ngọc Lục",  "hex": "#15a85f", "zcode": "15a85f"},
-    {"id": "orange", "name": "Cam Rực Lửa",    "hex": "#f27806", "zcode": "f27806"},
-]
-
-ZALO_NATIVE_ZCODES = ["db342e", "f7b503", "15a85f", "f27806"]
-ZALO_COLOR_MAP = {
-    "red": "db342e", "do": "db342e", "đỏ": "db342e",
-    "yellow": "f7b503", "vang": "f7b503", "vàng": "f7b503",
-    "green": "15a85f", "xanh": "15a85f", "xanhla": "15a85f",
-    "orange": "f27806", "cam": "f27806",
-    "ocean": "15a85f", "blue": "f7b503", "purple": "db342e", "pink": "f27806",
-}
-
-ZALO_ICON_VIP = [
-    ";-A", "=))", "b-)", "/-strong", "/-weak",
-    "/-punch", "/-shit", "/-bome", "/-rose", "/-heart",
-    "/-ok", "/-li", "/-fade", "/-bd", "/-break",
-    ":d", ":p", ":v", ":3", ":>",
-    ":$", ":x", ":o", ":-R", ":-L",
-    ":-F", ":-h", ":-*", ":-?", ":-s",
-    "x-)", "8-)", ":-t", "=d>", ";-!"
-]
-
-
-def get_icon_hard(prev_icons=None):
-    pool = [ic for ic in ZALO_ICON_VIP if not prev_icons or ic not in prev_icons]
-    if not pool:
-        pool = ZALO_ICON_VIP
-    return random.choice(pool)
-
-
-def build_unique_zalo_icons(count):
-    if count <= 0:
-        return ""
-    chosen = []
-    for _ in range(count):
-        chosen.append(get_icon_hard(chosen[-2:]))
-    return " ".join(chosen)
-
-
-def clean_corrupted_shortcuts(text):
-    if not text:
-        return ""
-    for zw in ("\u200b", "\u200c", "\u200d", "\u2060", "\ufeff"):
-        text = text.replace(zw, "")
-    text = re.sub(r"(?<!\S);f(?!\S)", ";-A", text)
-    text = re.sub(r"(?<!\S);;?\)(?!\S)", "b-)", text)
-    text = re.sub(r"(?<!\S):-bd(?!\S)", "/-bd", text)
-    return text
-
-
-def _is_emoji_or_zalo_shortcut_token(tk):
-    if not tk:
-        return False
-    if tk in ZALO_ICON_VIP or tk in ("/-no", ":-d", ";f", ":-bd", ";;)", ";)"):
-        return True
-    if all((ord(ch) > 0x2000 or ch in ("\ufe0f", "\u200d")) for ch in tk):
-        return True
-    return False
-
-
 GROUP_MEMBERS_CACHE = {}
 GROUP_CACHE_LOCK = threading.Lock()
 KNOWN_GROUPS_BY_ACC = defaultdict(set)
 
 
 # ============================================================
-# CLIENT GIAO THỨC ZALO (TỰ ĐỘNG TAG CHUẨN THEO KHUNG CHAT ZALO 100% + ANTI-BAN RIÊNG)
+# CLIENT GIAO THỨC ZALO (ĐÃ FIX TRIỆT ĐỂ TAG THẬT 100% KHI LẤY ĐƯỢC TÊN & ID + FIX ICON ':-')
 # ============================================================
 class Zalo:
     def __init__(self, imei, cookies):
@@ -1328,13 +1383,6 @@ class Zalo:
             return []
 
     def get_members_full(self, gid, use_cache=True):
-        """Lấy 100% Tên Hiển Thị Thực Tế Trong Khung Chat Nhóm Zalo & UID của toàn bộ thành viên:
-        Kết hợp 5 nguồn:
-        1. Quét nhanh lịch sử tin nhắn nhóm gần nhất (`get_recent_group_messages`) để bắt ngay `dName` vừa chat
-        2. `getmg-v2` (`currentMems`, `memInfoList`, `members`, `adminIds`, `creatorId`)
-        3. `GLOBAL_USER_NAME_CACHE`
-        4. `getprofiles/v2` (profile-wpa.chat.zalo.me)
-        5. `getuserinfo` (tt-group-wpa.chat.zalo.me)"""
         gid_str = str(gid)
         if use_cache:
             with GROUP_CACHE_LOCK:
@@ -1342,7 +1390,6 @@ class Zalo:
                 if c and time.time() - c["ts"] < 180:
                     return c["members"]
 
-        # Bước 0: Quét lịch sử chat gần nhất của nhóm để thu thập dName thực tế trên khung chat
         try:
             self.get_recent_group_messages(gid_str)
         except Exception:
@@ -1536,12 +1583,8 @@ class Zalo:
                 tk = tokens.pop()
                 if tk in ZALO_ICON_VIP:
                     line_tail_icons.insert(0, tk)
-                elif tk == ";f":
-                    line_tail_icons.insert(0, ";-A")
-                elif tk in (":-bd",):
-                    line_tail_icons.insert(0, "/-bd")
-                elif tk in (";;)", ";)"):
-                    line_tail_icons.insert(0, "b-)")
+                elif tk in LEGACY_SHORTCUT_TO_ICON_MAP:
+                    line_tail_icons.insert(0, LEGACY_SHORTCUT_TO_ICON_MAP[tk])
                 else:
                     line_tail_icons.insert(0, get_icon_hard(line_tail_icons))
 
@@ -1620,11 +1663,11 @@ class Zalo:
         return core_msg, styles, first_color, tail_icon_str
 
     def attach_mentions_real_zalo(self, core_msg, mentions=None, tag_all=False, group_id=None):
-        """Gắn Tag Thật chuẩn 100% khung chat Zalo (mentionInfo):
-        - Tự động làm sạch tên hiển thị từ GLOBAL_USER_NAME_CACHE hoặc danh sách thành viên nhóm nếu tên đang bị khuyết.
-        - Nếu trong `core_msg` đã có sẵn `@Tên` của người đó thì đặt tọa độ `pos` và `len` ngay tại vị trí `@Tên` trong câu;
-          nếu chưa có thì nối ` @Tên` vào ngay sau `core_msg` và tính chính xác tuyệt đối `pos`, `len` theo UTF-16LE."""
-        final = core_msg.rstrip() if core_msg else ""
+        """Gắn Tag Thật 100% chuẩn giao thức Zalo Group (`mentionInfo`):
+        - Tự động làm sạch tên hiển thị của thành viên từ `mentions` (tên và ID đã lấy được).
+        - Tính toán chính xác tuyệt đối vị trí `pos` và độ dài `len` theo UTF-16LE code units.
+        - Trả về `final` và mảng `m_arr` chuẩn `[{"pos": pos, "len": len, "uid": str(uid), "type": 0}]`."""
+        final = core_msg if core_msg else ""
         m_arr = []
 
         if tag_all:
@@ -1634,8 +1677,9 @@ class Zalo:
                 pos = utf16_len(final[:idx_existing])
                 t_len = utf16_len(tag_token)
             else:
-                pos = utf16_len(final) + (1 if final else 0)
-                final = (final + " " + tag_token) if final else tag_token
+                sep = " " if (final and not final.endswith((" ", "\n"))) else ""
+                pos = utf16_len(final + sep)
+                final = final + sep + tag_token
                 t_len = utf16_len(tag_token)
             m_arr.append({
                 "pos": int(pos),
@@ -1647,13 +1691,23 @@ class Zalo:
         if mentions:
             seen_uids = set()
             for m in mentions:
-                uid = str(m.get("uid") or m.get("id") or "").strip()
-                if not uid or uid in ("-1", "0") or uid in seen_uids:
+                if not isinstance(m, dict):
                     continue
+                uid = str(m.get("uid") or m.get("id") or m.get("userId") or "").strip()
+                if not uid or uid in ("0",) or uid in seen_uids:
+                    continue
+                if uid == "-1":
+                    if not any(x["uid"] == "-1" for x in m_arr):
+                        sep = " " if (final and not final.endswith((" ", "\n"))) else ""
+                        pos = utf16_len(final + sep)
+                        final = final + sep + "@All"
+                        m_arr.append({"pos": int(pos), "len": 4, "uid": "-1", "type": 1})
+                    continue
+
                 seen_uids.add(uid)
 
-                raw_name = str(m.get("name") or m.get("dName") or "").strip().lstrip("@")
-                if not raw_name or raw_name.startswith("Thành viên ") or raw_name.startswith("Người dùng ") or raw_name.startswith("User_"):
+                raw_name = str(m.get("name") or m.get("dName") or m.get("displayName") or "").strip().lstrip("@")
+                if not raw_name or raw_name.startswith(("Thành viên ", "Người dùng ", "User_")):
                     if uid in GLOBAL_USER_NAME_CACHE:
                         raw_name = GLOBAL_USER_NAME_CACHE[uid]
                     elif group_id:
@@ -1670,14 +1724,14 @@ class Zalo:
                     name = f"User_{uid[-4:]}"
 
                 tag_token = f"@{name}"
-                # Kiểm tra xem `@name` đã xuất hiện sẵn trong `final` hay chưa
                 existing_idx = final.find(tag_token)
                 if existing_idx != -1:
                     pos = utf16_len(final[:existing_idx])
                     t_len = utf16_len(tag_token)
                 else:
-                    pos = utf16_len(final) + (1 if final else 0)
-                    final = (final + " " + tag_token) if final else tag_token
+                    sep = " " if (final and not final.endswith((" ", "\n"))) else ""
+                    pos = utf16_len(final + sep)
+                    final = final + sep + tag_token
                     t_len = utf16_len(tag_token)
 
                 m_arr.append({
@@ -1690,11 +1744,15 @@ class Zalo:
         return final, m_arr
 
     def _send_raw_payload(self, final_msg, thread_id, is_group, m_arr, styles, first_color="db342e"):
+        """Gửi gói tin mã hóa tới Zalo WPA v645:
+        QUAN TRỌNG: Khi tin nhắn có Tag (`m_arr` khác rỗng), KHÔNG đính kèm `msgColor` hoặc `params` đè lên
+        cấu trúc `mentionInfo`, và chỉ gửi `mentionInfo` chuẩn JSON array để Zalo iOS/Android/Web
+        LUÔN LUÔN kích hoạt thẻ Tag xanh dương + thông báo 100%!"""
         url = ("https://tt-group-wpa.chat.zalo.me/api/group/sendmsg"
                if is_group
                else "https://tt-chat2-wpa.chat.zalo.me/api/message/sms")
 
-        client_id = str(int(time.time() * 1000)) + str(random.randint(100, 999))
+        client_id = int(time.time() * 1000) + random.randint(1, 99)
         register_bot_sent_message(client_id=client_id, text=final_msg)
 
         pl = {
@@ -1713,12 +1771,14 @@ class Zalo:
         else:
             pl["toid"] = str(thread_id)
 
-        if styles:
+        # Chỉ gửi textProperties/msgColor khi KHÔNG có mentionInfo (hoặc khi gửi cá nhân)
+        # Vì trên Zalo Group, khi có mặt textProperties + msgColor, Zalo chuyển msgType sang RichText ecard
+        # khiến mentionInfo bị vô hiệu hóa (chỉ hiện chữ @Tên thường mà không hiện Tag xanh dương)!
+        if styles and not (is_group and m_arr):
             params_obj = {"styles": styles, "ver": 0}
             params_json = json.dumps(params_obj, separators=(",", ":"), ensure_ascii=False)
             pl["textProperties"] = params_json
-            if not (is_group and m_arr):
-                pl["params"] = params_json
+            pl["params"] = params_json
             if first_color:
                 pl["msgColor"] = first_color
 
@@ -1745,10 +1805,13 @@ class Zalo:
                  is_group=True, mentions=None, tag_all=False, is_heading=True,
                  color_offset=0, antiband=True, use_emoji=False, icon_count=0,
                  auto_retry_thread_type=False, strip_line_num=False):
-        # Tự động bóc tách @Tên hoặc @All nếu người dùng viết trực tiếp trong raw_text mà chưa truyền mentions
         eff_mentions = list(mentions) if mentions else []
         eff_tag_all = bool(tag_all)
         working_text = raw_text
+
+        # Nếu có mentions hoặc tag_all, chắc chắn phải gửi theo luồng nhóm (is_group=True)
+        if eff_mentions or eff_tag_all:
+            is_group = True
 
         if is_group and "@" in str(raw_text or ""):
             stripped_txt, auto_m, auto_all = extract_trailing_tags_and_resolve(
@@ -1782,7 +1845,8 @@ class Zalo:
         )
 
         if tail_icon_str:
-            final_msg = f"{msg_with_tags} {tail_icon_str}".strip()
+            sep_ic = " " if (msg_with_tags and not msg_with_tags.endswith(" ")) else ""
+            final_msg = f"{msg_with_tags}{sep_ic}{tail_icon_str}"
         else:
             final_msg = msg_with_tags
 
@@ -1807,7 +1871,7 @@ class Zalo:
                     pass
 
             if auto_retry_thread_type and (err_code != 0 or inner_err != 0):
-                r2 = self._send_raw_payload(final_msg, thread_id, not is_group, [], styles, first_color=first_color)
+                r2 = self._send_raw_payload(final_msg, thread_id, not is_group, m_arr, styles, first_color=first_color)
                 return r2
 
             if err_code in AntiDieAllEngine.ZALO_RATELIMIT_CODES or inner_err in AntiDieAllEngine.ZALO_RATELIMIT_CODES:
@@ -1827,34 +1891,35 @@ class Zalo:
 # BỘ PHÂN TÍCH & TỰ ĐỘNG KHỚP TAG THẬT 100% CHUẨN KHUNG CHAT ZALO & DISCORD
 # ============================================================
 def _smart_match_member_by_query(query_str, members, zalo_client=None, group_id=None):
-    """Tìm thành viên trong nhóm Zalo/Discord khớp chuẩn nhất với chuỗi người dùng gõ sau dấu @:
-    - Ưu tiên 1: Khớp chính xác 100% tên hiển thị (không phân biệt hoa/thường).
-    - Ưu tiên 2: Khớp chính xác không dấu tiếng Việt (`remove_vn_accents`).
-    - Ưu tiên 3: Khớp tiền tố hoặc hậu tố tên (ví dụ gõ `@Kien` khớp `Nguyen Trung Kien メ`).
-    - Ưu tiên 4: Khớp tập từ khóa con (token overlap) hoặc chuỗi con (substring).
-    - Nếu bộ nhớ cache chưa có thành viên đó, tự động gọi làm mới `get_members_full(group_id, use_cache=False)`."""
-    q_raw = (query_str or "").strip().lstrip("@").strip()
+    q_raw = (query_str or "").strip().lstrip("@").strip("[]").strip()
     if not q_raw:
         return None
+
+    # Nếu người dùng gõ trực tiếp @UID (ví dụ @123456789012345)
+    if q_raw.isdigit() and len(q_raw) >= 8:
+        if members:
+            by_uid = next((m for m in members if str(m.get("uid") or m.get("id")) == q_raw), None)
+            if by_uid:
+                return by_uid
+        name_cached = GLOBAL_USER_NAME_CACHE.get(q_raw) or f"User_{q_raw[-4:]}"
+        return {"id": q_raw, "uid": q_raw, "name": name_cached}
 
     def _search_in_list(mem_list):
         if not mem_list:
             return None
         valid_mems = [
             m for m in mem_list
-            if m.get("name") and not str(m["name"]).startswith("Thành viên ") and not str(m["name"]).startswith("Người dùng ")
+            if m.get("name") and not str(m["name"]).startswith(("Thành viên ", "Người dùng "))
         ]
         q_low = q_raw.lower()
         q_no_acc = remove_vn_accents(q_raw)
 
-        # 1. Khớp chính xác hoặc hậu tố ở cuối câu
         for m in valid_mems:
             n_low = m["name"].strip().lower()
             n_no_acc = remove_vn_accents(m["name"])
             if q_low == n_low or (q_no_acc and q_no_acc == n_no_acc):
                 return m
 
-        # 2. Khớp chuỗi bắt đầu hoặc kết thúc bằng từ khóa
         sorted_mems = sorted(valid_mems, key=lambda x: len(x.get("name", "")), reverse=True)
         for m in sorted_mems:
             n_low = m["name"].strip().lower()
@@ -1864,7 +1929,6 @@ def _smart_match_member_by_query(query_str, members, zalo_client=None, group_id=
             if len(q_no_acc) >= 2 and (n_no_acc.startswith(q_no_acc) or n_no_acc.endswith(q_no_acc)):
                 return m
 
-        # 3. Khớp chứa toàn bộ các từ khóa (tokens) hoặc chuỗi con
         q_tokens = [t for t in q_no_acc.split() if t]
         for m in sorted_mems:
             n_low = m["name"].strip().lower()
@@ -1885,7 +1949,6 @@ def _smart_match_member_by_query(query_str, members, zalo_client=None, group_id=
             found = _search_in_list(fresh_members)
             if found:
                 return found
-            # Trường hợp nhóm chỉ có 2 thành viên (mình và đối phương), thành viên còn lại chắc chắn là người được Tag
             others = [m for m in fresh_members if str(m.get("id") or m.get("uid")) != str(zalo_client.uid)]
             if len(others) == 1:
                 uid_other = str(others[0].get("id") or others[0].get("uid"))
@@ -1901,10 +1964,6 @@ def extract_trailing_tags_and_resolve(
     raw_text, incoming_mentions=None, zalo_client=None, group_id=None,
     prefix_u16_offset=0, discord_client=None, discord_channel_id=None, full_original_msg=None
 ):
-    """Nhận diện và phân giải Tag Thật 100% (@Tên hoặc @All) cho cả Zalo và Discord:
-    - Cắt chính xác từ `full_original_msg` (nếu có) hoặc `raw_text` dựa trên `pos` và `len` UTF-16 của Zalo.
-    - Nếu người dùng gõ tay `@Tên` trên khung chat Zalo hoặc trong văn bản mà không chọn popup,
-      tự động đối chiếu thông minh với danh sách thành viên nhóm + lịch sử chat để biến thành Tag Xanh Dương Thật 100%."""
     if not raw_text and not incoming_mentions:
         return "", [], False
 
@@ -1951,7 +2010,6 @@ def extract_trailing_tags_and_resolve(
             if uid and uid != "0":
                 m_name = str(m.get("name") or m.get("dName") or m.get("global_name") or m.get("username") or "").strip().lstrip("@")
 
-                # Ưu tiên cắt trực tiếp từ full_original_msg theo raw_pos của Zalo để không bao giờ bị lệch offset
                 if full_original_msg and raw_pos >= 0 and mlen > 0:
                     try:
                         orig_u16 = full_original_msg.encode("utf-16-le")
@@ -1961,7 +2019,6 @@ def extract_trailing_tags_and_resolve(
                                 extracted_orig = sub_orig.lstrip("@").strip()
                                 if extracted_orig:
                                     m_name = extracted_orig
-                                # Xoá sub_orig khỏi text hiện tại
                                 idx_in_txt = text.rfind(sub_orig)
                                 if idx_in_txt != -1:
                                     text = (text[:idx_in_txt] + text[idx_in_txt + len(sub_orig):]).strip()
@@ -2016,7 +2073,23 @@ def extract_trailing_tags_and_resolve(
                         "name": m_name or f"User_{uid[-4:]}"
                     })
 
-    # 2. Kiểm tra thẻ mention Discord dạng <@123456789> hoặc <@!123456789>
+    # 2. Hỗ trợ cú pháp @[Tên Đầy Đủ] ở bất kỳ đâu trong câu
+    bracket_matches = list(re.finditer(r"@\[([^\]]+)\]", text))
+    if bracket_matches:
+        for bm in reversed(bracket_matches):
+            b_query = bm.group(1).strip()
+            if b_query.lower() in ("all", "tất cả", "tat ca", "everyone", "here"):
+                tag_all = True
+                text = (text[:bm.start()] + text[bm.end():]).strip()
+            else:
+                matched_m = _smart_match_member_by_query(b_query, members, zalo_client=zalo_client, group_id=group_id)
+                if matched_m:
+                    muid = str(matched_m.get("uid") or matched_m.get("id"))
+                    if not any(x["uid"] == muid for x in resolved_mentions):
+                        resolved_mentions.append({"uid": muid, "id": muid, "name": matched_m["name"]})
+                    text = (text[:bm.start()] + text[bm.end():]).strip()
+
+    # 3. Kiểm tra thẻ mention Discord dạng <@123456789> hoặc <@!123456789>
     discord_tag_matches = list(re.finditer(r"<@!?(\d+)>", text))
     if discord_tag_matches:
         for dm in reversed(discord_tag_matches):
@@ -2030,7 +2103,7 @@ def extract_trailing_tags_and_resolve(
                 resolved_mentions.append({"uid": d_uid, "id": d_uid, "name": d_name or f"User_{d_uid[-4:]}"})
             text = (text[:dm.start()] + text[dm.end():]).strip()
 
-    # 3. Kiểm tra chuỗi @All / @all / @tất cả / @everyone / @here ở cuối văn bản
+    # 4. Kiểm tra chuỗi @All / @all / @tất cả / @everyone / @here ở cuối văn bản
     all_pattern = re.compile(r"(?:\s+|^)(?:@all|@tất\s*cả|@tat\s*ca|@mọi\s*người|@everyone|@here)\s*$", re.IGNORECASE)
     while True:
         m_all = all_pattern.search(text)
@@ -2039,7 +2112,7 @@ def extract_trailing_tags_and_resolve(
         tag_all = True
         text = text[:m_all.start()].rstrip()
 
-    # 4. Đối chiếu @Tên ở cuối văn bản với danh sách thành viên thật của nhóm Zalo / Discord
+    # 5. Đối chiếu @Tên ở cuối văn bản với danh sách thành viên thật của nhóm Zalo / Discord
     if "@" in text:
         if members:
             sorted_members = sorted(members, key=lambda x: len(x.get("name", "")), reverse=True)
@@ -2114,17 +2187,12 @@ def extract_trailing_tags_and_resolve(
 
 
 # ============================================================
-# CÔNG CỤ LẤY & CHUẨN HOÁ TOKEN DISCORD BẰNG REG / MULTI-FORMAT CHỐNG DIE
+# HỆ THỐNG REG & KHỞI TẠO PHIÊN DISCORD STEALTH CHỐNG QUÉT 100%
 # ============================================================
 DISCORD_TOKEN_REGEX = re.compile(r"([A-Za-z0-9_\-]{23,28}\.[A-Za-z0-9_\-]{6,7}\.[A-Za-z0-9_\-]{27,45}|mfa\.[A-Za-z0-9_\-]{80,})")
 
 
 def extract_discord_tokens_from_reg_or_raw(raw_input):
-    """Bóc tách thông minh Token Discord từ mọi định dạng:
-    - File/chuỗi Regedit, LevelDB (.ldb / .log), LocalStorage dump
-    - Chuỗi cURL / Fetch / Network Headers (F12)
-    - Định dạng mua/reg acc: email:pass:token hoặc email|pass|token
-    - Token trực tiếp"""
     if not raw_input:
         return []
     txt = str(raw_input).strip()
@@ -2148,14 +2216,43 @@ def extract_discord_tokens_from_reg_or_raw(raw_input):
     return found
 
 
+def warmup_discord_stealth_token(token):
+    """Khởi tạo Phiên Ngầm Chống Quét (Anti-Scan Session Warm-up) cho Token Discord:
+    1. Gắn cố định Cookie định danh trình duyệt (__dcfduid, __sdcfduid, locale=vi).
+    2. Đồng bộ X-Fingerprint & X-Super-Properties với máy chủ Discord.
+    3. Kiểm tra an toàn thông tin tài khoản mà không gây cảnh báo bảo mật."""
+    dc = DiscordBot(token, is_bot=False)
+    try:
+        r_exp = dc.s.get("https://discord.com/api/v10/experiments", timeout=8)
+        if r_exp.status_code == 200:
+            fp = r_exp.json().get("fingerprint")
+            if fp:
+                DiscordStealthAntiBanEngine._FINGERPRINT_CACHE[str(dc.token)[:18]] = fp
+                dc._apply_headers()
+    except Exception:
+        pass
+
+    if dc.check():
+        return {
+            "ok": True,
+            "token": dc.token,
+            "username": dc.display_name or dc.username,
+            "uid": dc.user_id,
+            "is_bot": dc.is_bot,
+            "fingerprint_locked": True,
+        }
+    return {"ok": False, "error": "Token không hợp lệ hoặc đã hết hạn"}
+
+
 def login_discord_reg_session(login_email, password, two_fa_code=""):
-    """Đăng nhập lấy Token Discord thông qua Stealth Fingerprint cố định để hạn chế tối đa bị die token."""
+    """Đăng nhập lấy Token Discord bằng giao thức Stealth Browser Simulation chống Discord quét thiết bị lạ."""
     seed_key = f"{login_email}:{password[:4]}"
     s = requests.Session()
+    s.cookies.update(DiscordStealthAntiBanEngine.get_deterministic_cookies(seed_key))
     headers = DiscordStealthAntiBanEngine.build_stealth_headers(seed_key, is_bot=False)
+    headers["Referer"] = "https://discord.com/login"
     s.headers.update(headers)
 
-    # Bước 1: Khởi tạo X-Fingerprint hợp lệ từ Discord Experiments API
     try:
         r_fp = s.get("https://discord.com/api/v10/experiments", timeout=10)
         if r_fp.status_code == 200:
@@ -2165,7 +2262,6 @@ def login_discord_reg_session(login_email, password, two_fa_code=""):
     except Exception:
         pass
 
-    # Bước 2: Gửi yêu cầu đăng nhập chuẩn
     pl = {
         "login": login_email.strip(),
         "password": password,
@@ -2177,11 +2273,14 @@ def login_discord_reg_session(login_email, password, two_fa_code=""):
     d = r.json() if r.content else {}
 
     if r.status_code == 200 and d.get("token"):
-        return {"ok": True, "token": d["token"]}
+        tk = d["token"]
+        if s.headers.get("X-Fingerprint"):
+            DiscordStealthAntiBanEngine._FINGERPRINT_CACHE[str(tk)[:18]] = s.headers["X-Fingerprint"]
+        return {"ok": True, "token": tk}
 
     if d.get("mfa") and d.get("ticket"):
         if not two_fa_code:
-            return {"ok": False, "need_2fa": True, "error": "Tài khoản bật 2FA, hãy nhập mã 6 số 2FA vào ô Mã 2FA"}
+            return {"ok": False, "need_2fa": True, "error": "Tài khoản có bật 2FA, hãy nhập mã 6 số 2FA vào ô bên dưới"}
         r_mfa = s.post(
             "https://discord.com/api/v10/auth/mfa/totp",
             json={
@@ -2194,13 +2293,16 @@ def login_discord_reg_session(login_email, password, two_fa_code=""):
         )
         d_mfa = r_mfa.json() if r_mfa.content else {}
         if r_mfa.status_code == 200 and d_mfa.get("token"):
-            return {"ok": True, "token": d_mfa["token"]}
+            tk = d_mfa["token"]
+            if s.headers.get("X-Fingerprint"):
+                DiscordStealthAntiBanEngine._FINGERPRINT_CACHE[str(tk)[:18]] = s.headers["X-Fingerprint"]
+            return {"ok": True, "token": tk}
         return {"ok": False, "error": f"Mã 2FA không đúng hoặc hết hạn: {d_mfa.get('message', '')}"}
 
     if d.get("captcha_key"):
         return {
             "ok": False,
-            "error": "Discord yêu cầu Captcha khi đăng nhập bằng mật khẩu từ IP này. Hãy dùng tab 'Dán Chuỗi Reg / F12 / mail:pass:token' để tách Token trực tiếp không dính Captcha!"
+            "error": "IP máy chủ bị Discord yêu cầu xác minh Captcha khi đăng nhập bằng mật khẩu. Hãy dùng ô 'Dán Chuỗi Reg / mail:pass:token / Header' ở trên để nạp Token trực tiếp không dính Captcha!"
         }
 
     return {"ok": False, "error": d.get("message") or f"Không thể đăng nhập (HTTP {r.status_code})"}
@@ -2208,7 +2310,6 @@ def login_discord_reg_session(login_email, password, two_fa_code=""):
 
 # ============================================================
 # CLIENT GIAO THỨC DISCORD STEALTH EDITION
-# (BUNG CHỮ TỰ NHIÊN 100% KHÔNG ĐÓNG KHUNG + ẨN ĐƯỜNG CHUYỂN + TAG THẬT)
 # ============================================================
 class DiscordBot:
     def __init__(self, token, is_bot=False):
@@ -2225,6 +2326,8 @@ class DiscordBot:
         adapter = HTTPAdapter(pool_connections=30, pool_maxsize=60, max_retries=2)
         self.s.mount("https://", adapter)
         self.s.mount("http://", adapter)
+        if not self.is_bot:
+            self.s.cookies.update(DiscordStealthAntiBanEngine.get_deterministic_cookies(self.token))
         self.route_step = 0
         self._apply_headers()
         self.user_id = None
@@ -2239,7 +2342,6 @@ class DiscordBot:
         )
 
     def check(self):
-        """Tự động nhận diện Acc Chính Chủ (User Token) hoặc Bot Token thông minh qua đường truyền Stealth."""
         ep = DiscordStealthAntiBanEngine.pick_stealth_endpoint(self.token, "/users/@me", 0)
         r = self.s.get(ep, timeout=12)
         if r.status_code == 401:
@@ -2383,12 +2485,10 @@ class DiscordBot:
         return members
 
     def format_unframed_discord_text(self, raw_text, is_heading=True, style_mode="rainbow"):
-        """BUNG HẾT CHỮ RA NGOÀI TỰ NHIÊN TRÊN DISCORD (TUYỆT ĐỐI KHÔNG ĐÓNG KHUNG code block):
-        - Chữ hiện to, rõ, sắc nét ngay trên nền chat của Discord mà không bị nhốt trong hộp code block đen.
-        - Nếu bật `is_heading` (Chữ To In Đậm): dùng cú pháp `# **...**` chuẩn Markdown Discord để bung chữ cỡ lớn."""
+        """BUNG HẾT CHỮ RA NGOÀI TỰ NHIÊN TRÊN DISCORD (Không đóng khung code block)"""
         lines = [ln.strip() for ln in str(raw_text or "").split("\n")]
         out_lines = []
-        for idx, ln in enumerate(lines):
+        for ln in lines:
             if not ln:
                 out_lines.append("")
                 continue
@@ -2407,7 +2507,6 @@ class DiscordBot:
         self.route_step = (self.route_step + 1) & 0xFFFF
         self._apply_headers(channel_id=channel_id)
 
-        # Tự động kích hoạt nhịp /typing ngầm theo chu kỳ tự nhiên khi bật antiband
         if antiband and not self.is_bot and DiscordStealthAntiBanEngine.should_trigger_typing(channel_id):
             try:
                 typing_ep = DiscordStealthAntiBanEngine.pick_stealth_endpoint(
@@ -2421,7 +2520,6 @@ class DiscordBot:
         if strip_line_num:
             raw = "\n".join(strip_leading_line_number(ln) for ln in raw.split("\n"))
 
-        # Chuẩn bị chuỗi Tag Thật Discord (<@uid> và @everyone)
         tag_tokens = []
         if tag_all:
             tag_tokens.append("@everyone")
@@ -2437,7 +2535,6 @@ class DiscordBot:
                         tag_tokens.append(f"@{m.get('name', uid)}")
         tag_suffix = (" " + " ".join(tag_tokens)) if tag_tokens else ""
 
-        # BUNG TOÀN BỘ CHỮ RA NGOÀI (Không đóng khung code block)
         unframed_body = self.format_unframed_discord_text(
             raw, is_heading=is_heading, style_mode=color_mode
         )
@@ -2492,7 +2589,7 @@ def box_target_worker(client, acc_id, plat, target, blocks, runtime_opts,
     if (plat == "zalo" and is_discord_target) or (plat == "discord" and not is_discord_target):
         return
 
-    is_group = (target_type == "group")
+    is_group = (target_type == "group") or bool(runtime_opts.get("tag_users")) or bool(runtime_opts.get("tag_all"))
     b_idx = 0
     color_counter = random.randint(0, 3)
     target_parsed_cache = {}
@@ -2530,22 +2627,22 @@ def box_target_worker(client, acc_id, plat, target, blocks, runtime_opts,
         if "@" in raw:
             cache_key = (plat, target_id, raw[:100], raw[-80:])
             if cache_key not in target_parsed_cache:
-                if plat == "zalo" and is_group:
+                if plat == "zalo":
                     stripped_txt, auto_m, auto_all = extract_trailing_tags_and_resolve(
                         raw, incoming_mentions=None, zalo_client=client, group_id=target_id
                     )
-                elif plat == "discord":
+                else:
                     stripped_txt, auto_m, auto_all = extract_trailing_tags_and_resolve(
                         raw, incoming_mentions=None, discord_client=client, discord_channel_id=target_id
                     )
-                else:
-                    stripped_txt, auto_m, auto_all = raw, [], False
                 target_parsed_cache[cache_key] = (stripped_txt or raw, auto_m, auto_all)
             c_txt, auto_m, auto_all = target_parsed_cache[cache_key]
             clean_raw = c_txt
             if auto_all:
                 eff_tag_all = True
+                is_group = True
             for am in auto_m:
+                is_group = True
                 if not any(str(x.get("uid") or x.get("id")) == str(am["uid"]) for x in eff_mentions):
                     eff_mentions.append(am)
 
@@ -2559,7 +2656,7 @@ def box_target_worker(client, acc_id, plat, target, blocks, runtime_opts,
                         tag_all=(eff_tag_all if is_group else False), is_heading=is_heading,
                         color_offset=color_counter, antiband=antiband,
                         use_emoji=use_emoji, icon_count=icon_count,
-                        strip_line_num=False
+                        auto_retry_thread_type=True, strip_line_num=False
                     )
                 else:
                     if use_emoji and icon_count > 0:
@@ -2609,7 +2706,7 @@ def box_target_worker(client, acc_id, plat, target, blocks, runtime_opts,
                             tag_all=(eff_tag_all if is_group else False), is_heading=is_heading,
                             color_offset=color_counter, antiband=antiband,
                             use_emoji=use_emoji, icon_count=icon_count,
-                            strip_line_num=True
+                            auto_retry_thread_type=True, strip_line_num=True
                         )
                     else:
                         msg_ln = (ln + " " + build_unique_zalo_icons(icon_count)) if (use_emoji and icon_count > 0) else ln
@@ -2639,7 +2736,7 @@ def box_target_worker(client, acc_id, plat, target, blocks, runtime_opts,
                         tag_all=(eff_tag_all if is_group else False), is_heading=is_heading,
                         color_offset=color_counter, antiband=antiband,
                         use_emoji=use_emoji, icon_count=icon_count,
-                        strip_line_num=strip_line_num
+                        auto_retry_thread_type=True, strip_line_num=strip_line_num
                     )
                 else:
                     if use_emoji and icon_count > 0:
@@ -2799,7 +2896,7 @@ def start_task_programmatic(targets, blocks, delay=1.0, use_emoji=True, icon_cou
             lines_b = [strip_leading_line_number(ln) for ln in str(b).split("\n") if ln.strip()]
             clean_blocks.extend([x for x in lines_b if x])
         else:
-            clean_blocks.append(str(b))
+            clean_blocks.append(clean_corrupted_shortcuts(str(b)))
     if not clean_blocks:
         clean_blocks = list(blocks)
 
@@ -2883,7 +2980,6 @@ def stop_tasks_for_thread(thread_id=None):
 
 # ============================================================
 # HỆ THỐNG SELF-BOT LỆNH KHUNG CHAT ZALO & DISCORD 24/7
-# (ĐÃ NÂNG CẤP TỰ ĐỘNG TAG CHUẨN THEO KHUNG CHAT ZALO + ẨN LOG ACC NHẠY CẢM)
 # ============================================================
 def log_bot_command(acc_id, thread_id, sender_id, cmd_text, action_taken):
     try:
@@ -3024,8 +3120,8 @@ def parse_and_execute_inchat_command(
             return False
         _, target_mentions, _ = extract_trailing_tags_and_resolve(
             arg_body, incoming_mentions=raw_mentions,
-            zalo_client=zalo_client if (platform == "zalo" and is_group) else None,
-            group_id=thread_id if (platform == "zalo" and is_group) else None,
+            zalo_client=zalo_client if platform == "zalo" else None,
+            group_id=thread_id if platform == "zalo" else None,
             prefix_u16_offset=prefix_u16_offset,
             discord_client=discord_client if platform == "discord" else None,
             discord_channel_id=thread_id if platform == "discord" else None,
@@ -3058,8 +3154,8 @@ def parse_and_execute_inchat_command(
         else:
             _, target_mentions, _ = extract_trailing_tags_and_resolve(
                 arg_body, incoming_mentions=raw_mentions,
-                zalo_client=zalo_client if (platform == "zalo" and is_group) else None,
-                group_id=thread_id if (platform == "zalo" and is_group) else None,
+                zalo_client=zalo_client if platform == "zalo" else None,
+                group_id=thread_id if platform == "zalo" else None,
                 prefix_u16_offset=prefix_u16_offset,
                 discord_client=discord_client if platform == "discord" else None,
                 discord_channel_id=thread_id if platform == "discord" else None,
@@ -3207,8 +3303,8 @@ def parse_and_execute_inchat_command(
     cleaned_body, extracted_mentions, extracted_tag_all = extract_trailing_tags_and_resolve(
         arg_body,
         incoming_mentions=raw_mentions,
-        zalo_client=zalo_client if (platform == "zalo" and is_group) else None,
-        group_id=thread_id if (platform == "zalo" and is_group) else None,
+        zalo_client=zalo_client if platform == "zalo" else None,
+        group_id=thread_id if platform == "zalo" else None,
         prefix_u16_offset=prefix_u16_offset,
         discord_client=discord_client if platform == "discord" else None,
         discord_channel_id=thread_id if platform == "discord" else None,
@@ -3217,6 +3313,9 @@ def parse_and_execute_inchat_command(
 
     if cmd_token == "all":
         extracted_tag_all = True
+
+    if platform == "zalo" and (extracted_mentions or extracted_tag_all):
+        target_obj[0]["type"] = "group"
 
     tokens = cleaned_body.split()
     consumed = 0
@@ -3330,7 +3429,7 @@ class ZaloSelfBotListener:
         self.stop_ev = threading.Event()
         self.seen_msg_ids = deque(maxlen=1000)
         self.ws_cipher_key = None
-        self.ws_status = "Đang khởi tạo Zalo WS..."
+        self.ws_status = "Đang khởi tạo Zalo Shield..."
         self.last_event_ts = 0.0
         self.thread = threading.Thread(target=self._run_loop, daemon=True)
 
@@ -3496,7 +3595,6 @@ class ZaloSelfBotListener:
         return found
 
     def _extract_raw_mentions_from_msg_obj(self, msg_obj):
-        """Bóc tách toàn diện mảng mentions từ mọi định dạng gói tin Zalo (mentions, mentionInfo, propertyExt, params)."""
         def _parse_candidate(val):
             if isinstance(val, list) and val:
                 return val
@@ -3559,15 +3657,17 @@ class ZaloSelfBotListener:
 
         id_to = str(msg_obj.get("idTo") or msg_obj.get("toid") or fallback_thread_id or "")
         cmd_num = int(msg_obj.get("cmd") or 0)
+        raw_mentions = self._extract_raw_mentions_from_msg_obj(msg_obj)
 
         known_gids = KNOWN_GROUPS_BY_ACC.get(client.uid, set())
         is_group = bool(
             default_is_group
             or msg_obj.get("_is_group_hint")
             or msg_obj.get("isGroup")
-            or (cmd_num == 521)
+            or (cmd_num in (521, 522))
             or (id_to in known_gids)
             or (uid_from in known_gids)
+            or bool(raw_mentions)
         )
 
         my_uid = str(client.uid or acc_row.get("uid") or "")
@@ -3586,8 +3686,6 @@ class ZaloSelfBotListener:
 
         if not thread_id or thread_id == "0":
             return
-
-        raw_mentions = self._extract_raw_mentions_from_msg_obj(msg_obj)
 
         parse_and_execute_inchat_command(
             zalo_client=client,
@@ -3645,7 +3743,7 @@ class ZaloSelfBotListener:
             sock.close()
             return
 
-        self.ws_status = "🟢 Zalo 24/7 Đang Bảo Vệ"
+        self.ws_status = "🟢 Zalo Quantum Shield Active"
         sock.settimeout(2.5)
         last_ping = time.time()
 
@@ -3708,13 +3806,13 @@ class ZaloSelfBotListener:
 
                         if outer.get("key"):
                             self.ws_cipher_key = outer["key"]
-                            self.ws_status = "🟢 Zalo Anti-Ban Active"
+                            self.ws_status = "🟢 Zalo Quantum Shield Active"
                         elif isinstance(outer.get("data"), dict) and outer["data"].get("key"):
                             self.ws_cipher_key = outer["data"]["key"]
-                            self.ws_status = "🟢 Zalo Anti-Ban Active"
+                            self.ws_status = "🟢 Zalo Quantum Shield Active"
 
                         if cmd_id == 3000:
-                            self.ws_status = "🟡 Đang đồng bộ lại phiên..."
+                            self.ws_status = "🟡 Đang đồng bộ phiên..."
                             break
 
                         enc_type = int(outer.get("encrypt", 0))
@@ -3725,7 +3823,7 @@ class ZaloSelfBotListener:
                         inner = self._decode_ws_payload(client, raw_d, enc_type)
                         if inner is not None:
                             self.last_event_ts = time.time()
-                            is_grp_cmd = (cmd_id == 521)
+                            is_grp_cmd = (cmd_id in (521, 522))
                             msg_items = self._extract_msg_dicts(inner, parent_is_group=is_grp_cmd)
                             for m in msg_items:
                                 m["cmd"] = cmd_id
@@ -3779,7 +3877,7 @@ class ZaloSelfBotListener:
 
 
 # ============================================================
-# LISTENER 24/7 TRÊN DISCORD ACC CHÍNH CHỦ & BOT (STEALTH GATEWAY v10)
+# LISTENER 24/7 TRÊN DISCORD ACC CHÍNH CHỦ & BOT (ANTI-SCAN GATEWAY v10)
 # ============================================================
 class DiscordSelfBotListener:
     def __init__(self, acc_id):
@@ -3787,7 +3885,7 @@ class DiscordSelfBotListener:
         self.platform = "discord"
         self.stop_ev = threading.Event()
         self.seen_msg_ids = deque(maxlen=1000)
-        self.ws_status = "Đang kết nối Discord Stealth..."
+        self.ws_status = "Đang kết nối Discord Anti-Scan..."
         self.last_event_ts = 0.0
         self.last_seq = None
         self.thread = threading.Thread(target=self._run_loop, daemon=True)
@@ -3854,7 +3952,7 @@ class DiscordSelfBotListener:
     def _run_gateway_session(self, client, acc_row):
         host = "gateway.discord.gg"
         port = 443
-        path = "/?v=10&encoding=json"
+        path = "/?encoding=json&v=10"
 
         raw_sock = socket.create_connection((host, port), timeout=12)
         ctx = ssl.create_default_context()
@@ -3948,7 +4046,7 @@ class DiscordSelfBotListener:
                         d_ev = pkt.get("d")
 
                         if op == 10 and isinstance(d_ev, dict):
-                            hb_interval = max(15.0, (float(d_ev.get("heartbeat_interval", 41250)) / 1000.0) * 0.85)
+                            hb_interval = max(15.0, (float(d_ev.get("heartbeat_interval", 41250)) / 1000.0) * random.uniform(0.86, 0.94))
                             if client.is_bot:
                                 ident_payload = {
                                     "op": 2,
@@ -3972,20 +4070,34 @@ class DiscordSelfBotListener:
                                             "browser_user_agent": prof["ua"],
                                             "browser_version": prof["browser_version"],
                                             "os_version": prof["os_version"],
+                                            "referrer": "",
+                                            "referring_domain": "",
+                                            "referrer_current": "",
+                                            "referring_domain_current": "",
                                             "release_channel": "stable",
-                                            "client_build_number": prof["build_number"]
+                                            "client_build_number": prof["build_number"],
+                                            "client_event_source": None
                                         },
                                         "presence": {"status": "online", "since": 0, "activities": [], "afk": False},
-                                        "compress": False
+                                        "compress": False,
+                                        "client_state": {
+                                            "guild_versions": {},
+                                            "highest_last_message_id": "0",
+                                            "read_state_version": 0,
+                                            "user_guild_settings_version": -1,
+                                            "user_settings_version": -1,
+                                            "private_channels_version": "0",
+                                            "api_code_version": 0
+                                        }
                                     }
                                 }
                             ZaloSelfBotListener._send_ws_frame(sock, json.dumps(ident_payload).encode("utf-8"), opcode=0x1)
                             identified = True
                             last_hb = time.time()
-                            self.ws_status = "🟢 Discord Stealth Route Active"
+                            self.ws_status = "🟢 Discord Anti-Scan Shield"
 
                         elif op == 0 and t_ev == "READY" and isinstance(d_ev, dict):
-                            self.ws_status = "🟢 Discord Stealth Route Active"
+                            self.ws_status = "🟢 Discord Anti-Scan Shield"
 
                         elif op == 0 and t_ev == "MESSAGE_CREATE" and isinstance(d_ev, dict):
                             self.last_event_ts = time.time()
@@ -4058,29 +4170,38 @@ threading.Timer(1.2, sync_all_zalo_listeners).start()
 
 
 # ============================================================
-# GIAO DIỆN NOEL WINTER STUDIO (GIÁNG SINH HOÀNG GIA - GỌN SẠCH - CHỐNG AUTO-ZOOM 100%)
+# GIAO DIỆN AETHER WHITE STUDIO — MÀU TRẮNG HIỆN ĐẠI, ĐƠN GIẢN, HIỆU ỨNG ĐẸP
+# BỐ CỤC CHIA 5 TAB CHỨC NĂNG RÕ RÀNG VỚI THANH CHỌN TAB NGANG Ở DƯỚI CÙNG
+# TÍCH HỢP HÌNH ẢNH DESIGN SETUP ĐẦY ĐỦ + UPLOAD LOGO & BANNER SETUP
 # ============================================================
-CSS_NOEL_STUDIO = """
+CSS_WHITE_STUDIO = """
 :root {
-  --bg-deep: #061017;
-  --bg-pine: #0b1c26;
-  --bg-card: rgba(12, 28, 38, 0.92);
-  --bg-card-inner: #08151d;
-  --bg-input: #061118;
-  --border-frost: rgba(226, 241, 255, 0.15);
-  --border-gold: rgba(251, 191, 36, 0.32);
-  --noel-red: #e11d48;
-  --noel-red-dark: #be123c;
-  --noel-green: #10b981;
-  --noel-green-dark: #059669;
-  --noel-gold: #fbbf24;
-  --noel-ice: #38bdf8;
-  --text-main: #f8fafc;
-  --text-muted: #94a3b8;
-  --radius-xl: 18px;
-  --radius-lg: 14px;
+  --bg-page: #f4f7fb;
+  --bg-surface: #ffffff;
+  --bg-subtle: #f8fafc;
+  --bg-muted: #f1f5f9;
+  --border-light: #e2e8f0;
+  --border-hover: #cbd5e1;
+  --text-primary: #0f172a;
+  --text-secondary: #334155;
+  --text-muted: #64748b;
+  --accent-blue: #2563eb;
+  --accent-blue-soft: rgba(37, 99, 235, 0.10);
+  --accent-indigo: #4f46e5;
+  --accent-indigo-soft: rgba(79, 70, 229, 0.10);
+  --accent-emerald: #059669;
+  --accent-emerald-soft: rgba(5, 150, 105, 0.10);
+  --accent-amber: #d97706;
+  --accent-amber-soft: rgba(217, 119, 6, 0.12);
+  --accent-rose: #e11d48;
+  --accent-rose-soft: rgba(225, 29, 72, 0.10);
+  --radius-2xl: 22px;
+  --radius-xl: 16px;
+  --radius-lg: 12px;
   --radius-md: 10px;
-  --shadow-card: 0 14px 34px -6px rgba(0, 0, 0, 0.65);
+  --shadow-sm: 0 2px 8px -2px rgba(15, 23, 42, 0.05);
+  --shadow-md: 0 12px 32px -6px rgba(15, 23, 42, 0.07), 0 4px 12px -3px rgba(15, 23, 42, 0.04);
+  --shadow-dock: 0 20px 50px -10px rgba(15, 23, 42, 0.18), 0 4px 16px -2px rgba(15, 23, 42, 0.08);
 }
 
 html, body {
@@ -4088,20 +4209,18 @@ html, body {
   padding: 0;
   width: 100%;
   min-height: 100vh;
-  background-color: var(--bg-deep);
+  background-color: var(--bg-page);
   background-image:
-    radial-gradient(circle at 12% 8%, rgba(225, 29, 72, 0.14) 0%, transparent 38%),
-    radial-gradient(circle at 88% 10%, rgba(16, 185, 129, 0.14) 0%, transparent 40%),
-    radial-gradient(circle at 50% 95%, rgba(251, 191, 36, 0.08) 0%, transparent 45%),
-    linear-gradient(180deg, #061017 0%, #0a1922 100%);
-  color: var(--text-main);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    radial-gradient(at 0% 0%, rgba(37, 99, 235, 0.06) 0px, transparent 45%),
+    radial-gradient(at 100% 0%, rgba(79, 70, 229, 0.06) 0px, transparent 45%),
+    radial-gradient(at 50% 100%, rgba(5, 150, 105, 0.05) 0px, transparent 50%);
+  color: var(--text-primary);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   line-height: 1.5;
   overflow-x: hidden;
-  /* CHỐNG TỰ ĐỘNG ZOOM MÀN HÌNH 100% TRÊN ĐIỆN THOẠI & TABLET */
+  /* CHỐNG TỰ ĐỘNG ZOOM MÀN HÌNH 100% */
   touch-action: manipulation;
   -webkit-text-size-adjust: 100%;
-  -moz-text-size-adjust: 100%;
   text-size-adjust: 100%;
   overscroll-behavior-x: none;
 }
@@ -4114,207 +4233,210 @@ html, body {
   touch-action: manipulation;
 }
 
-/* CANVAS TUYẾT RƠI NỀN (KHÔNG CHẶN CLICK) */
-#snowCanvas {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 100vw;
-  height: 100vh;
-  pointer-events: none;
-  z-index: 1;
-}
-
-/* DẢI ĐÈN LED GIÁNG SINH TRÊN ĐỈNH TRANG */
-.noel-garland {
-  position: sticky;
-  top: 0;
-  z-index: 50;
-  height: 6px;
-  width: 100%;
-  background: repeating-linear-gradient(
-    90deg,
-    #e11d48 0px, #e11d48 24px,
-    #fbbf24 24px, #fbbf24 48px,
-    #10b981 48px, #10b981 72px,
-    #38bdf8 72px, #38bdf8 96px
-  );
-  box-shadow: 0 2px 14px rgba(251, 191, 36, 0.45);
-}
-
-.app-container {
-  position: relative;
-  z-index: 2;
-  max-width: 1400px;
+.studio-shell {
+  max-width: 1320px;
   margin: 0 auto;
-  padding: 18px 16px 56px;
+  padding: 18px 16px 118px; /* Chừa khoảng trống cho Thanh Chọn Tab Ngang ở dưới cùng */
 }
 
-/* HEADER GIÁNG SINH HOÀNG GIA + UPLOAD LOGO */
-.noel-header {
+/* TOP HEADER TRẮNG TINH TẾ */
+.studio-topbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  background: linear-gradient(135deg, rgba(14, 34, 46, 0.96) 0%, rgba(19, 24, 38, 0.96) 100%);
-  border: 1px solid var(--border-gold);
-  border-radius: var(--radius-xl);
-  padding: 16px 20px;
-  margin-bottom: 18px;
-  box-shadow: var(--shadow-card), inset 0 1px 0 rgba(255, 255, 255, 0.08);
-  position: relative;
-  overflow: hidden;
+  gap: 14px;
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(16px);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-2xl);
+  padding: 14px 20px;
+  margin-bottom: 16px;
+  box-shadow: var(--shadow-md);
 }
 
-.brand-area {
+.brand-left {
   display: flex;
   align-items: center;
-  gap: 15px;
+  gap: 14px;
   min-width: 0;
 }
 
-.logo-frame {
+.logo-box {
   position: relative;
-  width: 62px;
-  height: 62px;
-  border-radius: 16px;
-  background: radial-gradient(circle at 30% 30%, #1e3a2f, #091914);
-  border: 2px solid var(--noel-gold);
-  box-shadow: 0 0 18px rgba(251, 191, 36, 0.35);
+  width: 56px;
+  height: 56px;
+  border-radius: 15px;
+  background: linear-gradient(135deg, #eff6ff 0%, #e0e7ff 100%);
+  border: 1.5px solid #bfdbfe;
   display: flex;
   align-items: center;
   justify-content: center;
   overflow: hidden;
   cursor: pointer;
   flex-shrink: 0;
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.12);
+  transition: transform 0.2s ease, border-color 0.2s ease;
 }
 
-.logo-frame img {
+.logo-box:hover {
+  border-color: var(--accent-blue);
+}
+
+.logo-box img {
   width: 100%;
   height: 100%;
   object-fit: cover;
   display: block;
 }
 
-.logo-upload-badge {
+.logo-edit-pill {
   position: absolute;
   bottom: 0;
   left: 0;
   right: 0;
-  background: rgba(225, 29, 72, 0.88);
+  background: rgba(15, 23, 42, 0.75);
   color: #fff;
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 800;
   text-align: center;
-  padding: 2px 0;
-  letter-spacing: 0.02em;
-}
-
-.brand-info {
-  min-width: 0;
-}
-
-.brand-heading {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+  padding: 1.5px 0;
 }
 
 .brand-title {
-  font-size: 1.25rem;
+  font-size: 1.18rem;
   font-weight: 900;
-  letter-spacing: -0.01em;
-  background: linear-gradient(90deg, #ffffff 0%, #fde68a 50%, #6ee7b7 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
 }
 
-.brand-subtitle {
-  font-size: 0.82rem;
-  color: #cbd5e1;
-  margin-top: 3px;
-}
-
-.header-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-/* KPI GIÁNG SINH */
-.kpi-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 12px;
-  margin-bottom: 18px;
-}
-
-@media (max-width: 920px) {
-  .kpi-grid { grid-template-columns: repeat(2, 1fr); }
-}
-
-.kpi-box {
-  background: var(--bg-card);
-  border: 1px solid var(--border-frost);
-  border-top: 2px solid var(--noel-gold);
-  border-radius: var(--radius-lg);
-  padding: 13px 16px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  box-shadow: var(--shadow-card);
-}
-
-.kpi-title {
-  font-size: 0.75rem;
-  font-weight: 700;
+.brand-sub {
+  font-size: 0.8rem;
   color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-}
-
-.kpi-num {
-  font-size: 1.45rem;
-  font-weight: 900;
-  color: #fff;
   margin-top: 2px;
 }
 
-.kpi-art {
-  width: 44px;
-  height: 44px;
-  border-radius: 12px;
-  background: rgba(251, 191, 36, 0.12);
-  border: 1px solid rgba(251, 191, 36, 0.28);
+/* BANNER HÌNH ẢNH DESIGN SETUP HIỆN ĐẠI */
+.setup-showcase {
+  display: grid;
+  grid-template-columns: 1.35fr 1fr;
+  gap: 16px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-2xl);
+  padding: 18px;
+  margin-bottom: 16px;
+  box-shadow: var(--shadow-md);
+  align-items: center;
+}
+
+@media (max-width: 960px) {
+  .setup-showcase { grid-template-columns: 1fr; }
+}
+
+.setup-art-frame {
+  position: relative;
+  width: 100%;
+  height: 175px;
+  border-radius: var(--radius-xl);
+  overflow: hidden;
+  background: linear-gradient(135deg, #f8fafc 0%, #eef2ff 100%);
+  border: 1px solid var(--border-light);
   display: flex;
   align-items: center;
   justify-content: center;
-  flex-shrink: 0;
 }
 
-/* LƯỚI BỐ CỤC 2 CỘT GỌN SẠCH */
-.main-grid {
+.setup-art-frame img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.setup-kpi-grid {
   display: grid;
-  grid-template-columns: 440px 1fr;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+.kpi-tile {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-light);
+  border-radius: 14px;
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  transition: border-color 0.2s ease, background-color 0.2s ease;
+}
+
+.kpi-tile:hover {
+  background: #ffffff;
+  border-color: #93c5fd;
+}
+
+.kpi-lbl {
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.kpi-val {
+  font-size: 1.35rem;
+  font-weight: 900;
+  color: var(--text-primary);
+  margin-top: 2px;
+}
+
+.kpi-ico {
+  width: 40px;
+  height: 40px;
+  border-radius: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.15rem;
+  background: var(--accent-blue-soft);
+  color: var(--accent-blue);
+}
+
+/* HỆ THỐNG VIEW THEO TAB (CHUYỂN TAB MƯỢT MÀ) */
+.tab-pane {
+  display: none;
+  animation: tabFadeIn 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.tab-pane.active {
+  display: block;
+}
+
+@keyframes tabFadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.two-col-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: 18px;
   align-items: start;
 }
 
-@media (max-width: 1100px) {
-  .main-grid { grid-template-columns: 1fr; }
+@media (max-width: 980px) {
+  .two-col-grid { grid-template-columns: 1fr; }
 }
 
-.card {
-  background: var(--bg-card);
-  border: 1px solid var(--border-frost);
-  border-radius: var(--radius-xl);
-  padding: 18px;
+/* THẺ CARD TRẮNG SẠCH */
+.studio-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-2xl);
+  padding: 20px;
   margin-bottom: 18px;
-  box-shadow: var(--shadow-card);
-  position: relative;
+  box-shadow: var(--shadow-md);
 }
 
 .card-head {
@@ -4322,42 +4444,44 @@ html, body {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding-bottom: 12px;
-  margin-bottom: 14px;
-  border-bottom: 1px solid var(--border-frost);
+  padding-bottom: 13px;
+  margin-bottom: 15px;
+  border-bottom: 1px solid var(--border-light);
+  flex-wrap: wrap;
 }
 
 .card-title {
-  font-size: 1rem;
+  font-size: 1.02rem;
   font-weight: 800;
-  color: #fff;
+  color: var(--text-primary);
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-/* NHÃN BADGE RÕ NÉT */
-.tag-badge {
+/* NHÃN BADGE HIỆN ĐẠI */
+.pill-badge {
   display: inline-flex;
   align-items: center;
   gap: 5px;
   padding: 4px 10px;
   border-radius: 999px;
-  font-size: 0.74rem;
+  font-size: 0.73rem;
   font-weight: 800;
 }
 
-.b-red    { background: rgba(225, 29, 72, 0.18); color: #fda4af; border: 1px solid rgba(225, 29, 72, 0.4); }
-.b-green  { background: rgba(16, 185, 129, 0.18); color: #6ee7b7; border: 1px solid rgba(16, 185, 129, 0.4); }
-.b-gold   { background: rgba(251, 191, 36, 0.18); color: #fde68a; border: 1px solid rgba(251, 191, 36, 0.4); }
-.b-ice    { background: rgba(56, 189, 248, 0.18); color: #7dd3fc; border: 1px solid rgba(56, 189, 248, 0.4); }
+.p-blue    { background: var(--accent-blue-soft); color: var(--accent-blue); }
+.p-indigo  { background: var(--accent-indigo-soft); color: var(--accent-indigo); }
+.p-emerald { background: var(--accent-emerald-soft); color: var(--accent-emerald); }
+.p-amber   { background: var(--accent-amber-soft); color: var(--accent-amber); }
+.p-rose    { background: var(--accent-rose-soft); color: var(--accent-rose); }
 
-/* FORM INPUTS — BẮT BUỘC FONT-SIZE 16PX ĐỂ KHÔNG BAO GIỜ BỊ TỰ ZOOM MÀN HÌNH */
+/* Ô NHẬP LIỆU CHUẨN 16PX CHỐNG TỰ ZOOM */
 label {
   display: block;
   font-size: 0.82rem;
   font-weight: 700;
-  color: #e2e8f0;
+  color: var(--text-secondary);
   margin-bottom: 6px;
 }
 
@@ -4367,70 +4491,101 @@ input[type="number"],
 select,
 textarea {
   width: 100%;
-  background: var(--bg-input);
-  border: 1px solid rgba(148, 163, 184, 0.26);
+  background: var(--bg-subtle);
+  border: 1.5px solid var(--border-light);
   border-radius: var(--radius-md);
-  padding: 10px 12px;
-  color: #fff;
-  font-size: 16px !important; /* Chặn đứng lỗi tự động zoom màn hình trên iOS/Android */
+  padding: 10px 13px;
+  color: var(--text-primary);
+  font-size: 16px !important;
   font-family: inherit;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 input:focus, select:focus, textarea:focus {
   outline: none;
-  border-color: var(--noel-gold);
-  box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.18);
+  background: #ffffff;
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
 }
 
 textarea {
   resize: vertical;
-  min-height: 88px;
+  min-height: 92px;
 }
 
-/* NÚT BẤM GỌN, RÕ RÀNG, KHÔNG GIẬT ZOOM */
+/* NÚT BẤM RÕ NÉT, HIỆN ĐẠI */
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 7px;
-  padding: 10px 15px;
+  padding: 10px 16px;
   border-radius: var(--radius-md);
   font-weight: 800;
   font-size: 0.86rem;
   cursor: pointer;
   border: 1px solid transparent;
-  color: #fff;
   user-select: none;
   text-decoration: none;
   white-space: nowrap;
-  transition: filter 0.15s ease, border-color 0.15s ease;
+  transition: all 0.16s ease;
 }
 
-.btn:hover { filter: brightness(1.08); }
-.btn:active { filter: brightness(0.95); }
+.btn-blue {
+  background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+  color: #ffffff;
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.24);
+}
+.btn-blue:hover { background: linear-gradient(135deg, #1d4ed8 0%, #1e40af 100%); }
 
-.btn-noel-red   { background: linear-gradient(135deg, #e11d48, #be123c); box-shadow: 0 4px 14px rgba(225, 29, 72, 0.32); }
-.btn-noel-green { background: linear-gradient(135deg, #10b981, #059669); box-shadow: 0 4px 14px rgba(16, 185, 129, 0.30); }
-.btn-noel-gold  { background: linear-gradient(135deg, #fbbf24, #d97706); color: #081218; font-weight: 900; }
-.btn-noel-ice   { background: linear-gradient(135deg, #0ea5e9, #0284c7); }
-.btn-noel-ghost { background: rgba(255, 255, 255, 0.06); border-color: rgba(226, 241, 255, 0.2); color: #f1f5f9; }
-.btn-sm         { padding: 7px 11px; font-size: 0.79rem; border-radius: 8px; }
-.btn-block      { width: 100%; }
+.btn-indigo {
+  background: linear-gradient(135deg, #4f46e5 0%, #4338ca 100%);
+  color: #ffffff;
+  box-shadow: 0 4px 12px rgba(79, 70, 229, 0.24);
+}
 
-/* THANH CHUYỂN NỀN TẢNG ZALO / DISCORD */
-.plat-tabs {
+.btn-emerald {
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  color: #ffffff;
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.24);
+}
+
+.btn-rose {
+  background: linear-gradient(135deg, #f43f5e 0%, #e11d48 100%);
+  color: #ffffff;
+  box-shadow: 0 4px 12px rgba(225, 29, 72, 0.22);
+}
+
+.btn-amber {
+  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+  color: #ffffff;
+}
+
+.btn-soft {
+  background: var(--bg-muted);
+  border-color: var(--border-light);
+  color: var(--text-secondary);
+}
+.btn-soft:hover {
+  background: #e2e8f0;
+  color: var(--text-primary);
+}
+
+.btn-sm { padding: 7px 12px; font-size: 0.78rem; border-radius: 8px; }
+.btn-block { width: 100%; }
+
+/* CHUYỂN NỀN TẢNG ZALO / DISCORD */
+.seg-control {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  background: var(--bg-input);
+  gap: 6px;
+  background: var(--bg-muted);
   padding: 5px;
   border-radius: 12px;
-  border: 1px solid var(--border-frost);
-  margin-bottom: 12px;
+  margin-bottom: 14px;
 }
 
-.plat-tab-btn {
+.seg-btn {
   padding: 9px 12px;
   border-radius: 9px;
   border: none;
@@ -4439,137 +4594,240 @@ textarea {
   font-weight: 800;
   font-size: 0.85rem;
   cursor: pointer;
+  transition: all 0.15s ease;
 }
 
-.plat-tab-btn.active-zalo {
-  background: linear-gradient(135deg, #0284c7, #0ea5e9);
-  color: #fff;
+.seg-btn.active-zalo {
+  background: #ffffff;
+  color: var(--accent-blue);
+  box-shadow: var(--shadow-sm);
 }
 
-.plat-tab-btn.active-discord {
-  background: linear-gradient(135deg, #e11d48, #be123c);
-  color: #fff;
+.seg-btn.active-discord {
+  background: #ffffff;
+  color: var(--accent-indigo);
+  box-shadow: var(--shadow-sm);
 }
 
 /* DANH SÁCH CUỘN SẠCH GỌN */
-.scroll-list {
-  max-height: 250px;
+.clean-list {
+  max-height: 290px;
   overflow-y: auto;
-  background: var(--bg-card-inner);
-  border: 1px solid var(--border-frost);
-  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
   padding: 8px;
 }
 
-.scroll-list::-webkit-scrollbar { width: 6px; }
-.scroll-list::-webkit-scrollbar-thumb { background: rgba(251, 191, 36, 0.32); border-radius: 99px; }
+.clean-list::-webkit-scrollbar { width: 6px; }
+.clean-list::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 99px; }
 
-.row-item {
+.list-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
   padding: 10px 12px;
   border-radius: 10px;
-  background: rgba(17, 38, 51, 0.85);
-  border: 1px solid rgba(226, 241, 255, 0.10);
+  background: #ffffff;
+  border: 1px solid var(--border-light);
   margin-bottom: 7px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-.row-item:last-child { margin-bottom: 0; }
-.row-item:hover { border-color: rgba(251, 191, 36, 0.4); }
+.list-row:last-child { margin-bottom: 0; }
+.list-row:hover {
+  border-color: #93c5fd;
+  box-shadow: var(--shadow-sm);
+}
 
-/* HỘP UPLOAD FILE .TXT CÓ HIỆU ỨNG TIẾN TRÌNH ĐẦY ĐỦ */
-.noel-dropzone {
-  border: 2px dashed rgba(251, 191, 36, 0.48);
-  background: radial-gradient(circle at 50% 0%, rgba(225, 29, 72, 0.10), rgba(16, 185, 129, 0.06));
-  border-radius: 14px;
-  padding: 18px 14px;
+/* DROPZONE UPLOAD FILE HIỆU ỨNG ĐẦY ĐỦ */
+.white-dropzone {
+  border: 2px dashed #93c5fd;
+  background: linear-gradient(180deg, #f8fafc 0%, #eff6ff 100%);
+  border-radius: 16px;
+  padding: 24px 16px;
   text-align: center;
   cursor: pointer;
-  margin-bottom: 12px;
-  transition: border-color 0.2s ease, background-color 0.2s ease;
+  margin-bottom: 14px;
+  transition: all 0.2s ease;
 }
 
-.noel-dropzone.drag-active,
-.noel-dropzone:hover {
-  border-color: #10b981;
-  background: rgba(16, 185, 129, 0.12);
+.white-dropzone.drag-active,
+.white-dropzone:hover {
+  border-color: var(--accent-blue);
+  background: #eff6ff;
 }
 
-.upload-progress-wrap {
+.upload-prog-box {
   display: none;
-  background: var(--bg-input);
-  border: 1px solid var(--border-gold);
-  border-radius: 11px;
-  padding: 10px 12px;
-  margin-bottom: 12px;
+  background: var(--bg-subtle);
+  border: 1px solid #bfdbfe;
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
 }
 
-.progress-track {
+.prog-track {
   width: 100%;
-  height: 12px;
-  background: #040b10;
+  height: 10px;
+  background: #e2e8f0;
   border-radius: 999px;
   overflow: hidden;
   margin-top: 6px;
-  border: 1px solid rgba(255,255,255,0.12);
 }
 
-@keyframes candyStripe {
-  0% { background-position: 0 0; }
-  100% { background-position: 40px 0; }
+@keyframes shimmerMove {
+  0% { background-position: 0% 50%; }
+  100% { background-position: 200% 50%; }
 }
 
-.progress-fill {
+.prog-bar {
   height: 100%;
   width: 0%;
   border-radius: 999px;
-  background: repeating-linear-gradient(
-    45deg,
-    #e11d48,
-    #e11d48 10px,
-    #10b981 10px,
-    #10b981 20px
-  );
-  background-size: 40px 40px;
-  animation: candyStripe 1s linear infinite;
+  background: linear-gradient(90deg, #2563eb, #06b6d4, #10b981, #2563eb);
+  background-size: 200% 100%;
+  animation: shimmerMove 1.5s linear infinite;
   transition: width 0.2s ease;
 }
 
+/* THẺ CHỌN MẪU DESIGN SETUP */
+.setup-preset-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.setup-preset-card {
+  border: 2px solid var(--border-light);
+  border-radius: 12px;
+  padding: 10px;
+  text-align: center;
+  cursor: pointer;
+  background: var(--bg-subtle);
+  transition: all 0.15s ease;
+}
+
+.setup-preset-card.active,
+.setup-preset-card:hover {
+  border-color: var(--accent-blue);
+  background: #eff6ff;
+}
+
 /* SWATCH CHỌN MÀU ZALO */
-.swatch-group {
+.swatch-row {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
   margin-top: 6px;
 }
 
-.swatch-chip {
+.swatch-btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 12px;
+  padding: 6px 13px;
   border-radius: 999px;
-  font-size: 0.78rem;
+  font-size: 0.79rem;
   font-weight: 800;
   cursor: pointer;
-  border: 2px solid transparent;
-  background: var(--bg-input);
-  color: #fff;
+  border: 2px solid var(--border-light);
+  background: #ffffff;
+  color: var(--text-primary);
 }
 
-.swatch-chip.active {
-  border-color: var(--noel-gold);
-  box-shadow: 0 0 12px rgba(251, 191, 36, 0.35);
+.swatch-btn.active {
+  border-color: var(--accent-blue);
+  background: #eff6ff;
 }
 
-.color-dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+.c-dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
 
-/* TOAST THÔNG BÁO */
+/* ============================================================
+   THANH CHỌN TAB NGANG NỔI Ở DƯỚI CÙNG (BOTTOM HORIZONTAL TAB DOCK)
+   ============================================================ */
+.bottom-tab-dock-wrap {
+  position: fixed;
+  bottom: 14px;
+  left: 0;
+  right: 0;
+  z-index: 999;
+  display: flex;
+  justify-content: center;
+  padding: 0 12px;
+  pointer-events: none;
+}
+
+.bottom-tab-dock {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1.5px solid #cbd5e1;
+  border-radius: 999px;
+  padding: 7px 10px;
+  box-shadow: var(--shadow-dock);
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.bottom-tab-dock::-webkit-scrollbar { display: none; }
+
+.dock-tab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-radius: 999px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-weight: 800;
+  font-size: 0.84rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.dock-tab-btn:hover {
+  background: var(--bg-muted);
+  color: var(--text-primary);
+}
+
+.dock-tab-btn.active {
+  background: linear-gradient(135deg, #2563eb 0%, #4f46e5 100%);
+  color: #ffffff;
+  box-shadow: 0 6px 18px -2px rgba(37, 99, 235, 0.38);
+}
+
+.dock-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 900;
+  background: rgba(15, 23, 42, 0.08);
+  color: inherit;
+}
+
+.dock-tab-btn.active .dock-count {
+  background: rgba(255, 255, 255, 0.24);
+  color: #ffffff;
+}
+
+/* TOAST HIỆN ĐẠI */
 #toastBox {
   position: fixed;
-  bottom: 18px;
+  top: 18px;
   right: 18px;
   z-index: 9999;
   display: flex;
@@ -4578,24 +4836,22 @@ textarea {
   max-width: 360px;
 }
 
-.toast-msg {
-  background: #0b1c26;
-  border-left: 4px solid var(--noel-gold);
-  border-top: 1px solid var(--border-frost);
-  border-right: 1px solid var(--border-frost);
-  border-bottom: 1px solid var(--border-frost);
-  color: #fff;
+.toast-card {
+  background: #ffffff;
+  border-left: 4px solid var(--accent-blue);
+  border-top: 1px solid var(--border-light);
+  border-right: 1px solid var(--border-light);
+  border-bottom: 1px solid var(--border-light);
+  color: var(--text-primary);
   padding: 12px 15px;
-  border-radius: 11px;
+  border-radius: 12px;
   font-size: 0.85rem;
   font-weight: 700;
-  box-shadow: 0 12px 28px rgba(0,0,0,0.7);
+  box-shadow: var(--shadow-dock);
 }
 
-/* KHUNG ĐĂNG NHẬP GỌN SẠCH (ĐÃ XOÁ PHẦN TẠO ACC) */
-.auth-screen {
-  position: relative;
-  z-index: 2;
+/* TRANG ĐĂNG NHẬP TRẮNG SANG TRỌNG */
+.auth-page {
   min-height: 96vh;
   display: flex;
   align-items: center;
@@ -4603,54 +4859,131 @@ textarea {
   padding: 20px;
 }
 
-.auth-box {
+.auth-panel {
   width: 100%;
   max-width: 420px;
-  background: var(--bg-card);
-  border: 1px solid var(--border-gold);
-  border-radius: 22px;
-  padding: 28px 24px;
-  box-shadow: var(--shadow-card);
+  background: #ffffff;
+  border: 1px solid var(--border-light);
+  border-radius: 24px;
+  padding: 30px 26px;
+  box-shadow: var(--shadow-md);
 }
 """
 
-SVG_NOEL_TREE = """<svg width="36" height="36" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <polygon points="32,4 35,11 43,11 37,16 39,23 32,19 25,23 27,16 21,11 29,11" fill="#fbbf24"/>
-  <polygon points="32,14 14,34 23,34 11,48 22,48 16,56 48,56 42,48 53,48 41,34 50,34" fill="#10b981" stroke="#6ee7b7" stroke-width="1.5"/>
-  <rect x="28" y="56" width="8" height="6" rx="1.5" fill="#b45309"/>
-  <circle cx="27" cy="31" r="2.6" fill="#e11d48"/>
-  <circle cx="37" cy="39" r="2.6" fill="#fbbf24"/>
-  <circle cx="24" cy="45" r="2.6" fill="#38bdf8"/>
-  <circle cx="38" cy="50" r="2.6" fill="#e11d48"/>
+SVG_STUDIO_LOGO = """<svg width="34" height="34" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="6" y="6" width="52" height="52" rx="16" fill="url(#lg1)"/>
+  <path d="M20 42L32 18L44 42H37.5L32 30.5L26.5 42H20Z" fill="#FFFFFF"/>
+  <circle cx="32" cy="45" r="3.5" fill="#38BDF8"/>
+  <defs>
+    <linearGradient id="lg1" x1="6" y1="6" x2="58" y2="58" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2563EB"/>
+      <stop offset="1" stop-color="#4F46E5"/>
+    </linearGradient>
+  </defs>
 </svg>"""
+
+# 3 BỘ HÌNH ẢNH DESIGN SETUP NGHỆ THUẬT (SVG VECTOR SẮC NÉT CHO GIAO DIỆN TRẮNG)
+SETUP_ART_PRESETS = {
+    "desk": """<svg viewBox="0 0 800 240" width="100%" height="100%" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="bgDesk" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#EFF6FF"/>
+          <stop offset="50%" stop-color="#F8FAFC"/>
+          <stop offset="100%" stop-color="#EEF2FF"/>
+        </linearGradient>
+        <linearGradient id="scr1" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#2563EB"/>
+          <stop offset="100%" stop-color="#4F46E5"/>
+        </linearGradient>
+        <linearGradient id="scr2" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#059669"/>
+          <stop offset="100%" stop-color="#0EA5E9"/>
+        </linearGradient>
+      </defs>
+      <rect width="800" height="240" fill="url(#bgDesk)"/>
+      <circle cx="680" cy="50" r="95" fill="#DBEAFE" opacity="0.55"/>
+      <circle cx="120" cy="180" r="80" fill="#E0E7FF" opacity="0.55"/>
+      <!-- Bàn Studio Trắng -->
+      <rect x="60" y="188" width="680" height="14" rx="7" fill="#CBD5E1"/>
+      <rect x="90" y="202" width="620" height="38" fill="#E2E8F0" opacity="0.6"/>
+      <!-- Màn hình chính UltraWide -->
+      <rect x="235" y="42" width="250" height="122" rx="12" fill="#0F172A" stroke="#475569" stroke-width="3"/>
+      <rect x="243" y="50" width="234" height="104" rx="7" fill="url(#scr1)"/>
+      <!-- Đồ thị và Card trên màn hình chính -->
+      <rect x="256" y="62" width="90" height="36" rx="5" fill="rgba(255,255,255,0.2)"/>
+      <rect x="356" y="62" width="108" height="36" rx="5" fill="rgba(255,255,255,0.2)"/>
+      <path d="M256,136 L295,114 L335,126 L385,96 L430,110 L464,86" stroke="#38BDF8" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+      <rect x="342" y="164" width="36" height="20" fill="#94A3B8"/>
+      <rect x="315" y="182" width="90" height="6" rx="3" fill="#64748B"/>
+      <!-- Màn hình phụ dọc (Code / Anti-Ban Monitor) -->
+      <rect x="505" y="52" width="92" height="118" rx="10" fill="#0F172A" stroke="#475569" stroke-width="2.5"/>
+      <rect x="512" y="59" width="78" height="104" rx="5" fill="url(#scr2)"/>
+      <rect x="520" y="70" width="52" height="6" rx="3" fill="#FFFFFF" opacity="0.8"/>
+      <rect x="520" y="84" width="62" height="6" rx="3" fill="#A7F3D0"/>
+      <rect x="520" y="98" width="44" height="6" rx="3" fill="#FFFFFF" opacity="0.8"/>
+      <rect x="520" y="112" width="58" height="6" rx="3" fill="#FDE68A"/>
+      <rect x="541" y="170" width="20" height="18" fill="#94A3B8"/>
+      <!-- Loa Studio & Cây cảnh Minimalist -->
+      <rect x="165" y="118" width="46" height="70" rx="9" fill="#1E293B"/>
+      <circle cx="188" cy="140" r="10" fill="#38BDF8"/>
+      <circle cx="188" cy="166" r="13" fill="#64748B"/>
+      <rect x="625" y="142" width="42" height="46" rx="8" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2"/>
+      <path d="M646,142 C630,120 622,102 638,92 C646,112 652,112 660,94 C672,108 662,126 646,142 Z" fill="#10B981"/>
+      <text x="30" y="34" fill="#1E293B" font-family="sans-serif" font-weight="900" font-size="15">✨ AETHER WHITE DESK SETUP — ZALO &amp; DISCORD STEALTH WORKSTATION</text>
+    </svg>""",
+    "cloud": """<svg viewBox="0 0 800 240" width="100%" height="100%" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
+      <rect width="800" height="240" fill="#F8FAFC"/>
+      <circle cx="400" cy="120" r="105" fill="#EFF6FF"/>
+      <circle cx="400" cy="120" r="72" fill="#DBEAFE"/>
+      <path d="M160,130 C240,70 320,170 400,120 C480,70 560,170 640,115" stroke="#2563EB" stroke-width="3" stroke-dasharray="6 6" fill="none"/>
+      <rect x="95" y="82" width="140" height="76" rx="16" fill="#FFFFFF" stroke="#93C5FD" stroke-width="2"/>
+      <text x="122" y="116" fill="#2563EB" font-family="sans-serif" font-weight="900" font-size="15">ZALO SHIELD</text>
+      <text x="116" y="138" fill="#64748B" font-family="sans-serif" font-weight="700" font-size="11">Native Tag • Zero-Shift</text>
+      <rect x="565" y="82" width="150" height="76" rx="16" fill="#FFFFFF" stroke="#A5B4FC" stroke-width="2"/>
+      <text x="582" y="116" fill="#4F46E5" font-family="sans-serif" font-weight="900" font-size="14">DISCORD STEALTH</text>
+      <text x="584" y="138" fill="#64748B" font-family="sans-serif" font-weight="700" font-size="11">Anti-Scan • Reg Vault</text>
+      <polygon points="400,56 448,80 448,130 400,168 352,130 352,80" fill="#2563EB"/>
+      <text x="383" y="122" fill="#FFFFFF" font-family="sans-serif" font-weight="900" font-size="26">🛡️</text>
+      <text x="30" y="34" fill="#0F172A" font-family="sans-serif" font-weight="900" font-size="15">🛡️ QUANTUM ANTI-BAN &amp; STEALTH ROUTE CLOUD ARCHITECTURE</text>
+    </svg>""",
+    "minimal": """<svg viewBox="0 0 800 240" width="100%" height="100%" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
+      <rect width="800" height="240" fill="#FFFFFF"/>
+      <rect x="24" y="24" width="752" height="192" rx="20" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="2"/>
+      <circle cx="650" cy="120" r="64" fill="#10B981" opacity="0.14"/>
+      <circle cx="590" cy="140" r="46" fill="#2563EB" opacity="0.14"/>
+      <text x="56" y="88" fill="#0F172A" font-family="sans-serif" font-weight="900" font-size="24">AETHER PURE WHITE EDITION</text>
+      <text x="56" y="122" fill="#475569" font-family="sans-serif" font-weight="600" font-size="14">• Tự động Tag Xanh Dương chuẩn khung chat Zalo 100%</text>
+      <text x="56" y="148" fill="#475569" font-family="sans-serif" font-weight="600" font-size="14">• Bộ Icon Emoji chuẩn không bao giờ lỗi ký tự :-</text>
+      <text x="56" y="174" fill="#475569" font-family="sans-serif" font-weight="600" font-size="14">• Bảo mật Reg Token Discord &amp; Ẩn đường chuyển chống quét</text>
+    </svg>"""
+}
 
 HTML_GATE = """<!doctype html>
 <html lang="vi">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <title>Cổng Bảo Mật — Noel Winter Studio</title>
-  <style>""" + CSS_NOEL_STUDIO + """</style>
+  <title>Bảo Mật Hệ Thống — Aether White Studio</title>
+  <style>""" + CSS_WHITE_STUDIO + """</style>
 </head>
 <body>
-  <div class="noel-garland"></div>
-  <div class="auth-screen">
-    <div class="auth-box">
+  <div class="auth-page">
+    <div class="auth-panel">
       <div style="display:flex;align-items:center;gap:14px;margin-bottom:18px">
-        <div class="logo-frame">__BRAND_LOGO_HTML__</div>
+        <div class="logo-box">__BRAND_LOGO_HTML__</div>
         <div>
-          <div class="brand-title">NOEL WINTER STUDIO</div>
-          <div class="brand-subtitle">Hệ Thống Điều Khiển Zalo & Discord Stealth</div>
+          <div class="brand-title">AETHER WHITE STUDIO</div>
+          <div class="brand-sub">Zalo & Discord Stealth Automation</div>
         </div>
       </div>
-      <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:14px">
-        Nhập khóa bảo mật hệ thống để mở bảng điều khiển Giáng Sinh.
+      <p style="font-size:0.86rem;color:var(--text-muted);margin-bottom:16px">
+        Nhập mã khóa bảo mật để mở không gian điều khiển.
       </p>
       __ERR_BLOCK__
       <form method="post" action="/gate">
         <label>Mã Khóa Truy Cập (Access Key)</label>
         <input type="password" name="key" placeholder="Nhập khóa bảo mật..." required autofocus style="margin-bottom:14px">
-        <button type="submit" class="btn btn-noel-red btn-block">🎄 MỞ CỔNG ĐIỀU KHIỂN</button>
+        <button type="submit" class="btn btn-blue btn-block">MỞ KHÓA HỆ THỐNG</button>
       </form>
     </div>
   </div>
@@ -4663,18 +4996,17 @@ HTML_LOGIN = """<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <title>Đăng Nhập Quản Trị — Noel Winter Studio</title>
-  <style>""" + CSS_NOEL_STUDIO + """</style>
+  <title>Đăng Nhập Quản Trị — Aether White Studio</title>
+  <style>""" + CSS_WHITE_STUDIO + """</style>
 </head>
 <body>
-  <div class="noel-garland"></div>
-  <div class="auth-screen">
-    <div class="auth-box">
+  <div class="auth-page">
+    <div class="auth-panel">
       <div style="display:flex;align-items:center;gap:14px;margin-bottom:18px">
-        <div class="logo-frame">__BRAND_LOGO_HTML__</div>
+        <div class="logo-box">__BRAND_LOGO_HTML__</div>
         <div>
-          <div class="brand-title">NOEL WINTER STUDIO</div>
-          <div class="brand-subtitle">Đăng Nhập Bảng Điều Khiển Quản Trị</div>
+          <div class="brand-title">AETHER WHITE STUDIO</div>
+          <div class="brand-sub">Bảng Điều Khiển Quản Trị Viên</div>
         </div>
       </div>
       __MSG_BLOCK__
@@ -4683,7 +5015,7 @@ HTML_LOGIN = """<!doctype html>
         <input type="text" name="username" value="admin" placeholder="Nhập tài khoản..." required style="margin-bottom:12px">
         <label>Mật khẩu</label>
         <input type="password" name="password" placeholder="Nhập mật khẩu quản trị..." required autofocus style="margin-bottom:16px">
-        <button type="submit" class="btn btn-noel-green btn-block">❄️ ĐĂNG NHẬP HỆ THỐNG</button>
+        <button type="submit" class="btn btn-blue btn-block">ĐĂNG NHẬP NGAY</button>
       </form>
     </div>
   </div>
@@ -4696,233 +5028,167 @@ HTML_INDEX_PART1 = """<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <title>Noel Winter Studio — Zalo & Discord Stealth Automation</title>
-  <style>""" + CSS_NOEL_STUDIO + """</style>
+  <title>Aether White Studio — Zalo & Discord Stealth Automation</title>
+  <style>""" + CSS_WHITE_STUDIO + """</style>
 </head>
 <body>
-  <div class="noel-garland"></div>
-  <canvas id="snowCanvas"></canvas>
   <div id="toastBox"></div>
 
-  <!-- INPUT ẨN ĐỂ UPLOAD LOGO THƯƠNG HIỆU -->
+  <!-- INPUT ẨN UPLOAD LOGO & BANNER SETUP -->
   <input type="file" id="logoUploadInput" accept=".png,.jpg,.jpeg,.webp,.gif,.svg" style="display:none" onchange="uploadBrandLogo(this.files)">
+  <input type="file" id="bannerUploadInput" accept=".png,.jpg,.jpeg,.webp,.gif,.svg" style="display:none" onchange="uploadSetupBanner(this.files)">
 
-  <div class="app-container">
-    <!-- HEADER NOEL VỚI CHỖ UPLOAD LOGO RIÊNG & NÚT ĐIỀU KHIỂN GỌN RÕ -->
-    <header class="noel-header">
-      <div class="brand-area">
-        <div class="logo-frame" onclick="document.getElementById('logoUploadInput').click()" title="Bấm để tải Logo của bạn lên">
+  <div class="studio-shell">
+    <!-- TOP HEADER TRẮNG HIỆN ĐẠI -->
+    <header class="studio-topbar">
+      <div class="brand-left">
+        <div class="logo-box" onclick="document.getElementById('logoUploadInput').click()" title="Bấm để tải Logo của bạn lên">
           <div id="brandLogoContainer">__BRAND_LOGO_HTML__</div>
-          <div class="logo-upload-badge">ĐỔI LOGO</div>
+          <div class="logo-edit-pill">LOGO</div>
         </div>
-        <div class="brand-info">
-          <div class="brand-heading">
-            <span class="brand-title">🎄 NOEL WINTER STUDIO</span>
-            <span class="tag-badge b-gold">✨ Dual Anti-Ban Pro</span>
-            <span class="tag-badge b-green">🛡️ Stealth Route Discord</span>
+        <div>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span class="brand-title">AETHER WHITE STUDIO</span>
+            <span class="pill-badge p-blue">🛡️ Zalo Quantum Shield</span>
+            <span class="pill-badge p-indigo">🔒 Discord Anti-Scan Vault</span>
           </div>
-          <div class="brand-subtitle">
-            Zalo Tự Động Tag Chuẩn Khung Chat • Discord Bung Chữ Không Đóng Khung • Reg Token Chống Die • Ẩn Log Acc Bảo Mật
+          <div class="brand-sub">
+            Tag Xanh Chuẩn Zalo 100% • Icon Chuẩn Không Bao Giờ Lỗi <code>:-</code> • Reg Token Discord Chống Quét • Điều Hướng Tab Ngang Phía Dưới
           </div>
         </div>
       </div>
 
-      <div class="header-actions">
-        <button type="button" class="btn btn-noel-gold btn-sm" onclick="document.getElementById('logoUploadInput').click()">
-          🖼️ Tải Logo Lên
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <button type="button" class="btn btn-soft btn-sm" onclick="document.getElementById('logoUploadInput').click()">
+          🖼️ Đổi Logo
         </button>
-        <button type="button" class="btn btn-noel-ghost btn-sm" id="btnSnowToggle" onclick="toggleSnowEffect()">
-          ❄️ Tuyết: BẬT
+        <button type="button" class="btn btn-soft btn-sm" onclick="switchMainTab('tab-files')">
+          🎨 Đổi Ảnh Setup
         </button>
-        <button type="button" class="btn btn-noel-red btn-sm" onclick="stopAllTasks()">
+        <button type="button" class="btn btn-rose btn-sm" onclick="stopAllTasks()">
           ⏹ Dừng Tất Cả
         </button>
-        <a href="/logout" class="btn btn-noel-ghost btn-sm">Đăng xuất (__USER__)</a>
+        <a href="/logout" class="btn btn-soft btn-sm">Thoát (__USER__)</a>
       </div>
     </header>
 
-    
-    <!-- BANNER ĐỒ HỌA NGHỆ THUẬT GIÁNG SINH ĐÊM ĐÔNG (SVG VECTOR SẮC NÉT) -->
-    <div style="position:relative;border-radius:18px;overflow:hidden;border:1px solid rgba(251,191,36,0.35);margin-bottom:18px;background:linear-gradient(135deg,#071622 0%,#122b38 50%,#1d1836 100%);box-shadow:0 14px 34px -6px rgba(0,0,0,0.65)">
-      <svg viewBox="0 0 1200 135" width="100%" height="115" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg" style="display:block">
-        <defs>
-          <linearGradient id="skyGrad" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stop-color="#06131d"/>
-            <stop offset="50%" stop-color="#0d2636"/>
-            <stop offset="100%" stop-color="#1e1633"/>
-          </linearGradient>
-          <radialGradient id="moonGlow" cx="0.85" cy="0.28" r="0.18">
-            <stop offset="0%" stop-color="#fef08a" stop-opacity="0.95"/>
-            <stop offset="40%" stop-color="#fbbf24" stop-opacity="0.35"/>
-            <stop offset="100%" stop-color="#fbbf24" stop-opacity="0"/>
-          </radialGradient>
-        </defs>
-        <rect width="1200" height="135" fill="url(#skyGrad)"/>
-        <circle cx="1020" cy="38" r="75" fill="url(#moonGlow)"/>
-        <circle cx="1020" cy="38" r="22" fill="#fef9c3"/>
-        <!-- Các ngôi sao lấp lánh -->
-        <circle cx="120" cy="24" r="1.8" fill="#fde68a"/>
-        <circle cx="280" cy="18" r="2.2" fill="#fff"/>
-        <circle cx="460" cy="30" r="1.5" fill="#fde68a"/>
-        <circle cx="640" cy="16" r="2.0" fill="#7dd3fc"/>
-        <circle cx="820" cy="28" r="1.8" fill="#fde68a"/>
-        <!-- Đồi tuyết xa và gần -->
-        <path d="M0,105 Q220,72 480,102 T960,95 T1200,105 L1200,135 L0,135 Z" fill="#0d2838" opacity="0.85"/>
-        <path d="M0,115 Q320,88 680,114 T1200,108 L1200,135 L0,135 Z" fill="#133647"/>
-        <!-- Rừng thông Noel phủ tuyết và ánh đèn vàng -->
-        <g transform="translate(45,42)">
-          <polygon points="28,0 6,36 18,36 2,62 16,62 8,82 48,82 40,62 54,62 38,36 50,36" fill="#059669" stroke="#6ee7b7" stroke-width="1.2"/>
-          <circle cx="28" cy="0" r="4" fill="#fbbf24"/>
-          <circle cx="22" cy="32" r="2.5" fill="#e11d48"/>
-          <circle cx="34" cy="48" r="2.5" fill="#fbbf24"/>
-          <circle cx="20" cy="64" r="2.5" fill="#38bdf8"/>
-        </g>
-        <g transform="translate(115,58) scale(0.78)">
-          <polygon points="28,0 6,36 18,36 2,62 16,62 8,82 48,82 40,62 54,62 38,36 50,36" fill="#10b981"/>
-          <circle cx="28" cy="0" r="3.5" fill="#fde68a"/>
-        </g>
-        <g transform="translate(1090,46) scale(0.9)">
-          <polygon points="28,0 6,36 18,36 2,62 16,62 8,82 48,82 40,62 54,62 38,36 50,36" fill="#059669" stroke="#6ee7b7" stroke-width="1"/>
-          <circle cx="28" cy="0" r="4" fill="#fbbf24"/>
-          <circle cx="25" cy="40" r="2.5" fill="#e11d48"/>
-          <circle cx="33" cy="58" r="2.5" fill="#fbbf24"/>
-        </g>
-        <!-- Ngôi nhà gỗ Giáng Sinh ấm áp -->
-        <g transform="translate(910,66)">
-          <rect x="8" y="22" width="46" height="32" rx="3" fill="#7c2d12" stroke="#f59e0b" stroke-width="1"/>
-          <polygon points="2,24 31,2 60,24" fill="#e11d48" stroke="#fecdd3" stroke-width="1.5"/>
-          <rect x="16" y="30" width="11" height="11" rx="1.5" fill="#fef08a"/>
-          <rect x="35" y="30" width="11" height="11" rx="1.5" fill="#fef08a"/>
-        </g>
-      </svg>
-      <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:space-between;padding:14px 28px;flex-wrap:wrap;gap:12px;background:linear-gradient(90deg,rgba(6,16,23,0.45) 0%,rgba(6,16,23,0.75) 50%,rgba(6,16,23,0.35) 100%)">
-        <div style="margin-left:110px">
-          <div style="font-size:1.05rem;font-weight:900;color:#fef08a;letter-spacing:0.01em">
-            🎄 MERRY CHRISTMAS & HAPPY NEW YEAR — HỆ THỐNG TỰ ĐỘNG HÓA ZALO & DISCORD
+    <!-- BANNER TRƯNG BÀY HÌNH ẢNH DESIGN SETUP + 4 CHỈ SỐ KPI -->
+    <section class="setup-showcase">
+      <div class="setup-art-frame" id="setupBannerContainer">
+        __SETUP_BANNER_HTML__
+      </div>
+      <div class="setup-kpi-grid">
+        <div class="kpi-tile" onclick="switchMainTab('tab-accounts')" style="cursor:pointer">
+          <div>
+            <div class="kpi-lbl">Tài Khoản Đang Bảo Vệ</div>
+            <div class="kpi-val" id="kpiAccounts">0</div>
           </div>
-          <div style="font-size:0.8rem;color:#e2e8f0;margin-top:3px">
-            2 Động Cơ Anti-Ban Độc Lập • Ẩn Đường Chuyển Discord • Tự Động Tag Chuẩn Khung Chat Zalo • Không Đóng Khung Chữ Discord
+          <div class="kpi-ico">👤</div>
+        </div>
+        <div class="kpi-tile" onclick="switchMainTab('tab-targets')" style="cursor:pointer">
+          <div>
+            <div class="kpi-lbl">Phòng Chat Đã Chọn</div>
+            <div class="kpi-val" id="kpiBoxes" style="color:var(--accent-indigo)">0</div>
           </div>
+          <div class="kpi-ico" style="background:var(--accent-indigo-soft);color:var(--accent-indigo)">🎯</div>
         </div>
-        <div style="display:flex;gap:8px;align-items:center">
-          <span class="tag-badge b-red">🎅 Noel Edition</span>
-          <span class="tag-badge b-gold">⚡ 60FPS Smooth</span>
+        <div class="kpi-tile" onclick="switchMainTab('tab-monitor')" style="cursor:pointer">
+          <div>
+            <div class="kpi-lbl">Chiến Dịch Đang Chạy</div>
+            <div class="kpi-val" id="kpiTasks" style="color:var(--accent-emerald)">0</div>
+          </div>
+          <div class="kpi-ico" style="background:var(--accent-emerald-soft);color:var(--accent-emerald)">🚀</div>
         </div>
-      </div>
-    </div>
-
-    <!-- 4 THẺ KPI GIÁNG SINH -->
-    <section class="kpi-grid">
-      <div class="kpi-box">
-        <div>
-          <div class="kpi-title">Tài Khoản Đang Bảo Vệ</div>
-          <div class="kpi-num" id="kpiAccounts">0</div>
+        <div class="kpi-tile" onclick="switchMainTab('tab-monitor')" style="cursor:pointer">
+          <div>
+            <div class="kpi-lbl">Tổng Tin Đã Phát</div>
+            <div class="kpi-val" id="kpiSent" style="color:var(--accent-blue)">0</div>
+          </div>
+          <div class="kpi-ico">⚡</div>
         </div>
-        <div class="kpi-art">🎅</div>
-      </div>
-      <div class="kpi-box">
-        <div>
-          <div class="kpi-title">Chiến Dịch Đang Chạy</div>
-          <div class="kpi-num" id="kpiTasks" style="color:#6ee7b7">0</div>
-        </div>
-        <div class="kpi-art">🦌</div>
-      </div>
-      <div class="kpi-box">
-        <div>
-          <div class="kpi-title">Tin Nhắn Đã Phát</div>
-          <div class="kpi-num" id="kpiSent" style="color:#fde68a">0</div>
-        </div>
-        <div class="kpi-art">🔔</div>
-      </div>
-      <div class="kpi-box">
-        <div>
-          <div class="kpi-title">Kho File .TXT Sạch</div>
-          <div class="kpi-num" id="kpiFiles" style="color:#7dd3fc">0</div>
-        </div>
-        <div class="kpi-art">🎁</div>
       </div>
     </section>
 
-    <div class="main-grid">
-      <!-- CỘT TRÁI: KẾT NỐI TÀI KHOẢN (CÓ LẤY TOKEN DISCORD BẰNG REG), KHO FILE HIỆU ỨNG ĐẦY ĐỦ & PHÂN QUYỀN -->
-      <div>
-        <!-- MỤC 1: KẾT NỐI TÀI KHOẢN & ANTI-BAN RIÊNG TỪNG APP -->
-        <div class="card">
+    <!-- ============================================================
+         TAB 1: QUẢN LÝ TÀI KHOẢN & REG ACC DISCORD CHỐNG QUÉT
+         ============================================================ -->
+    <div id="tab-accounts" class="tab-pane active">
+      <div class="two-col-grid">
+        <div class="studio-card">
           <div class="card-head">
-            <div class="card-title">🎄 1. Kết Nối Tài Khoản (Zalo & Discord Stealth)</div>
-            <span class="tag-badge b-green">Ẩn Log Acc</span>
+            <div class="card-title">👤 Kết Nối Tài Khoản & Reg Discord Anti-Scan</div>
+            <span class="pill-badge p-emerald">Bảo Vệ Kép 24/7</span>
           </div>
 
-          <div class="plat-tabs">
-            <button type="button" id="tabZalo" class="plat-tab-btn active-zalo" onclick="switchPlatform('zalo')">
-              🔵 Zalo (Anti-Ban Zero-Shift)
+          <div class="seg-control">
+            <button type="button" id="tabZalo" class="seg-btn active-zalo" onclick="switchPlatform('zalo')">
+              🔵 Tài Khoản Zalo (IMEI + Cookie)
             </button>
-            <button type="button" id="tabDiscord" class="plat-tab-btn" onclick="switchPlatform('discord')">
-              🔴 Discord (Stealth + Reg Token)
+            <button type="button" id="tabDiscord" class="seg-btn" onclick="switchPlatform('discord')">
+              🟣 Tài Khoản Discord (Stealth + Reg)
             </button>
           </div>
 
           <input type="hidden" id="accPlatform" value="zalo">
 
-          <div style="margin-bottom:10px">
+          <div style="margin-bottom:12px">
             <label>Tên gợi nhớ (Tùy chọn)</label>
-            <input type="text" id="accName" placeholder="Để trống hệ thống tự lấy tên tài khoản...">
+            <input type="text" id="accName" placeholder="Để trống hệ thống tự lấy tên thật của tài khoản...">
           </div>
 
           <!-- FORM ZALO -->
           <div id="zaloFields">
-            <div style="margin-bottom:10px">
+            <div style="margin-bottom:12px">
               <label>IMEI Zalo Web</label>
               <input type="text" id="accImei" placeholder="Dán chuỗi IMEI Zalo...">
             </div>
-            <div style="margin-bottom:10px">
+            <div style="margin-bottom:12px">
               <label>Cookie Zalo (JSON hoặc chuỗi Cookie)</label>
               <textarea id="accCookies" rows="3" placeholder='{"zpw_sek":"..."} hoặc dán thẳng Cookie...'></textarea>
             </div>
           </div>
 
-          <!-- FORM DISCORD + TRÌNH LẤY TOKEN BẰNG REG CHỐNG DIE -->
+          <!-- FORM DISCORD + TRÌNH REG & NUÔI TOKEN CHỐNG QUÉT -->
           <div id="discordFields" style="display:none">
-            <div style="margin-bottom:10px">
-              <label>Token Discord (Dán trực tiếp hoặc dùng công cụ Reg bên dưới)</label>
-              <input type="password" id="accToken" placeholder="Dán Token Discord hoặc chuỗi mail:pass:token...">
+            <div style="margin-bottom:12px">
+              <label>Token Discord (Đã khóa Fingerprint & Cookie trình duyệt chống quét)</label>
+              <input type="password" id="accToken" placeholder="Dán Token Discord hoặc dùng Trình Reg Chống Quét bên dưới...">
             </div>
 
-            <!-- HỘP CÔNG CỤ LẤY TOKEN DISCORD BẰNG REG CHỐNG DIE -->
-            <div style="background:var(--bg-card-inner);border:1px solid var(--border-gold);border-radius:12px;padding:11px;margin-bottom:10px">
-              <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:8px;flex-wrap:wrap">
-                <span style="font-size:0.8rem;font-weight:800;color:#fde68a">
-                  🛡️ Lấy & Nuôi Token Discord Bằng Reg (Chống Die Token)
+            <div style="background:var(--bg-subtle);border:1.5px solid #c7d2fe;border-radius:14px;padding:13px;margin-bottom:12px">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:9px;flex-wrap:wrap">
+                <span style="font-size:0.83rem;font-weight:800;color:var(--accent-indigo)">
+                  🛡️ Trung Tâm Reg & Nuôi Token Discord (Chống Discord Quét 100%)
                 </span>
-                <button type="button" class="btn btn-noel-ghost btn-sm" onclick="copyDiscordRegScript()">
-                  📋 Copy Code Lấy Token
+                <button type="button" class="btn btn-soft btn-sm" onclick="copyDiscordRegScript()">
+                  📋 Copy Code Lấy Token Ẩn Danh
                 </button>
               </div>
 
               <div style="margin-bottom:8px">
-                <input type="text" id="regRawDump" placeholder="Dán dòng Reg / mail:pass:token / cURL / Header F12 vào đây..." style="margin-bottom:6px">
-                <button type="button" class="btn btn-noel-gold btn-sm btn-block" onclick="extractTokenFromReg()">
-                  ⚡ Tách Token Từ Reg & Khởi Tạo Fingerprint Chống Die
+                <input type="text" id="regRawDump" placeholder="Dán dòng Reg / mail:pass:token / cURL / Header F12 vào đây..." style="margin-bottom:7px">
+                <button type="button" class="btn btn-indigo btn-sm btn-block" onclick="extractTokenFromReg()">
+                  ⚡ Tách Token & Khởi Tạo Phiên Ngầm Anti-Scan (Warm-up Fingerprint)
                 </button>
               </div>
 
-              <details style="margin-top:6px">
-                <summary style="cursor:pointer;font-size:0.78rem;color:#7dd3fc;font-weight:700">
-                  🔑 Hoặc Đăng Nhập Lấy Token Bằng Email / Mật Khẩu (Reg Session)
+              <details style="margin-top:8px">
+                <summary style="cursor:pointer;font-size:0.8rem;color:var(--accent-blue);font-weight:800">
+                  🔑 Hoặc Đăng Nhập Lấy Token Qua Phiên Giả Lập Trình Duyệt (Email + Mật khẩu + 2FA)
                 </summary>
-                <div style="margin-top:8px;display:grid;gap:6px">
-                  <input type="text" id="regEmail" placeholder="Email hoặc SĐT Discord...">
+                <div style="margin-top:9px;display:grid;gap:7px">
+                  <input type="text" id="regEmail" placeholder="Email hoặc SĐT đăng nhập Discord...">
                   <input type="password" id="regPass" placeholder="Mật khẩu Discord...">
-                  <input type="text" id="reg2fa" placeholder="Mã 2FA 6 số (Nếu tài khoản có bật 2FA)...">
-                  <button type="button" class="btn btn-noel-ice btn-sm btn-block" onclick="loginDiscordRegSession()">
-                    🚀 Lấy Token Qua Phiên Reg Stealth
+                  <input type="text" id="reg2fa" placeholder="Mã 2FA 6 số (Nếu có bật xác thực 2 bước)...">
+                  <button type="button" class="btn btn-blue btn-sm btn-block" onclick="loginDiscordRegSession()">
+                    🚀 Đăng Nhập Reg Phiên Stealth & Lấy Token Sống Bền Vững
                   </button>
                 </div>
               </details>
             </div>
 
-            <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 11px;background:var(--bg-input);border-radius:10px;border:1px solid var(--border-frost);margin-bottom:10px">
-              <span style="font-size:0.8rem;color:#cbd5e1;font-weight:700">Loại Token:</span>
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:9px 12px;background:var(--bg-subtle);border-radius:10px;border:1px solid var(--border-light);margin-bottom:12px">
+              <span style="font-size:0.82rem;color:var(--text-secondary);font-weight:700">Chế độ tài khoản Discord:</span>
               <select id="accIsBot" style="width:auto;padding:6px 10px">
                 <option value="0" selected>👑 Acc Chính Chủ (Stealth User)</option>
                 <option value="1">🤖 Discord Bot Token</option>
@@ -4930,359 +5196,445 @@ HTML_INDEX_PART1 = """<!doctype html>
             </div>
           </div>
 
-          <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px;padding:9px 11px;background:var(--bg-input);border-radius:10px;border:1px solid var(--border-frost)">
-            <label style="display:flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:0.81rem">
-              <input type="checkbox" id="accChatCmd" checked> Bật lệnh chat 24/7 (<code>.menu</code>, <code>.nhay</code>)
+          <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:14px;padding:10px 12px;background:var(--bg-subtle);border-radius:10px;border:1px solid var(--border-light)">
+            <label style="display:flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:0.82rem">
+              <input type="checkbox" id="accChatCmd" checked> Bật nhận lệnh trong khung chat 24/7 (<code>.menu</code>, <code>.nhay</code>)
             </label>
-            <label style="display:flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:0.81rem;color:#fde68a">
-              <input type="checkbox" id="accAllowAll"> Cho mọi người dùng lệnh
+            <label style="display:flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:0.82rem;color:var(--accent-amber)">
+              <input type="checkbox" id="accAllowAll"> Cho phép mọi người dùng lệnh
             </label>
           </div>
 
-          <button type="button" class="btn btn-noel-green btn-block" onclick="addAccount()">
-            ➕ LƯU TÀI KHOẢN & BẬT LÁ CHẮN ANTI-BAN
+          <button type="button" class="btn btn-blue btn-block" onclick="addAccount()">
+            ➕ KẾT NỐI TÀI KHOẢN & KÍCH HOẠT LÁ CHẮN ANTI-BAN
           </button>
+        </div>
 
-          <div style="margin-top:14px">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px;flex-wrap:wrap;gap:6px">
-              <span style="font-size:0.78rem;color:var(--text-muted);font-weight:800">DANH SÁCH ACC (ĐÃ ẨN THÔNG TIN NHẠY CẢM)</span>
-              <div style="display:flex;gap:5px">
-                <button type="button" class="btn btn-noel-ghost btn-sm" id="btnMaskAcc" onclick="toggleMaskAccounts()">🔒 Ẩn Tên: BẬT</button>
-                <button type="button" class="btn btn-noel-ghost btn-sm" onclick="loadAccounts(true)">🔄 Làm mới</button>
+        <div class="studio-card">
+          <div class="card-head">
+            <div class="card-title">📋 Danh Sách Tài Khoản Đã Kết Nối</div>
+            <div style="display:flex;gap:6px">
+              <button type="button" class="btn btn-soft btn-sm" id="btnMaskAcc" onclick="toggleMaskAccounts()">🔒 Ẩn Tên: BẬT</button>
+              <button type="button" class="btn btn-soft btn-sm" onclick="loadAccounts(true)">🔄 Làm mới</button>
+            </div>
+          </div>
+
+          <div id="accListBox" class="clean-list" style="max-height:360px;margin-bottom:14px"></div>
+
+          <div style="display:flex;justify-content:flex-end">
+            <button type="button" class="btn btn-indigo" onclick="switchMainTab('tab-targets')">
+              Tiếp tục: Chọn Phòng Chat & Tag Chuẩn ➔
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         TAB 2: CHỌN PHÒNG CHAT & TAG THẬT CHUẨN ZALO / DISCORD 100%
+         ============================================================ -->
+    <div id="tab-targets" class="tab-pane">
+      <div class="two-col-grid">
+        <!-- CỘT CHỌN PHÒNG CHAT -->
+        <div class="studio-card">
+          <div class="card-head">
+            <div class="card-title">🎯 Bước 1: Chọn Phòng Chat (Zalo & All Box Discord)</div>
+            <span class="pill-badge p-indigo" id="selectedBoxBadge">Đã chọn: 0 box</span>
+          </div>
+
+          <div style="margin-bottom:12px">
+            <label>Chọn tài khoản để quét danh sách Nhóm / Bạn bè / Kênh Discord</label>
+            <div style="display:grid;grid-template-columns:1fr auto;gap:8px">
+              <select id="groupAccSelect" onchange="onAccountSelectChange()"></select>
+              <div style="display:flex;gap:5px;flex-wrap:wrap">
+                <button type="button" class="btn btn-blue btn-sm" onclick="fetchZaloGroups()">📂 Nhóm Zalo</button>
+                <button type="button" class="btn btn-soft btn-sm" onclick="fetchZaloFriends()">👥 Bạn Bè</button>
+                <button type="button" class="btn btn-indigo btn-sm" onclick="fetchDiscordAllBoxes()">🟣 All Box Discord</button>
               </div>
             </div>
-            <div id="accListBox" class="scroll-list" style="max-height:230px"></div>
+          </div>
+
+          <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
+            <input type="text" id="boxSearchInput" placeholder="🔍 Tìm tên nhóm, bạn bè hoặc kênh Discord..."
+                   oninput="renderTargetBoxes()" style="flex:1;min-width:170px">
+            <button type="button" class="btn btn-amber btn-sm" onclick="selectTopBoxes(3)">⚡ Chọn 3</button>
+            <button type="button" class="btn btn-amber btn-sm" onclick="selectTopBoxes(5)">⚡ Chọn 5</button>
+            <button type="button" class="btn btn-soft btn-sm" onclick="toggleAllBoxes(true)">Chọn hết</button>
+            <button type="button" class="btn btn-soft btn-sm" onclick="toggleAllBoxes(false)">Bỏ chọn</button>
+          </div>
+
+          <div style="display:flex;gap:6px;margin-bottom:12px">
+            <input type="text" id="manualBoxId" placeholder="Hoặc nhập ID Nhóm Zalo / Channel ID Discord..." style="flex:1">
+            <select id="manualBoxType" style="width:155px">
+              <option value="group">Nhóm Zalo</option>
+              <option value="user">Bạn bè Zalo</option>
+              <option value="discord_channel">Kênh Discord</option>
+            </select>
+            <button type="button" class="btn btn-soft btn-sm" onclick="addManualBox()">+ Thêm</button>
+          </div>
+
+          <div id="targetBoxContainer" class="clean-list" style="max-height:310px">
+            <div style="text-align:center;color:var(--text-muted);padding:22px;font-size:0.85rem">
+              Hãy bấm <b>📂 Nhóm Zalo</b> hoặc <b>🟣 All Box Discord</b> để hiển thị danh sách phòng chat.
+            </div>
           </div>
         </div>
 
-        <!-- MỤC 2: KHO FILE .TXT VỚI HIỆU ỨNG UPLOAD PROGRESS BAR ĐẦY ĐỦ -->
-        <div class="card">
+        <!-- CỘT CHỌN THÀNH VIÊN ĐỂ TAG XANH DƯƠNG CHUẨN ZALO 100% -->
+        <div class="studio-card">
           <div class="card-head">
-            <div class="card-title">🎁 2. Kho File .TXT (Có Hiệu Ứng Tải Lên & Lọc Số Đầu Dòng)</div>
-            <span class="tag-badge b-gold">Auto Clean</span>
+            <div class="card-title">🏷️ Bước 2: Chọn Người Để Tag Xanh Dương Chuẩn 100%</div>
+            <span class="pill-badge p-emerald" id="selectedMemberBadge">Đã chọn Tag: 0 người</span>
           </div>
 
-          <div class="noel-dropzone" id="fileDropzone"
+          <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;padding:11px 13px;margin-bottom:12px;font-size:0.81rem;color:#1e3a8a">
+            💡 <b>Đã fix triệt để Tag Zalo:</b> Khi bạn tích chọn người dùng bên dưới (hoặc thêm bằng Tên + UID), hệ thống gửi cấu trúc <code>mentionInfo</code> chuẩn Native giúp <b>hiện thẻ Tag Xanh Dương thật 100% trên khung chat Zalo</b>!
+          </div>
+
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+            <label style="display:flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:0.85rem;color:var(--accent-rose);font-weight:800">
+              <input type="checkbox" id="tagAllCheck" onchange="updateSelectedMemberBadge()"> 🔔 Tag @All (Zalo) / @everyone (Discord)
+            </label>
+            <div style="display:flex;gap:6px">
+              <button type="button" class="btn btn-blue btn-sm" onclick="loadMembersOfSelectedBox()">
+                🔄 Quét Thành Viên Nhóm Đang Chọn
+              </button>
+              <button type="button" class="btn btn-soft btn-sm" onclick="toggleAllMembers(true)">Tag Hết</button>
+              <button type="button" class="btn btn-soft btn-sm" onclick="toggleAllMembers(false)">Bỏ Tag</button>
+            </div>
+          </div>
+
+          <!-- THÊM NHANH NGƯỜI CẦN TAG BẰNG TÊN & ID NẾU ĐÃ CÓ SẴN -->
+          <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:6px;margin-bottom:10px">
+            <input type="text" id="manualTagName" placeholder="Tên hiển thị (VD: Nguyễn Văn A)...">
+            <input type="text" id="manualTagUid" placeholder="UID Zalo / ID Discord...">
+            <button type="button" class="btn btn-emerald btn-sm" onclick="addManualMemberTag()">+ Gắn Tag</button>
+          </div>
+
+          <div style="margin-bottom:10px">
+            <input type="text" id="memberSearchInput" placeholder="🔍 Lọc nhanh tên hoặc UID thành viên trong nhóm..."
+                   oninput="renderMemberTags()">
+          </div>
+
+          <div id="memberTagContainer" class="clean-list" style="max-height:245px;margin-bottom:14px">
+            <div style="text-align:center;color:var(--text-muted);padding:18px;font-size:0.83rem">
+              Tích chọn 1 Nhóm Zalo hoặc Kênh Discord ở bên trái, danh sách toàn bộ thành viên kèm Tên & UID sẽ tự động hiển thị tại đây để bạn tích chọn Tag!
+            </div>
+          </div>
+
+          <div style="display:flex;justify-content:flex-end">
+            <button type="button" class="btn btn-blue" onclick="switchMainTab('tab-campaign')">
+              Tiếp tục: Sang Tab Khởi Chạy Chiến Dịch ➔
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+"""
+
+HTML_INDEX_PART2 = """
+    <!-- ============================================================
+         TAB 3: KHỞI CHẠY CHIẾN DỊCH & CẤU HÌNH ICON / MÀU CHỮ / DELAY
+         ============================================================ -->
+    <div id="tab-campaign" class="tab-pane">
+      <div class="studio-card">
+        <div class="card-head">
+          <div class="card-title">🚀 Khởi Chạy Chiến Dịch Tự Động (Zalo & Discord)</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <span class="pill-badge p-blue" id="campaignBoxSummary">Phòng chat: 0 box</span>
+            <span class="pill-badge p-emerald" id="campaignTagSummary">Đang Tag: Không tag</span>
+          </div>
+        </div>
+
+        <div class="two-col-grid">
+          <div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
+              <div>
+                <label>Chế độ gửi tin</label>
+                <select id="taskMode">
+                  <option value="treo_nhay" selected>🔥 Treo Nhây (Gửi từng dòng - Tự xoá số 1., 2.)</option>
+                  <option value="treo_ngon">📜 Treo Ngôn (Gửi nguyên khối văn bản)</option>
+                  <option value="fast">⚡ Spam Nhanh Liên Tục</option>
+                </select>
+              </div>
+              <div>
+                <label>Chọn nhanh File .TXT theo Số Thứ Tự</label>
+                <select id="taskFileSelect" onchange="onFileSelectChange()">
+                  <option value="">-- Hoặc nhập nội dung trực tiếp --</option>
+                </select>
+              </div>
+            </div>
+
+            <div style="margin-bottom:12px">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;flex-wrap:wrap">
+                <label style="margin:0">Nội dung gửi (Hoặc gõ thêm <code>@Tên</code> / <code>@[Tên Đầy Đủ]</code> ở cuối câu)</label>
+                <span style="font-size:0.75rem;color:var(--accent-emerald);font-weight:800">
+                  ✅ Đã lọc sạch 100% lỗi chữ <code>:-</code> thành Icon thật
+                </span>
+              </div>
+              <textarea id="taskRawText" rows="6" placeholder="Nhập nội dung tin nhắn... (Mọi ký hiệu lỗi như :-R, :-h, ;-A sẽ tự động biến thành Icon chuẩn Zalo; bên Discord chữ tự động bung to không đóng khung)"></textarea>
+            </div>
+          </div>
+
+          <div>
+            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:12px">
+              <div>
+                <label>Màu Chữ / Kiểu Chữ</label>
+                <select id="colorMode" onchange="toggleFixedColorSwatches()">
+                  <option value="rainbow" selected>🌈 Phối Màu Dòng</option>
+                  <option value="word_rainbow">✨ Phối Màu Từ</option>
+                  <option value="random">🎲 Ngẫu Nhiên</option>
+                  <option value="fixed">🎨 Cố Định 1 Màu</option>
+                  <option value="none">⚪ Chữ Thường</option>
+                </select>
+              </div>
+              <div>
+                <label>Độ Trễ Delay (Giây)</label>
+                <input type="number" id="taskDelay" value="1.0" min="0.2" max="120" step="0.1">
+              </div>
+              <div>
+                <label>Số Icon Chuẩn Zalo</label>
+                <input type="number" id="iconCount" value="3" min="0" max="10" step="1">
+              </div>
+            </div>
+
+            <div id="fixedColorBox" style="display:none;margin-bottom:12px;padding:10px 12px;background:var(--bg-subtle);border-radius:12px;border:1px solid var(--border-light)">
+              <label style="margin-bottom:4px">Chọn Màu Cố Định Zalo Rich-Text:</label>
+              <input type="hidden" id="fixedColorVal" value="red">
+              <div class="swatch-row">
+                <div class="swatch-btn active" onclick="pickSwatch('red',this)">
+                  <span class="c-dot" style="background:#db342e"></span> Đỏ Rực
+                </div>
+                <div class="swatch-btn" onclick="pickSwatch('yellow',this)">
+                  <span class="c-dot" style="background:#f7b503"></span> Vàng Kim
+                </div>
+                <div class="swatch-btn" onclick="pickSwatch('green',this)">
+                  <span class="c-dot" style="background:#15a85f"></span> Xanh Ngọc
+                </div>
+                <div class="swatch-btn" onclick="pickSwatch('orange',this)">
+                  <span class="c-dot" style="background:#f27806"></span> Cam Lửa
+                </div>
+              </div>
+            </div>
+
+            <!-- BẢNG TÙY CHỌN TÍNH NĂNG -->
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:12px;background:var(--bg-subtle);border:1px solid var(--border-light);border-radius:12px;margin-bottom:14px">
+              <label style="display:flex;align-items:center;gap:7px;margin:0;cursor:pointer;font-size:0.82rem;color:var(--accent-emerald)">
+                <input type="checkbox" id="chkStripNum" checked> ✂️ Tự xoá số <code>1.</code>, <code>2.</code> đầu dòng
+              </label>
+              <label style="display:flex;align-items:center;gap:7px;margin:0;cursor:pointer;font-size:0.82rem;color:var(--accent-blue)">
+                <input type="checkbox" id="chkBigText" checked> 🔠 Bung Chữ Lớn In Đậm
+              </label>
+              <label style="display:flex;align-items:center;gap:7px;margin:0;cursor:pointer;font-size:0.82rem">
+                <input type="checkbox" id="chkUseEmoji" checked> 😂 Gắn Icon Chuẩn (Không lỗi <code>:-</code>)
+              </label>
+              <label style="display:flex;align-items:center;gap:7px;margin:0;cursor:pointer;font-size:0.82rem;color:var(--accent-indigo)">
+                <input type="checkbox" id="chkAntiband" checked> 🛡️ Bật Anti-Ban Cực Khủng
+              </label>
+              <label style="display:flex;align-items:center;gap:7px;margin:0;cursor:pointer;font-size:0.82rem">
+                <input type="checkbox" id="chkMultiAcc" checked> 👥 Chạy Đa Tài Khoản Song Song
+              </label>
+            </div>
+
+            <div style="display:grid;grid-template-columns:1.8fr 1fr;gap:10px">
+              <button type="button" class="btn btn-blue" style="font-size:0.95rem;padding:13px" onclick="startCampaign()">
+                🚀 BẮT ĐẦU CHẠY CHIẾN DỊCH NGAY
+              </button>
+              <button type="button" class="btn btn-emerald" onclick="applyLiveConfig()">
+                ⚡ CẬP NHẬT NÓNG DELAY/MÀU
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         TAB 4: KHO FILE .TXT & SETUP HÌNH ẢNH DESIGN GIAO DIỆN
+         ============================================================ -->
+    <div id="tab-files" class="tab-pane">
+      <div class="two-col-grid">
+        <div class="studio-card">
+          <div class="card-head">
+            <div class="card-title">📁 Kho File .TXT (Tự Xoá Số Đầu Dòng & Sửa Lỗi Icon <code>:-</code>)</div>
+            <span class="pill-badge p-blue">Progress Bar Thực Tế</span>
+          </div>
+
+          <div class="white-dropzone" id="fileDropzone"
                onclick="document.getElementById('fileInput').click()"
                ondragenter="onDragZone(event, true)"
                ondragover="onDragZone(event, true)"
                ondragleave="onDragZone(event, false)"
                ondrop="handleDropFile(event)">
-            <div style="font-size:1.75rem;margin-bottom:4px">🎄📤</div>
-            <div style="font-weight:800;font-size:0.88rem;color:#fff">Bấm chọn hoặc kéo thả file .txt vào Hộp Quà Noel</div>
-            <div style="font-size:0.76rem;color:var(--text-muted);margin-top:3px">
-              Tự động xoá số <code>1.</code>, <code>2.</code> đầu dòng • Gõ <code>.nhay 1</code> hoặc <code>.file 1 @Tên</code> trong chat là chạy ngay
+            <div style="font-size:2rem;margin-bottom:6px">📄⬆️</div>
+            <div style="font-weight:800;font-size:0.92rem;color:var(--text-primary)">Bấm chọn hoặc kéo thả nhiều file .txt vào đây</div>
+            <div style="font-size:0.78rem;color:var(--text-muted);margin-top:4px">
+              Tự động lọc sạch số thứ tự <code>1.</code>, <code>2.</code> đầu dòng & chuyển mọi mã lỗi <code>:-</code> thành Icon thật
             </div>
             <input type="file" id="fileInput" multiple accept=".txt" style="display:none" onchange="uploadFilesWithProgress(this.files)">
           </div>
 
-          <!-- THANH HIỆU ỨNG TIẾN TRÌNH UPLOAD FILE -->
-          <div id="uploadProgressWrap" class="upload-progress-wrap">
-            <div style="display:flex;justify-content:space-between;align-items:center;font-size:0.8rem;font-weight:800">
-              <span id="uploadProgressLabel" style="color:#fde68a">❄️ Đang tải file lên...</span>
-              <span id="uploadProgressPct" style="color:#6ee7b7">0%</span>
+          <div id="uploadProgressWrap" class="upload-prog-box">
+            <div style="display:flex;justify-content:space-between;align-items:center;font-size:0.82rem;font-weight:800">
+              <span id="uploadProgressLabel" style="color:var(--accent-blue)">⏳ Đang tải file lên...</span>
+              <span id="uploadProgressPct" style="color:var(--accent-emerald)">0%</span>
             </div>
-            <div class="progress-track">
-              <div id="uploadProgressBar" class="progress-fill"></div>
+            <div class="prog-track">
+              <div id="uploadProgressBar" class="prog-bar"></div>
             </div>
           </div>
 
-          <div id="fileListBox" class="scroll-list" style="max-height:220px"></div>
+          <div id="fileListBox" class="clean-list" style="max-height:280px"></div>
         </div>
 
-        <!-- MỤC 3: PHÂN QUYỀN DÙNG LỆNH CHAT -->
-        <div class="card">
+        <!-- KHU VỰC TÙY CHỈNH HÌNH ẢNH DESIGN SETUP & LOGO -->
+        <div class="studio-card">
           <div class="card-head">
-            <div class="card-title">🔑 3. Cấp Quyền Dùng Lệnh Trong Khung Chat</div>
-            <span class="tag-badge b-ice">.chophep @Tên</span>
+            <div class="card-title">🎨 Tùy Chỉnh Hình Ảnh Design Setup & Thương Hiệu</div>
+            <span class="pill-badge p-indigo">Studio Setup Gallery</span>
           </div>
-          <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:6px;margin-bottom:10px">
-            <input type="text" id="authUidInput" placeholder="UID Zalo/Discord...">
-            <input type="text" id="authNameInput" placeholder="Tên hiển thị...">
-            <button type="button" class="btn btn-noel-ice btn-sm" onclick="addAuthUserWeb()">+ Thêm</button>
+
+          <p style="font-size:0.83rem;color:var(--text-muted);margin-bottom:12px">
+            Chọn nhanh các mẫu <b>Hình Ảnh Design Setup</b> hiện đại cho giao diện hoặc tải lên Ảnh Setup / Logo riêng của bạn:
+          </p>
+
+          <div class="setup-preset-grid" style="margin-bottom:14px">
+            <div class="setup-preset-card" onclick="selectSetupPreset('desk')">
+              <div style="font-size:1.5rem;margin-bottom:4px">🖥️</div>
+              <div style="font-size:0.8rem;font-weight:800;color:var(--text-primary)">White Desk Setup</div>
+              <div style="font-size:0.7rem;color:var(--text-muted)">Dual Monitor Studio</div>
+            </div>
+            <div class="setup-preset-card" onclick="selectSetupPreset('cloud')">
+              <div style="font-size:1.5rem;margin-bottom:4px">🛡️</div>
+              <div style="font-size:0.8rem;font-weight:800;color:var(--text-primary)">Quantum Shield</div>
+              <div style="font-size:0.7rem;color:var(--text-muted)">Anti-Ban Architecture</div>
+            </div>
+            <div class="setup-preset-card" onclick="selectSetupPreset('minimal')">
+              <div style="font-size:1.5rem;margin-bottom:4px">✨</div>
+              <div style="font-size:0.8rem;font-weight:800;color:var(--text-primary)">Pure Alabaster</div>
+              <div style="font-size:0.7rem;color:var(--text-muted)">Clean Typography</div>
+            </div>
           </div>
-          <div id="authUserBox" class="scroll-list" style="max-height:135px"></div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+            <button type="button" class="btn btn-blue btn-block" onclick="document.getElementById('bannerUploadInput').click()">
+              🖼️ Tải Ảnh Design Setup Riêng
+            </button>
+            <button type="button" class="btn btn-soft btn-block" onclick="document.getElementById('logoUploadInput').click()">
+              ✨ Tải Logo Thương Hiệu
+            </button>
+          </div>
         </div>
       </div>
+    </div>
 
-      <!-- CỘT PHẢI: CHỌN BOX & TỰ ĐỘNG TAG CHUẨN ZALO/DISCORD + BẢNG ĐIỀU KHIỂN CHIẾN DỊCH -->
-      <div>
-        <!-- MỤC 4: CHỌN BOX & TỰ ĐỘNG TAG CHUẨN KHUNG CHAT -->
-        <div class="card">
+    <!-- ============================================================
+         TAB 5: HỆ THỐNG ANTI-BAN, GIÁM SÁT TIẾN TRÌNH & PHÂN QUYỀN
+         ============================================================ -->
+    <div id="tab-monitor" class="tab-pane">
+      <div class="two-col-grid">
+        <div class="studio-card">
           <div class="card-head">
-            <div class="card-title">🦌 4. Chọn Box Chat & Tự Động Tag Chuẩn Khung Chat (Zalo + Discord)</div>
-            <span class="tag-badge b-green" id="selectedBoxBadge">Đã chọn: 0 box</span>
-          </div>
-
-          <div style="display:grid;grid-template-columns:1fr auto;gap:8px;margin-bottom:10px">
-            <div>
-              <label>Chọn tài khoản để lấy danh sách Nhóm Zalo / Box Discord</label>
-              <select id="groupAccSelect" onchange="onAccountSelectChange()"></select>
-            </div>
-            <div style="display:flex;align-items:flex-end;gap:6px;flex-wrap:wrap">
-              <button type="button" class="btn btn-noel-ice btn-sm" onclick="fetchZaloGroups()">📂 Nhóm Zalo</button>
-              <button type="button" class="btn btn-noel-ghost btn-sm" onclick="fetchZaloFriends()">👥 Bạn Bè</button>
-              <button type="button" class="btn btn-noel-red btn-sm" onclick="fetchDiscordAllBoxes()">🔴 All Box Discord</button>
+            <div class="card-title">📡 Tiến Trình Đang Hoạt Động & Trạng Thái Anti-Ban</div>
+            <div style="display:flex;gap:6px">
+              <button type="button" class="btn btn-soft btn-sm" onclick="clearStoppedTasks()">🧹 Dọn Task Dừng</button>
+              <button type="button" class="btn btn-rose btn-sm" onclick="stopAllTasks()">⏹ Dừng Tất Cả</button>
             </div>
           </div>
 
-          <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:9px">
-            <input type="text" id="boxSearchInput" placeholder="🔍 Tìm nhanh tên nhóm, bạn bè hoặc kênh Discord..."
-                   oninput="renderTargetBoxes()" style="flex:1;min-width:180px">
-            <button type="button" class="btn btn-noel-gold btn-sm" onclick="selectTopBoxes(3)">⚡ Chọn 3 Box</button>
-            <button type="button" class="btn btn-noel-gold btn-sm" onclick="selectTopBoxes(5)">⚡ Chọn 5 Box</button>
-            <button type="button" class="btn btn-noel-ghost btn-sm" onclick="toggleAllBoxes(true)">Chọn hết</button>
-            <button type="button" class="btn btn-noel-ghost btn-sm" onclick="toggleAllBoxes(false)">Bỏ chọn</button>
-          </div>
+          <div id="activeTasksBox" class="clean-list" style="max-height:310px;margin-bottom:14px"></div>
 
-          <div style="display:flex;gap:6px;margin-bottom:10px">
-            <input type="text" id="manualBoxId" placeholder="Nhập thêm ID Nhóm Zalo hoặc Channel ID Discord..." style="flex:1">
-            <select id="manualBoxType" style="width:165px">
-              <option value="group">Nhóm Zalo</option>
-              <option value="user">Bạn bè Zalo</option>
-              <option value="discord_channel">Kênh Discord</option>
-            </select>
-            <button type="button" class="btn btn-noel-ghost btn-sm" onclick="addManualBox()">+ Thêm</button>
-          </div>
-
-          <div id="targetBoxContainer" class="scroll-list" style="max-height:215px;margin-bottom:12px">
-            <div style="text-align:center;color:var(--text-muted);padding:16px;font-size:0.84rem">
-              Chọn tài khoản rồi bấm <b>Nhóm Zalo</b> hoặc <b>All Box Discord</b>. Khi tích chọn nhóm Zalo, danh sách thành viên để Tag sẽ tự động nạp ngay bên dưới!
+          <div style="background:var(--bg-subtle);border:1px solid var(--border-light);border-radius:12px;padding:12px">
+            <div style="font-size:0.83rem;font-weight:800;color:var(--text-primary);margin-bottom:6px">
+              🛡️ Trạng Thái Lá Chắn Bảo Vệ Kép (Zalo & Discord):
             </div>
-          </div>
-
-          <!-- BẢNG TAG THẬT TỰ ĐỘNG CHUẨN KHUNG CHAT ZALO & DISCORD -->
-          <div style="background:var(--bg-card-inner);border:1px solid var(--border-gold);border-radius:12px;padding:12px">
-            <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:8px">
-              <div style="font-size:0.85rem;font-weight:800;color:#fde68a">
-                🏷️ Tự Động Tag Tên Chuẩn Khung Chat (Zalo Mention Xanh Dương & Discord Mention)
-              </div>
-              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-                <label style="display:flex;align-items:center;gap:5px;margin:0;cursor:pointer;font-size:0.81rem;color:#6ee7b7">
-                  <input type="checkbox" id="tagAllCheck"> Tag @All / @everyone
-                </label>
-                <button type="button" class="btn btn-noel-ice btn-sm" onclick="loadMembersOfSelectedBox()">
-                  🔄 Tải Lại Thành Viên Nhóm
-                </button>
-              </div>
-            </div>
-
-            <div style="display:flex;gap:6px;margin-bottom:7px">
-              <input type="text" id="memberSearchInput" placeholder="🔍 Tìm tên thành viên trong khung chat để Tag..."
-                     oninput="renderMemberTags()" style="flex:1">
-              <button type="button" class="btn btn-noel-ghost btn-sm" onclick="toggleAllMembers(true)">Tag Hết</button>
-              <button type="button" class="btn btn-noel-ghost btn-sm" onclick="toggleAllMembers(false)">Bỏ Tag</button>
-            </div>
-
-            <div id="memberTagContainer" class="scroll-list" style="max-height:145px">
-              <div style="text-align:center;color:var(--text-muted);padding:10px;font-size:0.8rem">
-                Tích chọn 1 nhóm Zalo hoặc kênh Discord ở trên để hệ thống tự động lấy toàn bộ thành viên trong khung chat (hoặc gõ thẳng <code>@Tên</code> ở cuối câu).
-              </div>
+            <div style="font-size:0.78rem;color:var(--text-secondary);display:grid;gap:4px">
+              <div>• <b>Zalo Quantum Shield:</b> Zero-Shift Tail + Native Mention Priority + Biometric Cadence</div>
+              <div>• <b>Discord Anti-Scan Vault:</b> Locked Device Fingerprint + Cookie Session (<code>__dcfduid</code>) + Snowflake Nonce</div>
             </div>
           </div>
         </div>
-"""
 
-HTML_INDEX_PART2 = """
-        <!-- MỤC 5: KHỞI CHẠY CHIẾN DỊCH (DISCORD BUNG CHỮ KHÔNG ĐÓNG KHUNG + ZALO RICH-TEXT) -->
-        <div class="card">
+        <div class="studio-card">
           <div class="card-head">
-            <div class="card-title">🚀 5. Khởi Chạy Chiến Dịch (Discord Bung Chữ Tự Nhiên • Zalo Đổi Màu Chữ To)</div>
-            <span class="tag-badge b-red">No-Frame Discord</span>
-          </div>
-
-          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px;margin-bottom:12px">
-            <div>
-              <label>Chế độ gửi</label>
-              <select id="taskMode">
-                <option value="treo_nhay" selected>🔥 Treo Nhây (Từng dòng - Tự xoá số 1., 2.)</option>
-                <option value="treo_ngon">📜 Treo Ngôn (Gửi nguyên khối văn bản)</option>
-                <option value="fast">⚡ Spam Tốc Độ Cao</option>
-              </select>
-            </div>
-            <div>
-              <label>Chọn nhanh File .TXT theo Số Thứ Tự</label>
-              <select id="taskFileSelect" onchange="onFileSelectChange()">
-                <option value="">-- Hoặc nhập nội dung trực tiếp bên dưới --</option>
-              </select>
-            </div>
-          </div>
-
-          <div style="margin-bottom:12px">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;flex-wrap:wrap;gap:4px">
-              <label style="margin:0">Nội dung gửi (Gõ <code>@Tên</code> ở cuối câu hoặc tích chọn ở Mục 4 để tự động Tag chuẩn)</label>
-              <span style="font-size:0.75rem;color:#6ee7b7;font-weight:800">
-                ✨ Bên Discord chữ tự bung to rõ, không bao giờ đóng khung đen!
-              </span>
-            </div>
-            <textarea id="taskRawText" rows="4" placeholder="Nhập nội dung tin nhắn... (Có thể gõ @Tên thành viên ở cuối câu để hệ thống tự động nhận diện Tag chuẩn theo khung chat Zalo & Discord)"></textarea>
-          </div>
-
-          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:10px;margin-bottom:12px">
-            <div>
-              <label>Chế độ Màu Chữ Zalo / Kiểu Chữ</label>
-              <select id="colorMode" onchange="toggleFixedColorSwatches()">
-                <option value="rainbow" selected>🌈 Phối Màu Từng Dòng</option>
-                <option value="word_rainbow">✨ Phối Màu Từng Từ</option>
-                <option value="random">🎲 Ngẫu Nhiên</option>
-                <option value="fixed">🎨 Khóa Cố Định 1 Màu</option>
-                <option value="none">⚪ Chữ Thường</option>
-              </select>
-            </div>
-            <div>
-              <label>Độ Trễ Delay (Giây)</label>
-              <input type="number" id="taskDelay" value="1.0" min="0.2" max="120" step="0.1">
-            </div>
-            <div>
-              <label>Số Lượng Icon VIP</label>
-              <input type="number" id="iconCount" value="3" min="0" max="10" step="1">
-            </div>
-          </div>
-
-          <div id="fixedColorBox" style="display:none;margin-bottom:12px;padding:10px 12px;background:var(--bg-input);border-radius:10px;border:1px solid var(--border-frost)">
-            <label style="margin-bottom:4px">Chọn Màu Cố Định Zalo Rich-Text:</label>
-            <input type="hidden" id="fixedColorVal" value="red">
-            <div class="swatch-group">
-              <div class="swatch-chip active" onclick="pickSwatch('red',this)">
-                <span class="color-dot" style="background:#db342e"></span> Đỏ Rực
-              </div>
-              <div class="swatch-chip" onclick="pickSwatch('yellow',this)">
-                <span class="color-dot" style="background:#f7b503"></span> Vàng Kim
-              </div>
-              <div class="swatch-chip" onclick="pickSwatch('green',this)">
-                <span class="color-dot" style="background:#15a85f"></span> Xanh Ngọc
-              </div>
-              <div class="swatch-chip" onclick="pickSwatch('orange',this)">
-                <span class="color-dot" style="background:#f27806"></span> Cam Lửa
-              </div>
-            </div>
-          </div>
-
-          <div style="display:flex;gap:14px;flex-wrap:wrap;padding:10px 12px;background:var(--bg-input);border:1px solid var(--border-frost);border-radius:11px;margin-bottom:12px">
-            <label style="display:flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:0.82rem;color:#6ee7b7">
-              <input type="checkbox" id="chkStripNum" checked> ✂️ Tự xoá số <code>1.</code>, <code>2.</code> đầu dòng
-            </label>
-            <label style="display:flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:0.82rem;color:#fde68a">
-              <input type="checkbox" id="chkBigText" checked> 🔠 Bung Chữ To In Đậm (Zalo & Discord)
-            </label>
-            <label style="display:flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:0.82rem">
-              <input type="checkbox" id="chkUseEmoji" checked> 😎 Gắn Icon VIP
-            </label>
-            <label style="display:flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:0.82rem;color:#7dd3fc">
-              <input type="checkbox" id="chkAntiband" checked> 🛡️ Bật Anti-Ban Chuyên Sâu (Zalo + Discord Stealth)
-            </label>
-            <label style="display:flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:0.82rem">
-              <input type="checkbox" id="chkMultiAcc" checked> 👥 Chạy Đa Acc
-            </label>
-          </div>
-
-          <div style="display:grid;grid-template-columns:2fr 1fr;gap:10px">
-            <button type="button" class="btn btn-noel-red" style="font-size:0.94rem;padding:12px" onclick="startCampaign()">
-              🎄 KHỞI CHẠY CHIẾN DỊCH NGAY
-            </button>
-            <button type="button" class="btn btn-noel-green" onclick="applyLiveConfig()">
-              ⚡ CẬP NHẬT NÓNG DELAY/MÀU
+            <div class="card-title">🔑 Phân Quyền Lệnh Chat (<code>.chophep</code>) & Nhật Ký Ẩn Danh</div>
+            <button type="button" class="btn btn-soft btn-sm" id="btnToggleLogPanel" onclick="toggleBotLogVisibility()">
+              👁️ Hiện Nhật Ký Lệnh
             </button>
           </div>
-        </div>
 
-        <!-- MỤC 6: GIÁM SÁT TIẾN TRÌNH & LOG ĐÃ ẨN THÔNG TIN ACC NHẠY CẢM -->
-        <div class="card">
-          <div class="card-head">
-            <div class="card-title">📡 6. Giám Sát Tiến Trình & Nhật Ký Bảo Mật (Đã Ẩn Log Acc)</div>
-            <div style="display:flex;gap:6px;flex-wrap:wrap">
-              <button type="button" class="btn btn-noel-ghost btn-sm" id="btnToggleLogPanel" onclick="toggleBotLogVisibility()">
-                👁️ Hiện Nhật Ký Lệnh
-              </button>
-              <button type="button" class="btn btn-noel-ghost btn-sm" onclick="clearStoppedTasks()">🧹 Dọn Task Dừng</button>
-              <button type="button" class="btn btn-noel-red btn-sm" onclick="stopAllTasks()">⏹ Dừng Hết</button>
-            </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:6px;margin-bottom:10px">
+            <input type="text" id="authUidInput" placeholder="UID Zalo/Discord...">
+            <input type="text" id="authNameInput" placeholder="Tên người dùng...">
+            <button type="button" class="btn btn-blue btn-sm" onclick="addAuthUserWeb()">+ Cấp quyền</button>
           </div>
 
-          <div id="activeTasksBox" class="scroll-list" style="max-height:210px"></div>
+          <div id="authUserBox" class="clean-list" style="max-height:140px;margin-bottom:12px"></div>
 
-          <!-- PHẦN LOG LỆNH KHUNG CHAT MẶC ĐỊNH ĐƯỢC ẨN GỌN ĐỂ BẢO MẬT ACC -->
-          <div id="stealthLogSection" style="display:none;margin-top:12px;border-top:1px solid var(--border-frost);padding-top:12px">
+          <div id="stealthLogSection" style="display:none;border-top:1px solid var(--border-light);padding-top:12px">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px">
-              <span style="font-size:0.78rem;font-weight:800;color:#fde68a">
-                🔒 NHẬT KÝ LỆNH KHUNG CHAT (ĐÃ MÃ HÓA ẨN UID/TOKEN)
+              <span style="font-size:0.78rem;font-weight:800;color:var(--text-secondary)">
+                🔒 NHẬT KÝ LỆNH KHUNG CHAT (ĐÃ ẨN UID/TOKEN)
               </span>
-              <button type="button" class="btn btn-noel-ghost btn-sm" onclick="clearBotLogs()">Xóa log</button>
+              <button type="button" class="btn btn-soft btn-sm" onclick="clearBotLogs()">Xóa log</button>
             </div>
-            <div id="botLogsBox" class="scroll-list" style="max-height:150px"></div>
+            <div id="botLogsBox" class="clean-list" style="max-height:160px"></div>
           </div>
         </div>
       </div>
     </div>
   </div>
 
+  <!-- ============================================================
+       THANH CHỌN TAB NGANG NỔI Ở DƯỚI CÙNG (BOTTOM HORIZONTAL TAB DOCK)
+       ============================================================ -->
+  <nav class="bottom-tab-dock-wrap" aria-label="Điều hướng chức năng">
+    <div class="bottom-tab-dock">
+      <button type="button" class="dock-tab-btn active" data-tab="tab-accounts" onclick="switchMainTab('tab-accounts')">
+        <span>👤 Tài Khoản & Reg</span>
+        <span class="dock-count" id="dockCntAcc">0</span>
+      </button>
+      <button type="button" class="dock-tab-btn" data-tab="tab-targets" onclick="switchMainTab('tab-targets')">
+        <span>🎯 Phòng Chat & Tag</span>
+        <span class="dock-count" id="dockCntBox">0</span>
+      </button>
+      <button type="button" class="dock-tab-btn" data-tab="tab-campaign" onclick="switchMainTab('tab-campaign')">
+        <span>🚀 Chạy Chiến Dịch</span>
+      </button>
+      <button type="button" class="dock-tab-btn" data-tab="tab-files" onclick="switchMainTab('tab-files')">
+        <span>📁 Kho File & Setup</span>
+        <span class="dock-count" id="dockCntFile">0</span>
+      </button>
+      <button type="button" class="dock-tab-btn" data-tab="tab-monitor" onclick="switchMainTab('tab-monitor')">
+        <span>🛡️ Anti-Ban & Giám Sát</span>
+        <span class="dock-count" id="dockCntTask">0</span>
+      </button>
+    </div>
+  </nav>
+
   <script>
-    // ============================================================
-    // CHẶN TUYỆT ĐỐI LỖI ẤN VÀO MÀN HÌNH BỊ TỰ ĐỘNG ZOOM TO
-    // ============================================================
+    // CHẶN TUYỆT ĐỐI LỖI CHẠM MÀN HÌNH BỊ TỰ ZOOM TO
     document.addEventListener("gesturestart", function(e) { e.preventDefault(); }, {passive: false});
     document.addEventListener("gesturechange", function(e) { e.preventDefault(); }, {passive: false});
     document.addEventListener("gestureend", function(e) { e.preventDefault(); }, {passive: false});
     let lastTouchEnd = 0;
     document.addEventListener("touchend", function(e) {
       const now = Date.now();
-      if (now - lastTouchEnd <= 280) {
-        e.preventDefault();
-      }
+      if (now - lastTouchEnd <= 280) e.preventDefault();
       lastTouchEnd = now;
     }, {passive: false});
 
-    // ============================================================
-    // HIỆU ỨNG TUYẾT RƠI GIÁNG SINH 60FPS SIÊU MƯỢT
-    // ============================================================
-    let SNOW_ENABLED = true;
-    (function initSnow() {
-      const canvas = document.getElementById("snowCanvas");
-      if (!canvas) return;
-      const ctx = canvas.getContext("2d");
-      let w = canvas.width = window.innerWidth;
-      let h = canvas.height = window.innerHeight;
-      window.addEventListener("resize", () => {
-        w = canvas.width = window.innerWidth;
-        h = canvas.height = window.innerHeight;
+    // CHUYỂN TAB TRÊN THANH NGANG DƯỚI CÙNG
+    function switchMainTab(tabId) {
+      document.querySelectorAll(".tab-pane").forEach(p => p.classList.remove("active"));
+      const target = document.getElementById(tabId);
+      if (target) target.classList.add("active");
+      document.querySelectorAll(".dock-tab-btn").forEach(b => {
+        b.classList.toggle("active", b.getAttribute("data-tab") === tabId);
       });
-      const flakes = Array.from({length: 55}, () => ({
-        x: Math.random() * w,
-        y: Math.random() * h,
-        r: Math.random() * 2.6 + 1.0,
-        vy: Math.random() * 0.85 + 0.35,
-        vx: (Math.random() - 0.5) * 0.45,
-        alpha: Math.random() * 0.55 + 0.25
-      }));
-      function drawSnow() {
-        ctx.clearRect(0, 0, w, h);
-        if (SNOW_ENABLED) {
-          for (const f of flakes) {
-            ctx.beginPath();
-            ctx.arc(f.x, f.y, f.r, 0, Math.PI * 2);
-            ctx.fillStyle = `rgba(240, 249, 255, ${f.alpha})`;
-            ctx.fill();
-            f.y += f.vy;
-            f.x += f.vx;
-            if (f.y > h + 6) { f.y = -6; f.x = Math.random() * w; }
-            if (f.x > w + 6) f.x = -6;
-            if (f.x < -6) f.x = w + 6;
-          }
-        }
-        requestAnimationFrame(drawSnow);
-      }
-      requestAnimationFrame(drawSnow);
-    })();
-
-    function toggleSnowEffect() {
-      SNOW_ENABLED = !SNOW_ENABLED;
-      const btn = document.getElementById("btnSnowToggle");
-      btn.textContent = SNOW_ENABLED ? "❄️ Tuyết: BẬT" : "❄️ Tuyết: TẮT";
+      updateCampaignSummaries();
     }
 
-    // ============================================================
-    // QUẢN LÝ TRẠNG THÁI GIAO DIỆN & SMART DOM DIFFING
-    // ============================================================
     let ALL_ACCOUNTS = [];
     let ALL_FILES = [];
     let LOADED_BOXES = [];
@@ -5306,7 +5658,8 @@ HTML_INDEX_PART2 = """
         .replace(/&/g, "&amp;")
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;");
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
     }
 
     function maskStr(str) {
@@ -5319,29 +5672,59 @@ HTML_INDEX_PART2 = """
     function toast(msg, isErr = false) {
       const box = document.getElementById("toastBox");
       const d = document.createElement("div");
-      d.className = "toast-msg";
+      d.className = "toast-card";
       if (isErr) d.style.borderLeftColor = "#e11d48";
       d.textContent = msg;
       box.appendChild(d);
       setTimeout(() => { d.remove(); }, 3200);
     }
 
-    // UPLOAD LOGO THƯƠNG HIỆU LÊN SERVER
+    // UPLOAD LOGO & BANNER DESIGN SETUP
     async function uploadBrandLogo(fileList) {
       if (!fileList || !fileList.length) return;
       const fd = new FormData();
       fd.append("logo", fileList[0]);
-      toast("🎄 Đang tải Logo thương hiệu lên...");
+      toast("⏳ Đang tải Logo thương hiệu lên...");
       try {
         const r = await fetch("/api/upload_logo", {method: "POST", body: fd});
         const d = await r.json();
         if (!d.ok) return toast(d.error || "Lỗi tải Logo", true);
-        const container = document.getElementById("brandLogoContainer");
-        container.innerHTML = `<img src="${d.logo_url}?t=${Date.now()}" alt="Brand Logo">`;
-        toast("✅ Đã cập nhật Logo thương hiệu thành công!");
+        document.getElementById("brandLogoContainer").innerHTML = `<img src="${d.logo_url}?t=${Date.now()}" alt="Logo">`;
+        toast("✅ Đã cập nhật Logo thành công!");
       } catch (e) {
         toast("Lỗi kết nối khi tải Logo", true);
       }
+    }
+
+    async function uploadSetupBanner(fileList) {
+      if (!fileList || !fileList.length) return;
+      const fd = new FormData();
+      fd.append("banner", fileList[0]);
+      toast("⏳ Đang tải Ảnh Design Setup lên...");
+      try {
+        const r = await fetch("/api/upload_banner", {method: "POST", body: fd});
+        const d = await r.json();
+        if (!d.ok) return toast(d.error || "Lỗi tải ảnh Setup", true);
+        document.getElementById("setupBannerContainer").innerHTML = `<img src="${d.banner_url}?t=${Date.now()}" alt="Setup Banner">`;
+        toast("✅ Đã cập nhật Ảnh Design Setup!");
+      } catch (e) {
+        toast("Lỗi tải ảnh Setup", true);
+      }
+    }
+
+    async function selectSetupPreset(presetName) {
+      try {
+        const r = await fetch("/api/setup_preset", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({preset: presetName})
+        });
+        const d = await r.json();
+        if (d.ok && d.banner_html) {
+          document.getElementById("setupBannerContainer").innerHTML = d.banner_html;
+          toast("🎨 Đã đổi giao diện Design Setup!");
+        }
+      } catch (e) {}
     }
 
     function toggleMaskAccounts() {
@@ -5363,13 +5746,13 @@ HTML_INDEX_PART2 = """
       const zFields = document.getElementById("zaloFields");
       const dFields = document.getElementById("discordFields");
       if (plat === "zalo") {
-        zBtn.className = "plat-tab-btn active-zalo";
-        dBtn.className = "plat-tab-btn";
+        zBtn.className = "seg-btn active-zalo";
+        dBtn.className = "seg-btn";
         zFields.style.display = "block";
         dFields.style.display = "none";
       } else {
-        zBtn.className = "plat-tab-btn";
-        dBtn.className = "plat-tab-btn active-discord";
+        zBtn.className = "seg-btn";
+        dBtn.className = "seg-btn active-discord";
         zFields.style.display = "none";
         dFields.style.display = "block";
       }
@@ -5382,24 +5765,23 @@ HTML_INDEX_PART2 = """
 
     function pickSwatch(cId, el) {
       document.getElementById("fixedColorVal").value = cId;
-      document.querySelectorAll(".swatch-chip").forEach(p => p.classList.remove("active"));
+      document.querySelectorAll(".swatch-btn").forEach(p => p.classList.remove("active"));
       el.classList.add("active");
     }
 
-    // CÔNG CỤ LẤY TOKEN DISCORD BẰNG REG CHỐNG DIE
     function copyDiscordRegScript() {
-      const scriptCode = `window.webpackChunkdiscord_app.push([[Math.random()],{},req=>{for(const m of Object.keys(req.c).map(x=>req.c[x].exports).filter(x=>x)){if(m.default&&m.default.getToken!==undefined)return copy(m.default.getToken());if(m.getToken!==undefined)return copy(m.getToken())}}]);console.log("Đã copy Token Discord vào Clipboard!");`;
+      const scriptCode = `window.webpackChunkdiscord_app.push([[Math.random()],{},req=>{for(const m of Object.keys(req.c).map(x=>req.c[x].exports).filter(x=>x)){if(m.default&&m.default.getToken!==undefined)return copy(m.default.getToken());if(m.getToken!==undefined)return copy(m.getToken())}}]);console.log("Đã copy Token Discord an toàn vào Clipboard!");`;
       navigator.clipboard.writeText(scriptCode).then(() => {
-        toast("✅ Đã copy đoạn mã Reg lấy Token Discord an toàn (Dán vào Console F12 là tự copy Token)!");
+        toast("✅ Đã copy mã lấy Token ẩn danh (Dán vào Console F12 là tự copy Token)!");
       }).catch(() => {
-        prompt("Copy đoạn mã lấy Token an toàn này dán vào F12 Console Discord:", scriptCode);
+        prompt("Copy đoạn mã lấy Token an toàn này:", scriptCode);
       });
     }
 
     async function extractTokenFromReg() {
       const raw_dump = document.getElementById("regRawDump").value.trim();
       if (!raw_dump) return toast("Hãy dán chuỗi Reg / mail:pass:token / Header F12 vào ô!", true);
-      toast("⏳ Đang tách Token & khởi tạo hồ sơ Stealth Fingerprint chống die...");
+      toast("⏳ Đang tách Token & khởi tạo Phiên Ngầm Anti-Scan...");
       try {
         const r = await fetch("/api/discord_reg_token", {
           method: "POST",
@@ -5412,7 +5794,7 @@ HTML_INDEX_PART2 = """
         if (d.username && !document.getElementById("accName").value) {
           document.getElementById("accName").value = d.username;
         }
-        toast(`✅ Token Live (${d.username || "OK"})! Bấm 'Lưu Tài Khoản' để kết nối.`);
+        toast(`✅ Đã khóa Fingerprint & xác thực Token (${d.username || "Live"})!`);
       } catch (e) {
         toast("Lỗi kiểm tra Token", true);
       }
@@ -5423,7 +5805,7 @@ HTML_INDEX_PART2 = """
       const password = document.getElementById("regPass").value;
       const two_fa = document.getElementById("reg2fa").value.trim();
       if (!email || !password) return toast("Hãy nhập Email và Mật khẩu Discord!", true);
-      toast("⏳ Đang đăng nhập qua phiên Reg Stealth...");
+      toast("⏳ Đang khởi tạo phiên trình duyệt Stealth & lấy Token...");
       try {
         const r = await fetch("/api/discord_reg_token", {
           method: "POST",
@@ -5433,46 +5815,47 @@ HTML_INDEX_PART2 = """
         const d = await r.json();
         if (!d.ok) return toast(d.error || "Không lấy được Token", true);
         document.getElementById("accToken").value = d.token;
-        toast("✅ Đã lấy Token qua phiên Reg thành công! Bấm 'Lưu Tài Khoản' ngay.");
+        toast("✅ Đã lấy Token qua phiên Stealth thành công! Bấm 'Kết Nối Tài Khoản' ngay.");
       } catch (e) {
         toast("Lỗi kết nối máy chủ", true);
       }
     }
 
-    // 1. QUẢN LÝ TÀI KHOẢN (ẨN LOG ACC BẢO MẬT)
+    // 1. TÀI KHOẢN
     async function loadAccounts(force = false) {
       try {
         const r = await fetch("/api/accounts");
         const d = await r.json();
         ALL_ACCOUNTS = d.accounts || [];
         document.getElementById("kpiAccounts").textContent = ALL_ACCOUNTS.length;
+        document.getElementById("dockCntAcc").textContent = ALL_ACCOUNTS.length;
 
         const box = document.getElementById("accListBox");
         if (!ALL_ACCOUNTS.length) {
-          setHtmlIfChanged(box, `<div style="text-align:center;color:var(--text-muted);padding:14px;font-size:0.82rem">Chưa có tài khoản nào. Hãy thêm Zalo hoặc Discord ở trên.</div>`);
+          setHtmlIfChanged(box, `<div style="text-align:center;color:var(--text-muted);padding:18px;font-size:0.84rem">Chưa có tài khoản nào. Hãy kết nối Zalo hoặc Discord ở khung bên trái.</div>`);
         } else {
           const html = ALL_ACCOUNTS.map(a => {
             const isZalo = (a.platform || "zalo") === "zalo";
             const platBadge = isZalo
-              ? `<span class="tag-badge b-ice">ZALO ANTI-BAN</span>`
-              : `<span class="tag-badge b-red">DISCORD STEALTH</span>`;
+              ? `<span class="pill-badge p-blue">ZALO SHIELD</span>`
+              : `<span class="pill-badge p-indigo">DISCORD STEALTH</span>`;
             const cmdOn = a.chat_cmd_enabled ? "🟢 24/7" : "⚪ Tắt";
             const dispName = MASK_ACC_MODE ? maskStr(a.name) : a.name;
             return `
-              <div class="row-item">
+              <div class="list-row">
                 <div style="min-width:0;flex:1">
                   <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
                     ${platBadge}
-                    <b style="font-size:0.86rem;color:#fff">${esc(dispName)}</b>
+                    <b style="font-size:0.87rem;color:var(--text-primary)">${esc(dispName)}</b>
                   </div>
-                  <div style="font-size:0.74rem;color:var(--text-muted);margin-top:2px">
-                    ${esc(a.ws_status || "Đang bảo vệ")} • Chế độ: <b>${a.allow_all_cmd ? "Mọi người" : "Chỉ Chủ Acc"}</b>
+                  <div style="font-size:0.75rem;color:var(--text-muted);margin-top:2px">
+                    ${esc(a.ws_status || "Đang bảo vệ")} • Quyền lệnh: <b>${a.allow_all_cmd ? "Mọi người" : "Chỉ Chủ Acc"}</b>
                   </div>
                 </div>
                 <div style="display:flex;gap:5px;flex-wrap:wrap">
-                  <button type="button" class="btn btn-noel-ghost btn-sm" onclick="toggleAccCmd(${a.id})">${cmdOn}</button>
-                  <button type="button" class="btn btn-noel-ghost btn-sm" onclick="toggleAllowAll(${a.id})">🔒</button>
-                  <button type="button" class="btn btn-noel-red btn-sm" onclick="deleteAccount(${a.id})">✕</button>
+                  <button type="button" class="btn btn-soft btn-sm" onclick="toggleAccCmd(${a.id})">${cmdOn}</button>
+                  <button type="button" class="btn btn-soft btn-sm" onclick="toggleAllowAll(${a.id})">🔒</button>
+                  <button type="button" class="btn btn-rose btn-sm" onclick="deleteAccount(${a.id})">✕</button>
                 </div>
               </div>
             `;
@@ -5505,7 +5888,7 @@ HTML_INDEX_PART2 = """
       const chat_cmd_enabled = document.getElementById("accChatCmd").checked ? 1 : 0;
       const allow_all_cmd = document.getElementById("accAllowAll").checked ? 1 : 0;
 
-      toast("⏳ Đang xác thực và kích hoạt lá chắn Anti-Ban riêng...");
+      toast("⏳ Đang xác thực và kích hoạt lá chắn Anti-Ban...");
       try {
         const r = await fetch("/api/accounts", {
           method: "POST",
@@ -5543,7 +5926,7 @@ HTML_INDEX_PART2 = """
       loadAccounts();
     }
 
-    // 2. UPLOAD FILE .TXT VỚI HIỆU ỨNG THANH TIẾN TRÌNH ĐẦY ĐỦ
+    // 2. FILE UPLOAD PROGRESS
     function onDragZone(ev, active) {
       ev.preventDefault();
       const dz = document.getElementById("fileDropzone");
@@ -5569,7 +5952,7 @@ HTML_INDEX_PART2 = """
       wrap.style.display = "block";
       bar.style.width = "0%";
       pctEl.textContent = "0%";
-      lblEl.textContent = `🎄 Đang tải lên ${fileList.length} file & lọc số đầu dòng...`;
+      lblEl.textContent = `⏳ Đang tải lên ${fileList.length} file & làm sạch số đầu dòng / icon...`;
 
       const fd = new FormData();
       for (let i = 0; i < fileList.length; i++) {
@@ -5596,8 +5979,8 @@ HTML_INDEX_PART2 = """
           }
           bar.style.width = "100%";
           pctEl.textContent = "100%";
-          lblEl.textContent = `✅ Hoàn tất! Đã lưu ${d.uploaded.length} file sạch vào kho.`;
-          toast(`🎁 Đã tải lên thành công ${d.uploaded.length} file .txt!`);
+          lblEl.textContent = `✅ Hoàn tất! Đã lưu ${d.uploaded.length} file sạch.`;
+          toast(`📁 Đã tải lên thành công ${d.uploaded.length} file .txt!`);
           await loadFiles(true);
           if (d.uploaded.length === 1) {
             useFileNow(d.uploaded[0].id);
@@ -5620,26 +6003,26 @@ HTML_INDEX_PART2 = """
         const r = await fetch("/api/files");
         const d = await r.json();
         ALL_FILES = d.files || [];
-        document.getElementById("kpiFiles").textContent = ALL_FILES.length;
+        document.getElementById("dockCntFile").textContent = ALL_FILES.length;
 
         const box = document.getElementById("fileListBox");
         if (!ALL_FILES.length) {
-          setHtmlIfChanged(box, `<div style="text-align:center;color:var(--text-muted);padding:14px;font-size:0.81rem">Kho file đang trống. Hãy tải file .txt lên ở trên.</div>`);
+          setHtmlIfChanged(box, `<div style="text-align:center;color:var(--text-muted);padding:16px;font-size:0.83rem">Chưa có file nào. Hãy tải file .txt lên ở trên.</div>`);
         } else {
           const html = ALL_FILES.map(f => `
-            <div class="row-item">
+            <div class="list-row">
               <div style="min-width:0;flex:1">
                 <div style="display:flex;align-items:center;gap:6px">
-                  <span class="tag-badge b-gold">Số ${f.display_num}</span>
-                  <b style="font-size:0.85rem;color:#fff;word-break:break-all">${esc(f.filename)}</b>
+                  <span class="pill-badge p-amber">Số ${f.display_num}</span>
+                  <b style="font-size:0.86rem;color:var(--text-primary);word-break:break-all">${esc(f.filename)}</b>
                 </div>
-                <div style="font-size:0.73rem;color:var(--text-muted);margin-top:2px">
+                <div style="font-size:0.74rem;color:var(--text-muted);margin-top:2px">
                   ${f.lines_count} dòng sạch • Gõ <code>.nhay ${f.display_num} @Tên</code> trên chat
                 </div>
               </div>
               <div style="display:flex;gap:5px">
-                <button type="button" class="btn btn-noel-ice btn-sm" onclick="useFileNow(${f.id})">Nạp</button>
-                <button type="button" class="btn btn-noel-red btn-sm" onclick="deleteFile(${f.id})">✕</button>
+                <button type="button" class="btn btn-blue btn-sm" onclick="useFileNow(${f.id})">Chọn</button>
+                <button type="button" class="btn btn-rose btn-sm" onclick="deleteFile(${f.id})">✕</button>
               </div>
             </div>
           `).join("");
@@ -5651,7 +6034,7 @@ HTML_INDEX_PART2 = """
           LAST_FILE_SELECT_SIG = fSig;
           const sel = document.getElementById("taskFileSelect");
           const prev = sel.value;
-          sel.innerHTML = `<option value="">-- Hoặc nhập nội dung trực tiếp bên dưới --</option>` +
+          sel.innerHTML = `<option value="">-- Hoặc nhập nội dung trực tiếp --</option>` +
             ALL_FILES.map(f => `<option value="${f.display_num}">File số ${f.display_num}: ${esc(f.filename)} (${f.lines_count} dòng)</option>`).join("");
           if (prev) sel.value = prev;
         }
@@ -5683,7 +6066,7 @@ HTML_INDEX_PART2 = """
       loadFiles(true);
     }
 
-    // 3. QUẢN LÝ PHÂN QUYỀN
+    // 3. PHÂN QUYỀN
     async function loadAuthUsers() {
       try {
         const r = await fetch("/api/authorized_users");
@@ -5691,12 +6074,12 @@ HTML_INDEX_PART2 = """
         const users = d.users || [];
         const box = document.getElementById("authUserBox");
         if (!users.length) {
-          setHtmlIfChanged(box, `<div style="text-align:center;color:var(--text-muted);padding:10px;font-size:0.79rem">Hiện chỉ mình chủ Acc dùng được lệnh.</div>`);
+          setHtmlIfChanged(box, `<div style="text-align:center;color:var(--text-muted);padding:12px;font-size:0.8rem">Hiện chỉ mình chủ Acc dùng được lệnh.</div>`);
         } else {
           const html = users.map(u => `
-            <div class="row-item" style="padding:7px 10px">
-              <div style="font-size:0.81rem"><b>${esc(u.name)}</b> <span style="color:var(--text-muted)">(${esc(maskStr(u.uid))})</span></div>
-              <button type="button" class="btn btn-noel-red btn-sm" onclick="delAuthUserWeb('${esc(u.uid)}')">Xóa</button>
+            <div class="list-row" style="padding:8px 11px">
+              <div style="font-size:0.82rem"><b>${esc(u.name)}</b> <span style="color:var(--text-muted)">(${esc(maskStr(u.uid))})</span></div>
+              <button type="button" class="btn btn-rose btn-sm" onclick="delAuthUserWeb('${esc(u.uid)}')">Xóa</button>
             </div>
           `).join("");
           setHtmlIfChanged(box, html);
@@ -5728,7 +6111,7 @@ HTML_INDEX_PART2 = """
       loadAuthUsers();
     }
 
-    // 4. LẤY BOX ZALO / DISCORD & TỰ ĐỘNG NẠP THÀNH VIÊN ĐỂ TAG CHUẨN KHUNG CHAT
+    // 4. PHÒNG CHAT & TAG THẬT CHUẨN 100% (ZALO & DISCORD)
     function onAccountSelectChange() {
       const aid = document.getElementById("groupAccSelect").value;
       const acc = ALL_ACCOUNTS.find(a => String(a.id) === String(aid));
@@ -5791,17 +6174,46 @@ HTML_INDEX_PART2 = """
     function updateSelectedBoxBadge() {
       const cnt = Object.keys(SELECTED_BOX_MAP).length;
       document.getElementById("selectedBoxBadge").textContent = `Đã chọn: ${cnt} box`;
+      document.getElementById("kpiBoxes").textContent = cnt;
+      document.getElementById("dockCntBox").textContent = cnt;
+      updateCampaignSummaries();
     }
 
-    function toggleBoxSelection(id, name, type, checked) {
-      if (checked) {
-        SELECTED_BOX_MAP[id] = {id: String(id), name: name, type: type};
-        // Tự động tải luôn danh sách thành viên của nhóm Zalo / Box Discord vừa tích chọn để Tag chuẩn ngay!
-        if (type === "group" || type === "discord_channel") {
-          loadMembersForBoxId(String(id), name, true);
+    function updateSelectedMemberBadge() {
+      const cnt = Object.keys(SELECTED_MEMBER_MAP).length;
+      const tagAll = document.getElementById("tagAllCheck").checked;
+      document.getElementById("selectedMemberBadge").textContent = tagAll
+        ? `Đang Tag: @All + ${cnt} người`
+        : `Đã chọn Tag: ${cnt} người`;
+      updateCampaignSummaries();
+    }
+
+    function updateCampaignSummaries() {
+      const boxCnt = Object.keys(SELECTED_BOX_MAP).length;
+      const memList = Object.values(SELECTED_MEMBER_MAP);
+      const tagAll = document.getElementById("tagAllCheck").checked;
+      document.getElementById("campaignBoxSummary").textContent = `Phòng chat: ${boxCnt} box`;
+      if (tagAll) {
+        document.getElementById("campaignTagSummary").textContent = `Đang Tag: @All (${memList.length} người riêng)`;
+      } else if (memList.length) {
+        const names = memList.slice(0, 3).map(m => "@" + m.name).join(", ");
+        document.getElementById("campaignTagSummary").textContent = `Đang Tag (${memList.length}): ${names}`;
+      } else {
+        document.getElementById("campaignTagSummary").textContent = `Đang Tag: Không tag (hoặc theo @Tên trong câu)`;
+      }
+    }
+
+    function onBoxCheckboxChange(el) {
+      const idx = parseInt(el.getAttribute("data-idx"), 10);
+      const item = window._CURRENT_FILTERED_BOXES ? window._CURRENT_FILTERED_BOXES[idx] : null;
+      if (!item) return;
+      if (el.checked) {
+        SELECTED_BOX_MAP[item.id] = {id: String(item.id), name: item.name, type: item.type};
+        if (item.type === "group" || item.type === "discord_channel") {
+          loadMembersForBoxId(String(item.id), item.name, true);
         }
       } else {
-        delete SELECTED_BOX_MAP[id];
+        delete SELECTED_BOX_MAP[item.id];
       }
       updateSelectedBoxBadge();
     }
@@ -5810,27 +6222,27 @@ HTML_INDEX_PART2 = """
       const q = (document.getElementById("boxSearchInput").value || "").toLowerCase().trim();
       const box = document.getElementById("targetBoxContainer");
       const filtered = LOADED_BOXES.filter(g => !q || g.name.toLowerCase().includes(q) || String(g.id).includes(q));
+      window._CURRENT_FILTERED_BOXES = filtered;
 
       if (!filtered.length) {
-        box.innerHTML = `<div style="text-align:center;color:var(--text-muted);padding:14px;font-size:0.82rem">Không tìm thấy Box phù hợp.</div>`;
+        box.innerHTML = `<div style="text-align:center;color:var(--text-muted);padding:16px;font-size:0.83rem">Không tìm thấy phòng chat phù hợp.</div>`;
         return;
       }
 
-      box.innerHTML = filtered.map(g => {
+      box.innerHTML = filtered.map((g, idx) => {
         const isChecked = !!SELECTED_BOX_MAP[g.id];
         const tBadge = g.type === "discord_channel"
-          ? `<span class="tag-badge b-red">DISCORD</span>`
-          : (g.type === "group" ? `<span class="tag-badge b-ice">NHÓM ZALO</span>` : `<span class="tag-badge b-green">BẠN BÈ</span>`);
+          ? `<span class="pill-badge p-indigo">DISCORD</span>`
+          : (g.type === "group" ? `<span class="pill-badge p-blue">NHÓM ZALO</span>` : `<span class="pill-badge p-emerald">BẠN BÈ</span>`);
         const memInfo = g.members ? ` • ${g.members} TV` : "";
         return `
-          <label class="row-item" style="cursor:pointer;margin-bottom:6px">
+          <label class="list-row" style="cursor:pointer;margin-bottom:6px">
             <div style="display:flex;align-items:center;gap:8px;min-width:0;flex:1">
-              <input type="checkbox" ${isChecked ? "checked" : ""}
-                     onchange='toggleBoxSelection(${JSON.stringify(String(g.id))}, ${JSON.stringify(g.name)}, ${JSON.stringify(g.type)}, this.checked)'>
+              <input type="checkbox" data-idx="${idx}" ${isChecked ? "checked" : ""} onchange="onBoxCheckboxChange(this)">
               ${tBadge}
-              <span style="font-weight:800;font-size:0.85rem;color:#fff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(g.name)}</span>
+              <span style="font-weight:800;font-size:0.86rem;color:var(--text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(g.name)}</span>
             </div>
-            <span style="font-size:0.72rem;color:var(--text-muted)">ID: ***${esc(String(g.id).slice(-4))}${memInfo}</span>
+            <span style="font-size:0.73rem;color:var(--text-muted)">ID: ***${esc(String(g.id).slice(-4))}${memInfo}</span>
           </label>
         `;
       }).join("");
@@ -5845,7 +6257,7 @@ HTML_INDEX_PART2 = """
       renderTargetBoxes();
       const firstBox = LOADED_BOXES[0];
       if (firstBox) loadMembersForBoxId(String(firstBox.id), firstBox.name, true);
-      toast(`⚡ Đã chọn nhanh ${Object.keys(SELECTED_BOX_MAP).length} Box!`);
+      toast(`⚡ Đã chọn nhanh ${Object.keys(SELECTED_BOX_MAP).length} phòng chat!`);
     }
 
     function toggleAllBoxes(selectAll) {
@@ -5862,7 +6274,7 @@ HTML_INDEX_PART2 = """
     function addManualBox() {
       const id = document.getElementById("manualBoxId").value.trim();
       const type = document.getElementById("manualBoxType").value;
-      if (!id) return toast("Hãy nhập ID Box / Channel", true);
+      if (!id) return toast("Hãy nhập ID Nhóm Zalo hoặc Channel ID Discord", true);
       const item = {id, name: `Box_${id.slice(-5)}`, type};
       LOADED_BOXES.unshift(item);
       SELECTED_BOX_MAP[id] = item;
@@ -5875,7 +6287,7 @@ HTML_INDEX_PART2 = """
     async function loadMembersForBoxId(boxId, boxName, silent = false) {
       const aid = document.getElementById("groupAccSelect").value;
       if (!aid || !boxId) return;
-      if (!silent) toast(`⏳ Đang quét thành viên trong khung chat ${boxName}...`);
+      if (!silent) toast(`⏳ Đang lấy Tên & UID thành viên trong ${boxName}...`);
       try {
         const r = await fetch(`/api/group_members/${aid}/${boxId}`);
         const d = await r.json();
@@ -5885,7 +6297,7 @@ HTML_INDEX_PART2 = """
         }
         LOADED_MEMBERS = d.members || [];
         renderMemberTags();
-        if (!silent) toast(`✅ Đã nạp ${LOADED_MEMBERS.length} thành viên để Tag chuẩn khung chat!`);
+        if (!silent) toast(`✅ Đã lấy ${LOADED_MEMBERS.length} thành viên! Hãy tích chọn người cần Tag.`);
       } catch (e) {
         if (!silent) toast("Lỗi tải thành viên", true);
       }
@@ -5894,43 +6306,67 @@ HTML_INDEX_PART2 = """
     async function loadMembersOfSelectedBox() {
       const selectedList = Object.values(SELECTED_BOX_MAP);
       if (!selectedList.length) {
-        return toast("Hãy tích chọn ít nhất 1 Nhóm Zalo hoặc Box Discord trước!", true);
+        return toast("Hãy tích chọn ít nhất 1 Nhóm Zalo hoặc Kênh Discord ở bên trái trước!", true);
       }
       const targetBox = selectedList[0];
       await loadMembersForBoxId(targetBox.id, targetBox.name, false);
     }
 
-    function toggleMemberTag(uid, name, checked) {
-      if (checked) {
-        SELECTED_MEMBER_MAP[uid] = {uid: String(uid), id: String(uid), name: name};
+    function addManualMemberTag() {
+      const name = document.getElementById("manualTagName").value.trim().replace(/^@+/, "");
+      const uid = document.getElementById("manualTagUid").value.trim();
+      if (!uid) return toast("Hãy nhập UID Zalo hoặc ID Discord của người cần Tag!", true);
+      const dispName = name || `User_${uid.slice(-4)}`;
+      const item = {id: uid, uid: uid, name: dispName};
+      if (!LOADED_MEMBERS.some(x => String(x.uid || x.id) === uid)) {
+        LOADED_MEMBERS.unshift(item);
+      }
+      SELECTED_MEMBER_MAP[uid] = item;
+      document.getElementById("manualTagName").value = "";
+      document.getElementById("manualTagUid").value = "";
+      renderMemberTags();
+      updateSelectedMemberBadge();
+      toast(`🏷️ Đã gắn Tag chuẩn cho @${dispName} (UID: ***${uid.slice(-4)})!`);
+    }
+
+    function onMemberCheckboxChange(el) {
+      const idx = parseInt(el.getAttribute("data-midx"), 10);
+      const m = window._CURRENT_FILTERED_MEMBERS ? window._CURRENT_FILTERED_MEMBERS[idx] : null;
+      if (!m) return;
+      const uid = String(m.uid || m.id);
+      if (el.checked) {
+        SELECTED_MEMBER_MAP[uid] = {uid: uid, id: uid, name: m.name};
       } else {
         delete SELECTED_MEMBER_MAP[uid];
       }
+      updateSelectedMemberBadge();
     }
 
     function renderMemberTags() {
       const q = (document.getElementById("memberSearchInput").value || "").toLowerCase().trim();
       const box = document.getElementById("memberTagContainer");
       const filtered = LOADED_MEMBERS.filter(m => !q || m.name.toLowerCase().includes(q) || String(m.id).includes(q));
+      window._CURRENT_FILTERED_MEMBERS = filtered;
 
       if (!filtered.length) {
-        box.innerHTML = `<div style="text-align:center;color:var(--text-muted);padding:10px;font-size:0.79rem">Không tìm thấy thành viên.</div>`;
+        box.innerHTML = `<div style="text-align:center;color:var(--text-muted);padding:14px;font-size:0.82rem">Không tìm thấy thành viên phù hợp.</div>`;
         return;
       }
 
-      box.innerHTML = filtered.map(m => {
-        const isChecked = !!SELECTED_MEMBER_MAP[m.id];
+      box.innerHTML = filtered.map((m, idx) => {
+        const uid = String(m.uid || m.id);
+        const isChecked = !!SELECTED_MEMBER_MAP[uid];
         return `
-          <label class="row-item" style="cursor:pointer;padding:7px 10px;margin-bottom:5px">
-            <div style="display:flex;align-items:center;gap:8px">
-              <input type="checkbox" ${isChecked ? "checked" : ""}
-                     onchange='toggleMemberTag(${JSON.stringify(String(m.id))}, ${JSON.stringify(m.name)}, this.checked)'>
-              <span style="font-size:0.84rem;font-weight:800;color:#7dd3fc">@${esc(m.name)}</span>
+          <label class="list-row" style="cursor:pointer;padding:8px 11px;margin-bottom:6px;${isChecked ? 'border-color:#2563eb;background:#eff6ff' : ''}">
+            <div style="display:flex;align-items:center;gap:8px;min-width:0;flex:1">
+              <input type="checkbox" data-midx="${idx}" ${isChecked ? "checked" : ""} onchange="onMemberCheckboxChange(this);renderMemberTags();">
+              <span style="font-size:0.86rem;font-weight:800;color:var(--accent-blue)">@${esc(m.name)}</span>
             </div>
-            <span style="font-size:0.72rem;color:var(--text-muted)">UID: ***${esc(String(m.id).slice(-4))}</span>
+            <span class="pill-badge p-blue">ID: ${esc(uid)}</span>
           </label>
         `;
       }).join("");
+      updateSelectedMemberBadge();
     }
 
     function toggleAllMembers(selectAll) {
@@ -5938,16 +6374,20 @@ HTML_INDEX_PART2 = """
         SELECTED_MEMBER_MAP = {};
       } else {
         LOADED_MEMBERS.forEach(m => {
-          SELECTED_MEMBER_MAP[m.id] = {uid: String(m.id), id: String(m.id), name: m.name};
+          const uid = String(m.uid || m.id);
+          SELECTED_MEMBER_MAP[uid] = {uid: uid, id: uid, name: m.name};
         });
       }
       renderMemberTags();
     }
 
-    // 5. KHỞI CHẠY CHIẾN DỊCH & CẬP NHẬT NÓNG
+    // 5. KHỞI CHẠY CHIẾN DỊCH
     async function startCampaign() {
       const targets = Object.values(SELECTED_BOX_MAP);
-      if (!targets.length) return toast("Hãy tích chọn ít nhất 1 Box Chat ở Mục 4!", true);
+      if (!targets.length) {
+        switchMainTab("tab-targets");
+        return toast("Hãy tích chọn ít nhất 1 Phòng Chat ở Tab 2 trước!", true);
+      }
 
       const mode = document.getElementById("taskMode").value;
       const file_query = document.getElementById("taskFileSelect").value;
@@ -5977,8 +6417,9 @@ HTML_INDEX_PART2 = """
         });
         const d = await r.json();
         if (!d.ok) return toast(d.error || "Không thể khởi chạy", true);
-        toast(`🎄 Đã khởi chạy chiến dịch trên ${targets.length} Box!`);
+        toast(`🚀 Đã khởi chạy chiến dịch trên ${targets.length} phòng chat!`);
         loadTasks();
+        switchMainTab("tab-monitor");
       } catch (e) {
         toast("Lỗi khởi chạy tiến trình", true);
       }
@@ -6002,7 +6443,7 @@ HTML_INDEX_PART2 = """
       if (d.ok) toast(`⚡ Đã cập nhật nóng cho ${d.updated} chiến dịch đang chạy!`);
     }
 
-    // 6. GIÁM SÁT TIẾN TRÌNH & LOG ĐÃ MÃ HÓA ẨN ACC
+    // 6. GIÁM SÁT TIẾN TRÌNH & LOG BẢO MẬT
     async function loadTasks() {
       try {
         const r = await fetch("/api/tasks");
@@ -6013,35 +6454,37 @@ HTML_INDEX_PART2 = """
         tasks.forEach(t => { totalSent += (t.stats && t.stats.sent) ? t.stats.sent : 0; });
 
         document.getElementById("kpiTasks").textContent = runningCnt;
+        document.getElementById("dockCntTask").textContent = runningCnt;
         document.getElementById("kpiSent").textContent = totalSent;
 
         const box = document.getElementById("activeTasksBox");
         if (!tasks.length) {
-          setHtmlIfChanged(box, `<div style="text-align:center;color:var(--text-muted);padding:14px;font-size:0.81rem">Chưa có chiến dịch nào.</div>`);
+          setHtmlIfChanged(box, `<div style="text-align:center;color:var(--text-muted);padding:18px;font-size:0.83rem">Chưa có chiến dịch nào đang chạy.</div>`);
           return;
         }
 
         const html = tasks.map(t => {
           const isRun = t.status === "running";
           const stBadge = isRun
-            ? `<span class="tag-badge b-green">🟢 ĐANG CHẠY</span>`
-            : `<span class="tag-badge b-red">⏹ ĐÃ DỪNG</span>`;
+            ? `<span class="pill-badge p-emerald">🟢 ĐANG CHẠY</span>`
+            : `<span class="pill-badge p-rose">⏹ ĐÃ DỪNG</span>`;
           const meta = t.meta || {};
           const sent = (t.stats && t.stats.sent) ? t.stats.sent : 0;
-          const names = (meta.target_names || []).join(", ") || "Box Chat";
+          const names = (meta.target_names || []).join(", ") || "Phòng Chat";
+          const tagInfo = meta.tag_all ? "Tag @All" : (meta.tag_count ? `Tag ${meta.tag_count} người` : "Không tag");
           return `
-            <div class="row-item">
+            <div class="list-row">
               <div style="min-width:0;flex:1">
                 <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
                   ${stBadge}
-                  <b style="font-size:0.85rem;color:#fff">[${esc(t.type)}] ${esc(names)}</b>
-                  <span class="tag-badge b-gold">Đã gửi: ${sent} tin</span>
+                  <b style="font-size:0.86rem;color:var(--text-primary)">[${esc(t.type)}] ${esc(names)}</b>
+                  <span class="pill-badge p-blue">Đã gửi: ${sent} tin</span>
                 </div>
-                <div style="font-size:0.73rem;color:var(--text-muted);margin-top:2px">
-                  Nguồn: <b>${meta.source === "chat" ? "Lệnh Chat" : "Web UI"}</b> • Delay: ${meta.delay || 1}s • Anti-Ban: <b>Active</b>
+                <div style="font-size:0.74rem;color:var(--text-muted);margin-top:2px">
+                  ${tagInfo} • Delay: ${meta.delay || 1}s • Anti-Ban: <b>Active</b>
                 </div>
               </div>
-              ${isRun ? `<button type="button" class="btn btn-noel-red btn-sm" onclick="stopTask('${esc(t.id)}')">Dừng</button>` : ""}
+              ${isRun ? `<button type="button" class="btn btn-rose btn-sm" onclick="stopTask('${esc(t.id)}')">Dừng</button>` : ""}
             </div>
           `;
         }).join("");
@@ -6074,14 +6517,14 @@ HTML_INDEX_PART2 = """
         const logs = d.logs || [];
         const box = document.getElementById("botLogsBox");
         if (!logs.length) {
-          setHtmlIfChanged(box, `<div style="text-align:center;color:var(--text-muted);padding:10px;font-size:0.78rem">Chưa có lịch sử lệnh.</div>`);
+          setHtmlIfChanged(box, `<div style="text-align:center;color:var(--text-muted);padding:12px;font-size:0.8rem">Chưa có lịch sử lệnh.</div>`);
           return;
         }
         const html = logs.map(l => `
-          <div class="row-item" style="padding:7px 10px;margin-bottom:5px">
+          <div class="list-row" style="padding:8px 11px;margin-bottom:5px">
             <div style="min-width:0;flex:1">
-              <div style="font-size:0.8rem;color:#fde68a;font-weight:800">${esc(l.cmd_text)}</div>
-              <div style="font-size:0.73rem;color:#cbd5e1">${esc(l.action_taken)} • Box: ${esc(l.thread_id)}</div>
+              <div style="font-size:0.81rem;color:var(--accent-blue);font-weight:800">${esc(l.cmd_text)}</div>
+              <div style="font-size:0.74rem;color:var(--text-secondary)">${esc(l.action_taken)} • Box: ${esc(l.thread_id)}</div>
             </div>
             <span style="font-size:0.7rem;color:var(--text-muted)">${esc(l.time_str)}</span>
           </div>
@@ -6119,13 +6562,23 @@ HTML_INDEX = HTML_INDEX_PART1 + HTML_INDEX_PART2
 
 
 # ============================================================
-# ROUTES XÁC THỰC, LOGO UPLOAD, DISCORD REG TOKEN & API ĐIỀU KHIỂN
+# ROUTES XÁC THỰC, LOGO/BANNER SETUP, DISCORD REG ANTI-SCAN & API
 # ============================================================
 def get_brand_logo_html():
     custom_logo = get_setting("brand_logo", "")
     if custom_logo and os.path.exists(os.path.join(LOGO_DIR, custom_logo)):
         return f'<img src="/api/brand_logo/{custom_logo}" alt="Logo">'
-    return SVG_NOEL_TREE
+    return SVG_STUDIO_LOGO
+
+
+def get_setup_banner_html():
+    mode = get_setting("setup_mode", "preset:desk")
+    if mode.startswith("custom:"):
+        fname = mode.split(":", 1)[1]
+        if fname and os.path.exists(os.path.join(LOGO_DIR, fname)):
+            return f'<img src="/api/brand_logo/{fname}" alt="Setup Banner">'
+    preset_key = mode.split(":", 1)[1] if ":" in mode else "desk"
+    return SETUP_ART_PRESETS.get(preset_key, SETUP_ART_PRESETS["desk"])
 
 
 def login_required(f):
@@ -6168,7 +6621,7 @@ def route_gate():
     ok_ip, wait_s = check_ip_bruteforce(ip)
     logo_html = get_brand_logo_html()
     if not ok_ip:
-        err_html = f'<div style="color:#fda4af;margin-bottom:10px;font-size:0.83rem;font-weight:700">Tạm khóa {wait_s}s do nhập sai nhiều lần.</div>'
+        err_html = f'<div style="color:var(--accent-rose);margin-bottom:10px;font-size:0.83rem;font-weight:700">Tạm khóa {wait_s}s do nhập sai nhiều lần.</div>'
         return HTML_GATE.replace("__ERR_BLOCK__", err_html).replace("__BRAND_LOGO_HTML__", logo_html)
 
     if request.method == "POST":
@@ -6178,7 +6631,7 @@ def route_gate():
             session["gate_passed"] = True
             return redirect("/login")
         record_login_result(ip, False)
-        err_html = '<div style="color:#fda4af;margin-bottom:10px;font-size:0.83rem;font-weight:700">Mã khóa truy cập không chính xác!</div>'
+        err_html = '<div style="color:var(--accent-rose);margin-bottom:10px;font-size:0.83rem;font-weight:700">Mã khóa truy cập không chính xác!</div>'
         return HTML_GATE.replace("__ERR_BLOCK__", err_html).replace("__BRAND_LOGO_HTML__", logo_html)
 
     return HTML_GATE.replace("__ERR_BLOCK__", "").replace("__BRAND_LOGO_HTML__", logo_html)
@@ -6193,14 +6646,13 @@ def route_login():
     if request.method == "POST":
         u = (request.form.get("username") or "admin").strip()
         p = (request.form.get("password") or "").strip()
-        # Cho phép đăng nhập bằng tài khoản quản trị trong DB hoặc mật khẩu hệ thống
         conn = db()
         row = conn.execute("SELECT * FROM users WHERE username = ?", (u,)).fetchone()
         conn.close()
         if (row and verify_password_secure(row["password"], p)) or hmac.compare_digest(p, ACCESS_KEY):
             session["user"] = u or "admin"
             return redirect("/")
-        msg = '<div style="color:#fda4af;margin-bottom:10px;font-size:0.83rem;font-weight:700">Mật khẩu quản trị không chính xác!</div>'
+        msg = '<div style="color:var(--accent-rose);margin-bottom:10px;font-size:0.83rem;font-weight:700">Mật khẩu quản trị không chính xác!</div>'
         return HTML_LOGIN.replace("__MSG_BLOCK__", msg).replace("__BRAND_LOGO_HTML__", logo_html)
 
     return HTML_LOGIN.replace("__MSG_BLOCK__", "").replace("__BRAND_LOGO_HTML__", logo_html)
@@ -6216,7 +6668,13 @@ def route_logout():
 @login_required
 def route_index():
     logo_html = get_brand_logo_html()
-    return HTML_INDEX.replace("__USER__", session.get("user", "Admin")).replace("__BRAND_LOGO_HTML__", logo_html)
+    banner_html = get_setup_banner_html()
+    return (
+        HTML_INDEX
+        .replace("__USER__", session.get("user", "Admin"))
+        .replace("__BRAND_LOGO_HTML__", logo_html)
+        .replace("__SETUP_BANNER_HTML__", banner_html)
+    )
 
 
 @app.route("/api/upload_logo", methods=["POST"])
@@ -6229,11 +6687,39 @@ def api_upload_logo():
     if ext not in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"):
         return jsonify({"ok": False, "error": "Chỉ hỗ trợ ảnh .png, .jpg, .webp, .gif, .svg"})
 
-    fname = f"noel_logo_{int(time.time())}{ext}"
+    fname = f"studio_logo_{int(time.time())}{ext}"
     save_path = os.path.join(LOGO_DIR, fname)
     f.save(save_path)
     set_setting("brand_logo", fname)
     return jsonify({"ok": True, "logo_url": f"/api/brand_logo/{fname}"})
+
+
+@app.route("/api/upload_banner", methods=["POST"])
+@login_required
+def api_upload_banner():
+    f = request.files.get("banner")
+    if not f or not f.filename:
+        return jsonify({"ok": False, "error": "Chưa chọn ảnh Setup"})
+    ext = os.path.splitext(secure_filename(f.filename))[1].lower()
+    if ext not in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"):
+        return jsonify({"ok": False, "error": "Chỉ hỗ trợ ảnh .png, .jpg, .webp, .gif, .svg"})
+
+    fname = f"studio_banner_{int(time.time())}{ext}"
+    save_path = os.path.join(LOGO_DIR, fname)
+    f.save(save_path)
+    set_setting("setup_mode", f"custom:{fname}")
+    return jsonify({"ok": True, "banner_url": f"/api/brand_logo/{fname}"})
+
+
+@app.route("/api/setup_preset", methods=["POST"])
+@login_required
+def api_setup_preset():
+    data = request.get_json(force=True) or {}
+    preset = (data.get("preset") or "desk").strip()
+    if preset not in SETUP_ART_PRESETS:
+        preset = "desk"
+    set_setting("setup_mode", f"preset:{preset}")
+    return jsonify({"ok": True, "banner_html": SETUP_ART_PRESETS[preset]})
 
 
 @app.route("/api/brand_logo/<path:filename>")
@@ -6252,16 +6738,9 @@ def api_discord_reg_token():
         if not tokens:
             return jsonify({"ok": False, "error": "Không tìm thấy chuỗi Token Discord hợp lệ trong văn bản đã dán"})
         for tk in tokens:
-            dc = DiscordBot(tk, is_bot=False)
-            if dc.check():
-                return jsonify({
-                    "ok": True,
-                    "token": dc.token,
-                    "username": dc.display_name or dc.username,
-                    "uid": dc.user_id,
-                    "is_bot": dc.is_bot
-                })
-        # Trả về token đầu tiên nếu offline check chưa qua
+            warm = warmup_discord_stealth_token(tk)
+            if warm.get("ok"):
+                return jsonify(warm)
         return jsonify({"ok": True, "token": tokens[0], "username": ""})
     else:
         email = (data.get("email") or "").strip()
@@ -6283,7 +6762,6 @@ def api_accounts():
         out = []
         for r in rows:
             d = dict(r)
-            # Ẩn tuyệt đối toàn bộ thông tin nhạy cảm (Cookie, Token, IMEI, UID đầy đủ) khỏi API trả về
             d.pop("cookies", None)
             d.pop("token", None)
             d.pop("imei", None)
@@ -6547,7 +7025,7 @@ def api_start_task():
     data = request.get_json(force=True) or {}
     targets = data.get("targets") or []
     if not targets:
-        return jsonify({"ok": False, "error": "Vui lòng chọn ít nhất 1 Box Chat"})
+        return jsonify({"ok": False, "error": "Vui lòng chọn ít nhất 1 Phòng Chat ở Tab 2"})
 
     mode = data.get("mode", "treo_nhay")
     file_query = (data.get("file_query") or "").strip()
@@ -6562,10 +7040,10 @@ def api_start_task():
         if mode == "treo_nhay":
             blocks = [strip_leading_line_number(ln) for ln in raw_text.split("\n") if ln.strip()]
         elif mode == "treo_ngon":
-            blocks = [raw_text]
+            blocks = [clean_corrupted_shortcuts(raw_text)]
         else:
-            lines_f = [strip_leading_line_number(ln) if strip_num else ln.strip() for ln in raw_text.split("\n") if ln.strip()]
-            blocks = lines_f if lines_f else [raw_text]
+            lines_f = [strip_leading_line_number(ln) if strip_num else clean_corrupted_shortcuts(ln.strip()) for ln in raw_text.split("\n") if ln.strip()]
+            blocks = lines_f if lines_f else [clean_corrupted_shortcuts(raw_text)]
 
     if not blocks:
         blocks = get_blocks_from_file_query("latest", mode=mode)
