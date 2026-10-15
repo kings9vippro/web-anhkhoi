@@ -281,7 +281,7 @@ def init_db():
         uid TEXT DEFAULT '',
         chat_cmd_enabled INTEGER DEFAULT 1,
         cmd_prefix TEXT DEFAULT '.',
-        allow_all_cmd INTEGER DEFAULT 0,
+        allow_all_cmd INTEGER DEFAULT 1,
         enabled INTEGER DEFAULT 1,
         created_at REAL
     )
@@ -329,7 +329,7 @@ def init_db():
         ("uid", "ALTER TABLE accounts ADD COLUMN uid TEXT DEFAULT ''"),
         ("chat_cmd_enabled", "ALTER TABLE accounts ADD COLUMN chat_cmd_enabled INTEGER DEFAULT 1"),
         ("cmd_prefix", "ALTER TABLE accounts ADD COLUMN cmd_prefix TEXT DEFAULT '.'"),
-        ("allow_all_cmd", "ALTER TABLE accounts ADD COLUMN allow_all_cmd INTEGER DEFAULT 0"),
+        ("allow_all_cmd", "ALTER TABLE accounts ADD COLUMN allow_all_cmd INTEGER DEFAULT 1"),
         ("enabled", "ALTER TABLE accounts ADD COLUMN enabled INTEGER DEFAULT 1"),
     ]
     for col_name, sql_stmt in migrations:
@@ -371,6 +371,12 @@ def init_db():
         created_at REAL
     )
     """)
+
+    try:
+        cur.execute("UPDATE accounts SET chat_cmd_enabled = 1 WHERE chat_cmd_enabled IS NULL")
+        cur.execute("UPDATE accounts SET allow_all_cmd = 1 WHERE allow_all_cmd IS NULL OR allow_all_cmd = 0")
+    except Exception:
+        pass
 
     existing_admin = cur.execute("SELECT id FROM users WHERE username = ?", (DEFAULT_ADMIN_USER,)).fetchone()
     if not existing_admin:
@@ -1512,6 +1518,7 @@ refresh_owner_uids()
 GROUP_MEMBERS_CACHE = {}
 GROUP_CACHE_LOCK = threading.RLock()
 KNOWN_GROUPS_BY_ACC = defaultdict(set)
+ALL_KNOWN_ZALO_GROUP_IDS = set()
 
 
 # ============================================================
@@ -1644,6 +1651,7 @@ class Zalo:
         all_gids = [str(g) for g in grid.keys()]
         for gid in all_gids:
             KNOWN_GROUPS_BY_ACC[self.uid].add(gid)
+            ALL_KNOWN_ZALO_GROUP_IDS.add(str(gid))
 
         out = []
         for chunk in [all_gids[i:i + 50] for i in range(0, len(all_gids), 50)]:
@@ -1680,6 +1688,7 @@ class Zalo:
         gmap = json.loads(dec).get("data", {}).get("gridVerMap", {})
         for gid in gmap:
             KNOWN_GROUPS_BY_ACC[self.uid].add(str(gid))
+            ALL_KNOWN_ZALO_GROUP_IDS.add(str(gid))
         return gmap
 
     def friends(self, use_cache=True):
@@ -1832,36 +1841,50 @@ class Zalo:
         return out
 
     def get_recent_group_messages(self, gid):
+        gid_s = str(gid).strip()
+        ALL_KNOWN_ZALO_GROUP_IDS.add(gid_s)
+        if self.uid:
+            KNOWN_GROUPS_BY_ACC[self.uid].add(gid_s)
+
         for ep in (
             "https://tt-group-wpa.chat.zalo.me/api/group/getrecentv2",
             "https://tt-group-wpa.chat.zalo.me/api/group/getrecent",
             "https://tt-group-wpa.chat.zalo.me/api/group/history",
         ):
-            try:
-                enc = self._enc({"grid": str(gid), "groupId": str(gid), "imed": 0, "count": 20})
-                r = self.s.post(
-                    ep,
-                    params={"zpw_ver": 645, "zpw_type": 30},
-                    data={"params": enc},
-                    timeout=8,
-                )
-                rj = r.json()
-                if rj.get("data"):
-                    dec = self._dec(rj["data"])
-                    parsed = json.loads(dec)
-                    data_obj = parsed.get("data") if isinstance(parsed, dict) else {}
-                    if isinstance(data_obj, dict):
-                        msgs = data_obj.get("groupMsgs") or data_obj.get("msgs") or []
-                        if msgs:
-                            for m in msgs:
-                                if isinstance(m, dict):
-                                    u_f = str(m.get("uidFrom") or "").strip()
-                                    d_n = str(m.get("dName") or "").strip()
-                                    if u_f and d_n and u_f != "0":
-                                        GLOBAL_USER_NAME_CACHE[u_f] = d_n
-                            return msgs
-            except Exception:
-                continue
+            for pl_cand in (
+                {"grid": gid_s, "imed": 0},
+                {"grid": gid_s, "groupId": gid_s, "imed": 0, "count": 25},
+            ):
+                try:
+                    enc = self._enc(pl_cand)
+                    r = self.s.post(
+                        ep,
+                        params={"zpw_ver": 645, "zpw_type": 30},
+                        data={"params": enc},
+                        timeout=8,
+                    )
+                    rj = r.json()
+                    if rj.get("data"):
+                        dec = self._dec(rj["data"])
+                        parsed = json.loads(dec)
+                        data_obj = parsed.get("data") if isinstance(parsed, dict) else parsed
+                        msgs = []
+                        if isinstance(data_obj, dict):
+                            msgs = data_obj.get("groupMsgs") or data_obj.get("msgs") or data_obj.get("messages") or []
+                        elif isinstance(data_obj, list):
+                            msgs = data_obj
+                        if msgs and isinstance(msgs, list):
+                            valid_msgs = [m for m in msgs if isinstance(m, dict)]
+                            for m in valid_msgs:
+                                u_f = str(m.get("uidFrom") or "").strip()
+                                d_n = str(m.get("dName") or "").strip()
+                                if u_f and d_n and u_f != "0":
+                                    GLOBAL_USER_NAME_CACHE[u_f] = d_n
+                            # Sắp xếp theo thời gian tăng dần (cũ -> mới) để tin nhắn mới nhất luôn nằm ở cuối mảng!
+                            valid_msgs.sort(key=lambda x: int(x.get("ts") or x.get("msgId") or x.get("cliMsgId") or 0))
+                            return valid_msgs
+                except Exception:
+                    continue
         return []
 
     def _pick_distinct_zcode(self, color_mode, fixed_color, step_index, prev_zcode=None):
@@ -2588,16 +2611,78 @@ def warmup_discord_stealth_token(token):
     return {"ok": False, "error": "Token không hợp lệ hoặc đã hết hạn"}
 
 
+_DISCORD_LOGIN_TICKETS = {}
+
+
 def login_discord_reg_session(login_email, password, two_fa_code=""):
-    seed_key = f"{login_email}:{password[:4]}"
+    """Đăng nhập Discord bằng Gmail + Mật khẩu chuẩn trình duyệt Chrome 131 (/api/v9/auth/login):
+    - Tự động nhận diện nếu người dùng dán chuỗi email:pass:token vào ô Email hoặc Mật khẩu.
+    - Lưu phiên MFA Ticket (_DISCORD_LOGIN_TICKETS) để khi người dùng nhập mã 2FA/SMS ở bước 2 không bị mất phiên.
+    - Trích xuất thông tin hồ sơ thật (id, username, global_name) ngay sau khi lấy được Token."""
+    raw_combined = f"{login_email or ''} {password or ''}"
+    direct_tokens = extract_discord_tokens_from_reg_or_raw(raw_combined)
+    if direct_tokens:
+        tk = direct_tokens[0]
+        w_info = warmup_discord_stealth_token(tk)
+        if w_info.get("ok"):
+            return {
+                "ok": True,
+                "token": tk,
+                "profile": {"id": w_info.get("uid", ""), "username": w_info.get("username", "Discord User")}
+            }
+
+    email_clean = (login_email or "").strip()
+    if ":" in email_clean and not password:
+        parts = email_clean.split(":")
+        if len(parts) >= 2:
+            email_clean = parts[0].strip()
+            password = parts[1].strip()
+
+    if not email_clean or not password:
+        return {"ok": False, "error": "Vui lòng nhập đầy đủ Gmail và Mật khẩu Discord!"}
+
+    seed_key = f"{email_clean.lower()}:{password[:4]}"
+    cached_ticket_info = _DISCORD_LOGIN_TICKETS.get(email_clean.lower())
+
     s = requests.Session()
     s.cookies.update(DiscordStealthAntiBanEngine.get_deterministic_cookies(seed_key))
     headers = DiscordStealthAntiBanEngine.build_stealth_headers(seed_key, is_bot=False)
     headers["Referer"] = "https://discord.com/login"
+    headers["X-Context-Properties"] = "eyJsb2NhdGlvbiI6IkxvZ2luIn0="
     s.headers.update(headers)
 
+    # Nếu đã có ticket 2FA từ lần bấm trước và người dùng vừa điền mã 2FA
+    if two_fa_code and cached_ticket_info and (time.time() - cached_ticket_info["ts"] < 240):
+        s = cached_ticket_info["session"]
+        ticket = cached_ticket_info["ticket"]
+        for mfa_ep in ("https://discord.com/api/v9/auth/mfa/totp", "https://discord.com/api/v9/auth/mfa/sms"):
+            try:
+                r_mfa = s.post(
+                    mfa_ep,
+                    json={
+                        "code": str(two_fa_code).strip(),
+                        "ticket": ticket,
+                        "login_source": None,
+                        "gift_code_sku_id": None,
+                    },
+                    timeout=15
+                )
+                d_mfa = r_mfa.json() if r_mfa.content else {}
+                if r_mfa.status_code == 200 and d_mfa.get("token"):
+                    tk = d_mfa["token"]
+                    _DISCORD_LOGIN_TICKETS.pop(email_clean.lower(), None)
+                    w_info = warmup_discord_stealth_token(tk)
+                    return {
+                        "ok": True,
+                        "token": tk,
+                        "profile": {"id": w_info.get("uid", ""), "username": w_info.get("username", "Discord User")}
+                    }
+            except Exception:
+                continue
+
     try:
-        r_fp = s.get("https://discord.com/api/v10/experiments", timeout=10)
+        s.get("https://discord.com/login", timeout=8)
+        r_fp = s.get("https://discord.com/api/v9/experiments?with_guild_experiments=true", timeout=10)
         if r_fp.status_code == 200:
             fp = r_fp.json().get("fingerprint")
             if fp:
@@ -2606,49 +2691,84 @@ def login_discord_reg_session(login_email, password, two_fa_code=""):
         pass
 
     pl = {
-        "login": login_email.strip(),
+        "login": email_clean,
         "password": password,
         "undelete": False,
         "login_source": None,
         "gift_code_sku_id": None,
     }
-    r = s.post("https://discord.com/api/v10/auth/login", json=pl, timeout=15)
-    d = r.json() if r.content else {}
+    try:
+        r = s.post("https://discord.com/api/v9/auth/login", json=pl, timeout=15)
+        d = r.json() if r.content else {}
+    except Exception as e:
+        return {"ok": False, "error": f"Lỗi kết nối tới máy chủ Discord: {e}"}
 
     if r.status_code == 200 and d.get("token"):
         tk = d["token"]
-        if s.headers.get("X-Fingerprint"):
-            DiscordStealthAntiBanEngine._FINGERPRINT_CACHE[str(tk)[:18]] = s.headers["X-Fingerprint"]
-        return {"ok": True, "token": tk}
-
-    if d.get("mfa") and d.get("ticket"):
-        if not two_fa_code:
-            return {"ok": False, "need_2fa": True, "error": "Tài khoản có bật 2FA, hãy nhập mã 6 số 2FA vào ô bên dưới"}
-        r_mfa = s.post(
-            "https://discord.com/api/v10/auth/mfa/totp",
-            json={
-                "code": str(two_fa_code).strip(),
-                "ticket": d["ticket"],
-                "login_source": None,
-                "gift_code_sku_id": None,
-            },
-            timeout=15
-        )
-        d_mfa = r_mfa.json() if r_mfa.content else {}
-        if r_mfa.status_code == 200 and d_mfa.get("token"):
-            tk = d_mfa["token"]
-            if s.headers.get("X-Fingerprint"):
-                DiscordStealthAntiBanEngine._FINGERPRINT_CACHE[str(tk)[:18]] = s.headers["X-Fingerprint"]
-            return {"ok": True, "token": tk}
-        return {"ok": False, "error": f"Mã 2FA không đúng hoặc hết hạn: {d_mfa.get('message', '')}"}
-
-    if d.get("captcha_key"):
+        w_info = warmup_discord_stealth_token(tk)
         return {
-            "ok": False,
-            "error": "IP máy chủ bị Discord yêu cầu xác minh Captcha khi đăng nhập bằng mật khẩu. Hãy dùng ô 'Dán Chuỗi Reg / mail:pass:token / Header' ở trên để nạp Token trực tiếp không dính Captcha!"
+            "ok": True,
+            "token": tk,
+            "profile": {"id": w_info.get("uid", ""), "username": w_info.get("username", "Discord User")}
         }
 
-    return {"ok": False, "error": d.get("message") or f"Không thể đăng nhập (HTTP {r.status_code})"}
+    if d.get("mfa") and d.get("ticket"):
+        _DISCORD_LOGIN_TICKETS[email_clean.lower()] = {
+            "ticket": d["ticket"],
+            "session": s,
+            "ts": time.time()
+        }
+        if d.get("sms") and not two_fa_code:
+            try:
+                s.post("https://discord.com/api/v9/auth/mfa/sms/send", json={"ticket": d["ticket"]}, timeout=10)
+            except Exception:
+                pass
+        if not two_fa_code:
+            return {
+                "ok": False,
+                "need_2fa": True,
+                "error": "Tài khoản có bật bảo mật 2 lớp (2FA/SMS). Hãy nhập mã 6 số vào ô 'Mã 2FA' rồi bấm lại nút Đăng Nhập!"
+            }
+        for mfa_ep in ("https://discord.com/api/v9/auth/mfa/totp", "https://discord.com/api/v9/auth/mfa/sms"):
+            r_mfa = s.post(
+                mfa_ep,
+                json={
+                    "code": str(two_fa_code).strip(),
+                    "ticket": d["ticket"],
+                    "login_source": None,
+                    "gift_code_sku_id": None,
+                },
+                timeout=15
+            )
+            d_mfa = r_mfa.json() if r_mfa.content else {}
+            if r_mfa.status_code == 200 and d_mfa.get("token"):
+                tk = d_mfa["token"]
+                _DISCORD_LOGIN_TICKETS.pop(email_clean.lower(), None)
+                w_info = warmup_discord_stealth_token(tk)
+                return {
+                    "ok": True,
+                    "token": tk,
+                    "profile": {"id": w_info.get("uid", ""), "username": w_info.get("username", "Discord User")}
+                }
+        return {"ok": False, "error": "Mã xác thực 2FA/SMS không đúng hoặc đã hết hạn!"}
+
+    raw_err_str = json.dumps(d, ensure_ascii=False)
+    if "ACCOUNT_LOGIN_VERIFICATION_EMAIL" in raw_err_str or "New login location" in raw_err_str:
+        return {
+            "ok": False,
+            "error": "Discord vừa gửi Email xác nhận vị trí đăng nhập mới về hộp thư Gmail của bạn! Hãy mở Gmail bấm 'Verify Login' (Xác nhận đăng nhập), sau đó quay lại đây bấm nút Đăng Nhập một lần nữa là vào thẳng ngay!"
+        }
+    if "INVALID_LOGIN" in raw_err_str:
+        return {"ok": False, "error": "Email hoặc mật khẩu Discord không chính xác!"}
+
+    if d.get("captcha_key") or "captcha" in raw_err_str.lower():
+        return {
+            "ok": False,
+            "captcha_blocked": True,
+            "error": "IP máy chủ Cloud đang bị Discord chặn Captcha khi đăng nhập bằng mật khẩu. Hãy dùng 'Dán Token / Chuỗi Reg' hoặc làm theo hướng dẫn lấy Token 1 chạm ngay bên dưới để vào thẳng 100% không cần mật khẩu!"
+        }
+
+    return {"ok": False, "error": d.get("message") or f"Không thể đăng nhập bằng mật khẩu (Mã {r.status_code})"}
 
 
 # ============================================================
@@ -3835,14 +3955,19 @@ class ZaloSelfBotListener:
         self.acc_id = acc_id
         self.platform = "zalo"
         self.stop_ev = threading.Event()
-        self.seen_msg_ids = deque(maxlen=1000)
+        self.seen_msg_ids = deque(maxlen=2500)
+        self.seeded_groups = set()
+        self.last_grid_vers = {}
+        self.poll_cursor = 0
         self.ws_cipher_key = None
         self.ws_status = "Đang khởi tạo Zalo Shield..."
         self.last_event_ts = 0.0
         self.thread = threading.Thread(target=self._run_loop, daemon=True)
+        self.poller_thread = threading.Thread(target=self._run_http_poller_loop, daemon=True)
 
     def start(self):
         self.thread.start()
+        self.poller_thread.start()
 
     def stop(self):
         self.stop_ev.set()
@@ -3927,12 +4052,30 @@ class ZaloSelfBotListener:
 
             if len(b_data) > 32:
                 iv = b_data[:16]
-                aad = b_data[16:32]
                 for kb in key_candidates:
+                    # Chuẩn Zalo Web v645 (zca-js): 16 byte IV (0:16) + 32 byte AAD (16:48) + Ciphertext & 16 byte GCM Tag (48:)
+                    if len(b_data) >= 64:
+                        try:
+                            cipher = AES.new(kb, AES.MODE_GCM, nonce=iv)
+                            cipher.update(b_data[16:48])
+                            pt = cipher.decrypt_and_verify(b_data[48:-16], b_data[-16:])
+                            res = self._try_decompress_or_json(pt)
+                            if res is not None:
+                                return res
+                        except Exception:
+                            pass
+                        try:
+                            cipher = AES.new(kb, AES.MODE_GCM, nonce=iv)
+                            pt = cipher.decrypt(b_data[48:-16])
+                            res = self._try_decompress_or_json(pt)
+                            if res is not None:
+                                return res
+                        except Exception:
+                            pass
                     if len(b_data) >= 48:
                         try:
                             cipher = AES.new(kb, AES.MODE_GCM, nonce=iv)
-                            cipher.update(aad)
+                            cipher.update(b_data[16:32])
                             pt = cipher.decrypt_and_verify(b_data[32:-16], b_data[-16:])
                             res = self._try_decompress_or_json(pt)
                             if res is not None:
@@ -3947,7 +4090,7 @@ class ZaloSelfBotListener:
                                 return res
                         except Exception:
                             pass
-                    for sl in (b_data[32:], b_data[16:-16], b_data[16:]):
+                    for sl in (b_data[48:], b_data[48:-16], b_data[32:], b_data[16:-16], b_data[16:]):
                         if not sl:
                             continue
                         try:
@@ -4043,6 +4186,19 @@ class ZaloSelfBotListener:
                 or raw_content.get("description")
                 or ""
             )
+        elif isinstance(raw_content, str) and raw_content.strip().startswith("{"):
+            try:
+                rc_json = json.loads(raw_content.strip())
+                if isinstance(rc_json, dict):
+                    raw_content = (
+                        rc_json.get("title")
+                        or rc_json.get("text")
+                        or rc_json.get("msg")
+                        or rc_json.get("description")
+                        or raw_content
+                    )
+            except Exception:
+                pass
         elif not isinstance(raw_content, str):
             raw_content = str(msg_obj.get("msg") or msg_obj.get("message") or "")
 
@@ -4067,7 +4223,7 @@ class ZaloSelfBotListener:
         cmd_num = int(msg_obj.get("cmd") or 0)
         raw_mentions = self._extract_raw_mentions_from_msg_obj(msg_obj)
 
-        known_gids = KNOWN_GROUPS_BY_ACC.get(client.uid, set())
+        known_gids = KNOWN_GROUPS_BY_ACC.get(client.uid, set()) | ALL_KNOWN_ZALO_GROUP_IDS
         is_group = bool(
             default_is_group
             or msg_obj.get("_is_group_hint")
@@ -4164,30 +4320,48 @@ class ZaloSelfBotListener:
                 frag_buf = bytearray(data)
 
     def _poll_active_groups_inline(self, client, acc_now):
-        """Luồng Hybrid Poller chạy song song ngay trong phiên WebSocket Zalo:
-        - Lần đầu tiên quét mỗi nhóm: đánh dấu các tin nhắn cũ vào seen_msg_ids để không chạy lại lệnh cũ.
-        - Từ các chu kỳ sau (mỗi 3 giây): bắt tức thì mọi lệnh .menu, .nhay, .ngon, .stop mới!"""
-        if not hasattr(self, "seeded_groups"):
-            self.seeded_groups = set()
-        if not hasattr(self, "poll_cursor"):
-            self.poll_cursor = 0
+        """Luồng Hybrid Delta Poller chạy độc lập trên Thread riêng cho Zalo:
+        - Gọi get_grid_ver_map() mỗi 2 giây để phát hiện tức thì nhóm vừa có tin nhắn mới (ver thay đổi).
+        - Dùng cơ chế First-Poll Snapshot Seeding (self.seeded_groups) không phụ thuộc đồng hồ máy chủ:
+          + Lần đầu tiên nhìn thấy nhóm: ghi nhận toàn bộ msgId hiện có vào seen_msg_ids.
+          + Ngay khi có tin nhắn mới (không nằm trong seen_msg_ids): thực thi tức thì .menu, .nhay, .ngon, .stop!"""
+        changed_gids = []
+        try:
+            gmap = client.get_grid_ver_map() or {}
+            for gid_k, ver_v in gmap.items():
+                gid_s = str(gid_k)
+                prev_v = self.last_grid_vers.get(gid_s)
+                if prev_v is not None and str(prev_v) != str(ver_v):
+                    changed_gids.append(gid_s)
+                self.last_grid_vers[gid_s] = ver_v
+        except Exception:
+            pass
 
-        all_gids = list(KNOWN_GROUPS_BY_ACC.get(client.uid, set()))
+        all_gids = list(KNOWN_GROUPS_BY_ACC.get(client.uid, set()) | ALL_KNOWN_ZALO_GROUP_IDS)
         if not all_gids:
             try:
-                client.get_grid_ver_map()
-                all_gids = list(KNOWN_GROUPS_BY_ACC.get(client.uid, set()))
+                client.groups(use_cache=True)
+                all_gids = list(KNOWN_GROUPS_BY_ACC.get(client.uid, set()) | ALL_KNOWN_ZALO_GROUP_IDS)
             except Exception:
                 return
         if not all_gids:
             return
 
-        batch_size = min(6, len(all_gids))
+        target_gids = list(changed_gids)
+        unseeded = [str(g) for g in all_gids if str(g) not in self.seeded_groups]
+        for ug in unseeded[:6]:
+            if ug not in target_gids:
+                target_gids.append(ug)
+
+        batch_size = min(4, len(all_gids))
         start_i = self.poll_cursor % len(all_gids)
-        batch = [all_gids[(start_i + i) % len(all_gids)] for i in range(batch_size)]
+        for i in range(batch_size):
+            g_cand = str(all_gids[(start_i + i) % len(all_gids)])
+            if g_cand not in target_gids:
+                target_gids.append(g_cand)
         self.poll_cursor = (start_i + batch_size) % len(all_gids)
 
-        for gid in batch:
+        for gid in target_gids[:8]:
             if self.stop_ev.is_set():
                 break
             try:
@@ -4198,17 +4372,37 @@ class ZaloSelfBotListener:
                             mid = str(m.get("msgId") or m.get("globalMsgId") or "")
                             cmid = str(m.get("cliMsgId") or "")
                             rc = m.get("content")
-                            if not isinstance(rc, str):
-                                rc = str(m.get("msg") or "")
+                            if isinstance(rc, dict):
+                                rc = rc.get("title") or rc.get("text") or rc.get("msg") or ""
+                            elif not isinstance(rc, str):
+                                rc = str(m.get("msg") or m.get("message") or "")
                             ct = strip_invisible_chars(rc)
-                            if mid or cmid:
-                                self.seen_msg_ids.append(f"{mid}_{cmid}_{ct[:40]}")
+                            dedupe_k = f"{mid}_{cmid}_{ct[:40]}" if (mid or cmid) else f"seed_{ct[:40]}"
+                            self.seen_msg_ids.append(dedupe_k)
                     self.seeded_groups.add(gid)
                 else:
-                    for m in msgs[-5:]:
-                        self._process_msg_item(client, acc_now, m, default_is_group=True, fallback_thread_id=str(gid))
+                    for m in msgs:
+                        if isinstance(m, dict):
+                            self._process_msg_item(client, acc_now, m, default_is_group=True, fallback_thread_id=str(gid))
             except Exception:
                 continue
+
+    def _run_http_poller_loop(self):
+        """Chạy độc lập hoàn toàn với WebSocket để dù người dùng đang mở Zalo Web trên trình duyệt khác (cmd=3000),
+        mọi lệnh .menu, .nhay, .ngon, .stop trên Zalo vẫn hoạt động 100%!"""
+        while not self.stop_ev.is_set():
+            acc_row = self._get_acc_row()
+            if not acc_row or (acc_row.get("platform") or "zalo") != "zalo":
+                break
+            if not acc_row.get("chat_cmd_enabled", 1):
+                self.stop_ev.wait(3.0)
+                continue
+            try:
+                client = Zalo.get_pooled_client(acc_row["imei"], acc_row["cookies"])
+                self._poll_active_groups_inline(client, acc_row)
+            except Exception:
+                pass
+            self.stop_ev.wait(2.0)
 
     def _run_ws_session(self, client, acc_row, ws_url):
         parsed = urlparse(ws_url)
@@ -4273,12 +4467,7 @@ class ZaloSelfBotListener:
                     self._send_ws_frame(sock, hb_payload, opcode=0x2)
                     last_ping = now_t
 
-                if now_t - last_group_poll >= 3.0:
-                    last_group_poll = now_t
-                    try:
-                        self._poll_active_groups_inline(client, acc_now)
-                    except Exception:
-                        pass
+                # Luồng HTTP Poller đã chạy song song trên self.poller_thread nên không bao giờ làm nghẽn WebSocket
 
                 try:
                     opcode, data = self._recv_full_ws_message(sock)
@@ -5369,7 +5558,7 @@ input,select,textarea{font-size:16px !important;font-family:inherit;max-width:10
             <span class="badge badge-green">Anti-Die-All 24/7</span>
           </div>
 
-          <form method="POST" action="/account/add">
+          <form method="POST" action="/account/add" onsubmit="return handleAccountFormSubmit(event)">
             <input type="hidden" name="platform" id="accPlatformInput" value="zalo">
 
             <div class="seg-bar">
@@ -5425,26 +5614,34 @@ input,select,textarea{font-size:16px !important;font-family:inherit;max-width:10
 
               <div id="discordLoginBox" style="display:none;margin-bottom:9px">
                 <div class="info-banner">
-                  Khởi tạo <code>X-Fingerprint</code> chuẩn Chrome 131 để lấy Token sạch hạn chế checkpoint:
+                  <strong>Đăng nhập Gmail + Mật khẩu Discord (/api/v9/auth/login):</strong><br>
+                  • Nếu đăng nhập từ Server mới, Discord có thể gửi 1 email <strong>"Verify Login" (Xác nhận vị trí đăng nhập mới)</strong> về Gmail của bạn — hãy mở Gmail bấm xác nhận rồi bấm lại nút dưới đây là vào thẳng!<br>
+                  • Có thể dán thẳng <code>email:pass:token</code> vào ô Email.
                 </div>
+                <div id="discordRegStatusBox" style="display:none;margin-bottom:9px;padding:10px 11px;border-radius:12px;font-size:12px;font-weight:700;line-height:1.45;overflow-wrap:anywhere"></div>
                 <div style="margin-bottom:8px">
-                  <label class="sub-label">Email hoặc SĐT Discord</label>
-                  <input class="form-input" id="regDisEmail" placeholder="nhap_email@gmail.com">
+                  <label class="sub-label">Email (Gmail) hoặc SĐT Discord</label>
+                  <input class="form-input" name="reg_email" id="regDisEmail" placeholder="nhap_email@gmail.com hoặc email:pass:token">
                 </div>
                 <div class="form-row">
                   <div>
                     <label class="sub-label">Mật khẩu</label>
-                    <input class="form-input" type="password" id="regDisPass" placeholder="Mật khẩu...">
+                    <input class="form-input" type="password" name="reg_password" id="regDisPass" placeholder="Mật khẩu Discord...">
                   </div>
                   <div>
-                    <label class="sub-label">Mã 2FA (Nếu có)</label>
-                    <input class="form-input" id="regDis2FA" placeholder="6 số 2FA...">
+                    <label class="sub-label">Mã 2FA / SMS (Nếu có)</label>
+                    <input class="form-input" name="reg_2fa" id="regDis2FA" placeholder="6 số 2FA...">
                   </div>
                 </div>
-                <button type="button" class="btn btn-indigo" onclick="extractDiscordTokenByReg()">
-                  <svg class="btn-ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
-                  <span>LẤY TOKEN REG SẠCH & LƯU</span>
-                </button>
+                <div style="display:flex;flex-direction:column;gap:6px">
+                  <button type="button" class="btn btn-indigo" id="btnExtractDisReg" onclick="extractDiscordTokenByReg()">
+                    <svg class="btn-ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+                    <span>ĐĂNG NHẬP GMAIL DISCORD & LƯU TÀI KHOẢN</span>
+                  </button>
+                  <button type="button" class="btn btn-soft btn-sm" style="width:100%" onclick="copyDiscordTokenScript()">
+                    <span>Sao Chép Lệnh Lấy Token Nhanh (Dự phòng khi IP Server vướng Captcha)</span>
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -5454,8 +5651,8 @@ input,select,textarea{font-size:16px !important;font-family:inherit;max-width:10
                 <span>Bật nhận lệnh trong khung chat 24/7 ( .menu , .nhay , .ngon , .stop )</span>
               </label>
               <label class="check-pill">
-                <input type="checkbox" name="allow_all_cmd" value="1">
-                <span>Cho phép mọi người trong phòng dùng lệnh</span>
+                <input type="checkbox" name="allow_all_cmd" value="1" checked>
+                <span>Cho phép mọi người trong phòng dùng lệnh (Khuyên bật để gõ .menu từ nick phụ)</span>
               </label>
             </div>
 
@@ -5924,15 +6121,57 @@ function switchDiscordRegTab(mode) {
   document.getElementById('discordLoginBox').style.display = (mode === 'login') ? 'block' : 'none';
 }
 
+function setDiscordRegStatus(msg, isSuccess) {
+  const box = document.getElementById('discordRegStatusBox');
+  if (!box) return;
+  box.style.display = 'block';
+  if (isSuccess) {
+    box.style.background = '#d1fae5';
+    box.style.border = '1px solid #6ee7b7';
+    box.style.color = '#065f46';
+  } else {
+    box.style.background = '#fef2f2';
+    box.style.border = '1px solid #fecaca';
+    box.style.color = '#b91c1c';
+  }
+  box.innerHTML = msg;
+}
+
+function handleAccountFormSubmit(ev) {
+  const plat = document.getElementById('accPlatformInput').value;
+  if (plat === 'discord') {
+    const tkVal = (document.getElementById('discordTokenInput').value || '').trim();
+    const emVal = (document.getElementById('regDisEmail').value || '').trim();
+    const loginBoxVisible = document.getElementById('discordLoginBox').style.display !== 'none';
+    if (!tkVal && (loginBoxVisible || emVal)) {
+      ev.preventDefault();
+      extractDiscordTokenByReg();
+      return false;
+    }
+  }
+  return true;
+}
+
+function copyDiscordTokenScript() {
+  const snippet = `javascript:(function(){let m=[];webpackChunkdiscord_app.push([[Symbol()],{},e=>{for(let c of Object.values(e.c)){try{if(c?.exports?.default?.getToken){let t=c.exports.default.getToken();if(typeof t==='string')m.push(t)}}catch{}}}]);prompt('Copy Token Discord cua ban:',m[0]||'Mo tab discord.com/app roi chay lai');})();`;
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(snippet);
+  }
+  setDiscordRegStatus('Đã sao chép lệnh lấy Token! Nếu IP máy chủ bị Discord chặn Captcha khi đăng nhập bằng mật khẩu, bạn chỉ cần mở <code>discord.com/app</code> trên trình duyệt, dán lệnh vừa copy vào thanh địa chỉ để lấy Token rồi dán sang ô "Dán Token / Chuỗi Reg" là vào thẳng 100%!', true);
+  showToast('Đã sao chép lệnh lấy Token nhanh!');
+}
+
 async function extractDiscordTokenByReg() {
   const email = document.getElementById('regDisEmail').value.trim();
   const password = document.getElementById('regDisPass').value.trim();
   const two_fa = document.getElementById('regDis2FA').value.trim();
-  if (!email || !password) {
+  if (!email && !password) {
+    setDiscordRegStatus('Vui lòng nhập đầy đủ Gmail và Mật khẩu Discord (hoặc chuỗi email:pass:token)!', false);
     showToast('Vui lòng nhập đầy đủ Email và Mật khẩu Discord!');
     return;
   }
-  showToast('Đang tạo phiên Reg Stealth Chrome 131...');
+  setDiscordRegStatus('Đang kết nối tới máy chủ xác thực Discord (/api/v9/auth/login)...', true);
+  showToast('Đang xác thực tài khoản Discord...');
   try {
     const r = await fetch('/api/discord/reg_login', {
       method: 'POST',
@@ -5942,12 +6181,15 @@ async function extractDiscordTokenByReg() {
     const d = await r.json();
     if (d.ok) {
       document.getElementById('discordTokenInput').value = d.token || '';
+      setDiscordRegStatus(d.message || 'Đăng nhập thành công! Đang lưu tài khoản...', true);
       showToast(d.message || 'Đã lấy Token sạch & lưu thành công!');
-      setTimeout(() => location.reload(), 900);
+      setTimeout(() => location.reload(), 800);
     } else {
+      setDiscordRegStatus(d.error || 'Không thể đăng nhập bằng mật khẩu', false);
       showToast(d.error || 'Không thể lấy Token');
     }
   } catch (e) {
+    setDiscordRegStatus('Lỗi kết nối tới máy chủ. Vui lòng thử lại.', false);
     showToast('Lỗi kết nối máy chủ');
   }
 }
@@ -6486,7 +6728,7 @@ def api_discord_reg_login():
         conn = db()
         conn.execute(
             """INSERT INTO accounts (name, platform, imei, cookies, token, is_bot, uid, chat_cmd_enabled, cmd_prefix, allow_all_cmd, enabled, created_at)
-               VALUES (?, 'discord', '', '{}', ?, 0, ?, 1, '.', 0, 1, ?)""",
+               VALUES (?, 'discord', '', '{}', ?, 0, ?, 1, '.', 1, 1, ?)""",
             (uname, token, uid, time.time()),
         )
         conn.commit()
@@ -6508,8 +6750,15 @@ def account_add():
 
     if platform == "discord":
         raw_token_input = (request.form.get("token") or "").strip()
+        reg_email = (request.form.get("reg_email") or "").strip()
+        reg_password = (request.form.get("reg_password") or "").strip()
+        reg_2fa = (request.form.get("reg_2fa") or "").strip()
         is_bot = 1 if request.form.get("is_bot") else 0
         tokens = extract_discord_tokens_from_reg_or_raw(raw_token_input)
+        if not tokens and (reg_email or reg_password):
+            res_login = login_discord_reg_session(reg_email, reg_password, reg_2fa)
+            if res_login.get("ok") and res_login.get("token"):
+                tokens = [res_login["token"]]
         if not tokens:
             return redirect("/")
 
