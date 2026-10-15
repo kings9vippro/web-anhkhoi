@@ -1043,7 +1043,6 @@ class DiscordStealthAntiBanEngine:
     @classmethod
     def build_super_properties_b64(cls, token):
         prof = cls.get_deterministic_profile(token)
-        launch_sig, hb_sess = cls.get_deterministic_session_uuids(token)
         props = {
             "os": prof["os"],
             "browser": prof["browser"],
@@ -1059,9 +1058,6 @@ class DiscordStealthAntiBanEngine:
             "release_channel": "stable",
             "client_build_number": prof["build_number"],
             "client_event_source": None,
-            "has_client_mods": False,
-            "launch_signature": launch_sig,
-            "client_heartbeat_session_id": hb_sess,
         }
         raw_json = json.dumps(props, separators=(",", ":"))
         return base64.b64encode(raw_json.encode("utf-8")).decode("utf-8")
@@ -1095,10 +1091,8 @@ class DiscordStealthAntiBanEngine:
             "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
             "User-Agent": prof["ua"],
             "X-Super-Properties": cls.build_super_properties_b64(token),
-            "X-Context-Properties": cls.build_context_properties_b64(guild_id, channel_id),
             "X-Discord-Locale": "vi",
             "X-Discord-Timezone": "Asia/Ho_Chi_Minh",
-            "X-Debug-Options": "bugReporterEnabled",
             "Origin": "https://discord.com",
             "Referer": ref,
             "Sec-Ch-Ua": prof["sec_ch_ua"],
@@ -1108,6 +1102,8 @@ class DiscordStealthAntiBanEngine:
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Site": "same-origin",
         }
+        if channel_id:
+            headers["X-Context-Properties"] = cls.build_context_properties_b64(guild_id, channel_id)
         # TUYỆT ĐỐI KHÔNG gắn X-Fingerprint của phiên ẩn danh vào request đã có Authorization Token!
         # Trình duyệt Discord Web thật chỉ dùng /api/v9 đồng nhất cho mọi thao tác XHR.
         return headers
@@ -1846,45 +1842,39 @@ class Zalo:
         if self.uid:
             KNOWN_GROUPS_BY_ACC[self.uid].add(gid_s)
 
-        for ep in (
-            "https://tt-group-wpa.chat.zalo.me/api/group/getrecentv2",
-            "https://tt-group-wpa.chat.zalo.me/api/group/getrecent",
-            "https://tt-group-wpa.chat.zalo.me/api/group/history",
+        for ep, pl_cand in (
+            ("https://tt-group-wpa.chat.zalo.me/api/group/getrecentv2", {"grid": gid_s, "count": 20}),
+            ("https://tt-group-wpa.chat.zalo.me/api/group/getrecent", {"grid": gid_s, "count": 20}),
         ):
-            for pl_cand in (
-                {"grid": gid_s, "imed": 0},
-                {"grid": gid_s, "groupId": gid_s, "imed": 0, "count": 25},
-            ):
-                try:
-                    enc = self._enc(pl_cand)
-                    r = self.s.post(
-                        ep,
-                        params={"zpw_ver": 645, "zpw_type": 30},
-                        data={"params": enc},
-                        timeout=8,
-                    )
-                    rj = r.json()
-                    if rj.get("data"):
-                        dec = self._dec(rj["data"])
-                        parsed = json.loads(dec)
-                        data_obj = parsed.get("data") if isinstance(parsed, dict) else parsed
-                        msgs = []
-                        if isinstance(data_obj, dict):
-                            msgs = data_obj.get("groupMsgs") or data_obj.get("msgs") or data_obj.get("messages") or []
-                        elif isinstance(data_obj, list):
-                            msgs = data_obj
-                        if msgs and isinstance(msgs, list):
-                            valid_msgs = [m for m in msgs if isinstance(m, dict)]
-                            for m in valid_msgs:
-                                u_f = str(m.get("uidFrom") or "").strip()
-                                d_n = str(m.get("dName") or "").strip()
-                                if u_f and d_n and u_f != "0":
-                                    GLOBAL_USER_NAME_CACHE[u_f] = d_n
-                            # Sắp xếp theo thời gian tăng dần (cũ -> mới) để tin nhắn mới nhất luôn nằm ở cuối mảng!
-                            valid_msgs.sort(key=lambda x: int(x.get("ts") or x.get("msgId") or x.get("cliMsgId") or 0))
-                            return valid_msgs
-                except Exception:
-                    continue
+            try:
+                enc = self._enc(pl_cand)
+                r = self.s.post(
+                    ep,
+                    params={"zpw_ver": 645, "zpw_type": 30},
+                    data={"params": enc},
+                    timeout=3.0,
+                )
+                rj = r.json()
+                if rj.get("data"):
+                    dec = self._dec(rj["data"])
+                    parsed = json.loads(dec)
+                    data_obj = parsed.get("data") if isinstance(parsed, dict) else parsed
+                    msgs = []
+                    if isinstance(data_obj, dict):
+                        msgs = data_obj.get("groupMsgs") or data_obj.get("msgs") or data_obj.get("messages") or []
+                    elif isinstance(data_obj, list):
+                        msgs = data_obj
+                    if msgs and isinstance(msgs, list):
+                        valid_msgs = [m for m in msgs if isinstance(m, dict)]
+                        for m in valid_msgs:
+                            u_f = str(m.get("uidFrom") or "").strip()
+                            d_n = str(m.get("dName") or "").strip()
+                            if u_f and d_n and u_f != "0":
+                                GLOBAL_USER_NAME_CACHE[u_f] = d_n
+                        valid_msgs.sort(key=lambda x: int(x.get("ts") or x.get("msgId") or x.get("cliMsgId") or 0))
+                        return valid_msgs
+            except Exception:
+                continue
         return []
 
     def _pick_distinct_zcode(self, color_mode, fixed_color, step_index, prev_zcode=None):
@@ -3599,16 +3589,16 @@ def parse_and_execute_inchat_command(
         if platform == "zalo" and zalo_client:
             try:
                 zalo_client.send_adv(
-                    msg_txt, thread_id, color_mode="rainbow",
-                    is_group=is_group, is_heading=True, antiband=True,
+                    msg_txt, thread_id, color_mode="none",
+                    is_group=is_group, is_heading=False, antiband=True,
                     use_emoji=False, icon_count=0, auto_retry_thread_type=True
                 )
             except Exception:
                 try:
                     zalo_client.send_adv(
                         msg_txt, thread_id, color_mode="none",
-                        is_group=not is_group, is_heading=False, antiband=False,
-                        use_emoji=False, icon_count=0, auto_retry_thread_type=True
+                        is_group=is_group, is_heading=False, antiband=False,
+                        use_emoji=False, icon_count=0, auto_retry_thread_type=False
                     )
                 except Exception:
                     pass
@@ -3616,7 +3606,7 @@ def parse_and_execute_inchat_command(
             DiscordStealthAntiBanEngine.ACTIVE_DISCORD_POLL_CHANNELS[acc_id].add(str(thread_id))
             try:
                 discord_client.send_message(
-                    thread_id, msg_txt, color_mode="rainbow", antiband=True, is_heading=False
+                    thread_id, msg_txt, color_mode="none", antiband=True, is_heading=False
                 )
             except Exception:
                 pass
@@ -4126,23 +4116,28 @@ class ZaloSelfBotListener:
             pass
         return None
 
-    def _extract_msg_dicts(self, obj, parent_is_group=False):
+    def _extract_msg_dicts(self, obj, parent_is_group=False, parent_grid=None):
         found = []
         if isinstance(obj, dict):
-            has_content = ("content" in obj) or ("msg" in obj and ("uidFrom" in obj or "idTo" in obj))
-            if has_content and any(k in obj for k in ("uidFrom", "idTo", "msgId", "cliMsgId", "toid", "fromUid")):
+            cur_grid = str(obj.get("grid") or obj.get("groupId") or obj.get("group_id") or parent_grid or "").strip()
+            is_grp_branch = parent_is_group or bool(cur_grid and cur_grid != "0") or ("groupMsgs" in obj) or ("grid" in obj)
+            has_content = ("content" in obj) or ("msg" in obj) or ("message" in obj) or ("text" in obj) or ("title" in obj)
+            if has_content and any(k in obj for k in ("uidFrom", "idTo", "msgId", "cliMsgId", "toid", "fromUid", "grid")):
                 item = dict(obj)
-                if parent_is_group:
+                if is_grp_branch:
                     item["_is_group_hint"] = True
+                if cur_grid and cur_grid != "0":
+                    item["grid"] = cur_grid
+                    item["_grid_hint"] = cur_grid
                 found.append(item)
             for k, v in obj.items():
-                is_grp_branch = parent_is_group or (k in ("groupMsgs", "group_msgs", "grid"))
+                sub_grp = is_grp_branch or (k in ("groupMsgs", "group_msgs", "grid"))
                 if isinstance(v, (dict, list)):
-                    found.extend(self._extract_msg_dicts(v, parent_is_group=is_grp_branch))
+                    found.extend(self._extract_msg_dicts(v, parent_is_group=sub_grp, parent_grid=cur_grid))
         elif isinstance(obj, list):
             for elem in obj:
                 if isinstance(elem, (dict, list)):
-                    found.extend(self._extract_msg_dicts(elem, parent_is_group=parent_is_group))
+                    found.extend(self._extract_msg_dicts(elem, parent_is_group=parent_is_group, parent_grid=parent_grid))
         return found
 
     def _extract_raw_mentions_from_msg_obj(self, msg_obj):
@@ -4199,8 +4194,9 @@ class ZaloSelfBotListener:
                     )
             except Exception:
                 pass
-        elif not isinstance(raw_content, str):
-            raw_content = str(msg_obj.get("msg") or msg_obj.get("message") or "")
+
+        if not raw_content or not isinstance(raw_content, str):
+            raw_content = str(msg_obj.get("message") or msg_obj.get("msg") or msg_obj.get("text") or "")
 
         if is_bot_echo_message(msg_id=msg_id, client_id=cli_msg_id, text=raw_content):
             return
@@ -4209,23 +4205,25 @@ class ZaloSelfBotListener:
         if not content:
             return
 
-        dedupe_key = f"{msg_id}_{cli_msg_id}_{content[:40]}" if (msg_id or cli_msg_id) else f"{int(time.time() // 3)}_{content[:40]}"
+        dedupe_key = f"{msg_id}_{cli_msg_id}_{content[:40]}" if (msg_id or cli_msg_id) else f"{int(time.time() // 1.5)}_{content[:40]}"
         if dedupe_key in self.seen_msg_ids:
             return
         self.seen_msg_ids.append(dedupe_key)
 
-        uid_from = str(msg_obj.get("uidFrom") or msg_obj.get("fromUid") or "")
+        grid_id = str(msg_obj.get("grid") or msg_obj.get("groupId") or msg_obj.get("_grid_hint") or fallback_thread_id or "").strip()
+        uid_from = str(msg_obj.get("uidFrom") or msg_obj.get("fromUid") or "").strip()
         d_name = str(msg_obj.get("dName") or "").strip()
         if uid_from and d_name and uid_from != "0":
             GLOBAL_USER_NAME_CACHE[uid_from] = d_name
 
-        id_to = str(msg_obj.get("idTo") or msg_obj.get("toid") or fallback_thread_id or "")
+        id_to = str(msg_obj.get("idTo") or msg_obj.get("toid") or "").strip()
         cmd_num = int(msg_obj.get("cmd") or 0)
         raw_mentions = self._extract_raw_mentions_from_msg_obj(msg_obj)
 
         known_gids = KNOWN_GROUPS_BY_ACC.get(client.uid, set()) | ALL_KNOWN_ZALO_GROUP_IDS
         is_group = bool(
             default_is_group
+            or (grid_id and grid_id != "0")
             or msg_obj.get("_is_group_hint")
             or msg_obj.get("isGroup")
             or (cmd_num in (521, 522))
@@ -4234,14 +4232,19 @@ class ZaloSelfBotListener:
             or bool(raw_mentions)
         )
 
-        my_uid = str(client.uid or acc_row.get("uid") or "")
+        my_uid = str(client.uid or acc_row.get("uid") or "").strip()
         if is_group:
-            if id_to in known_gids:
+            if grid_id and grid_id != "0":
+                thread_id = grid_id
+            elif id_to in known_gids:
                 thread_id = id_to
             elif uid_from in known_gids:
                 thread_id = uid_from
             else:
                 thread_id = id_to if (id_to and id_to not in ("0", my_uid)) else (fallback_thread_id or uid_from)
+            ALL_KNOWN_ZALO_GROUP_IDS.add(thread_id)
+            if client.uid:
+                KNOWN_GROUPS_BY_ACC[client.uid].add(thread_id)
         else:
             if uid_from in ("0", my_uid, ""):
                 thread_id = id_to if id_to not in ("0", "") else my_uid
@@ -4321,22 +4324,10 @@ class ZaloSelfBotListener:
 
     def _poll_active_groups_inline(self, client, acc_now):
         """Luồng Hybrid Delta Poller chạy độc lập trên Thread riêng cho Zalo:
-        - Gọi get_grid_ver_map() mỗi 2 giây để phát hiện tức thì nhóm vừa có tin nhắn mới (ver thay đổi).
+        - Ưu tiên kiểm tra liên tục các nhóm đang hoạt động (test treo, nhóm có lệnh) mỗi 1.5 giây.
         - Dùng cơ chế First-Poll Snapshot Seeding (self.seeded_groups) không phụ thuộc đồng hồ máy chủ:
           + Lần đầu tiên nhìn thấy nhóm: ghi nhận toàn bộ msgId hiện có vào seen_msg_ids.
           + Ngay khi có tin nhắn mới (không nằm trong seen_msg_ids): thực thi tức thì .menu, .nhay, .ngon, .stop!"""
-        changed_gids = []
-        try:
-            gmap = client.get_grid_ver_map() or {}
-            for gid_k, ver_v in gmap.items():
-                gid_s = str(gid_k)
-                prev_v = self.last_grid_vers.get(gid_s)
-                if prev_v is not None and str(prev_v) != str(ver_v):
-                    changed_gids.append(gid_s)
-                self.last_grid_vers[gid_s] = ver_v
-        except Exception:
-            pass
-
         all_gids = list(KNOWN_GROUPS_BY_ACC.get(client.uid, set()) | ALL_KNOWN_ZALO_GROUP_IDS)
         if not all_gids:
             try:
@@ -4347,9 +4338,10 @@ class ZaloSelfBotListener:
         if not all_gids:
             return
 
-        target_gids = list(changed_gids)
+        # Nhóm ưu tiên hàng đầu: Các nhóm đã biết và đang hoạt động (như test treo)
+        target_gids = [str(g) for g in all_gids if str(g) in ALL_KNOWN_ZALO_GROUP_IDS]
         unseeded = [str(g) for g in all_gids if str(g) not in self.seeded_groups]
-        for ug in unseeded[:6]:
+        for ug in unseeded[:4]:
             if ug not in target_gids:
                 target_gids.append(ug)
 
@@ -4361,7 +4353,7 @@ class ZaloSelfBotListener:
                 target_gids.append(g_cand)
         self.poll_cursor = (start_i + batch_size) % len(all_gids)
 
-        for gid in target_gids[:8]:
+        for gid in target_gids[:6]:
             if self.stop_ev.is_set():
                 break
             try:
@@ -4371,18 +4363,17 @@ class ZaloSelfBotListener:
                         if isinstance(m, dict):
                             mid = str(m.get("msgId") or m.get("globalMsgId") or "")
                             cmid = str(m.get("cliMsgId") or "")
-                            rc = m.get("content")
+                            rc = m.get("content") or m.get("message") or m.get("msg") or ""
                             if isinstance(rc, dict):
                                 rc = rc.get("title") or rc.get("text") or rc.get("msg") or ""
-                            elif not isinstance(rc, str):
-                                rc = str(m.get("msg") or m.get("message") or "")
-                            ct = strip_invisible_chars(rc)
+                            ct = strip_invisible_chars(str(rc))
                             dedupe_k = f"{mid}_{cmid}_{ct[:40]}" if (mid or cmid) else f"seed_{ct[:40]}"
                             self.seen_msg_ids.append(dedupe_k)
                     self.seeded_groups.add(gid)
                 else:
                     for m in msgs:
                         if isinstance(m, dict):
+                            m["grid"] = str(gid)
                             self._process_msg_item(client, acc_now, m, default_is_group=True, fallback_thread_id=str(gid))
             except Exception:
                 continue
@@ -4886,6 +4877,66 @@ class DiscordSelfBotListener:
             except Exception:
                 pass
 
+    def _run_stealth_rest_session(self, client, acc_row):
+        """Chế độ Stealth REST an toàn 100% cho tài khoản Discord người dùng (Self-Bot):
+        - Tuyệt đối KHÔNG kết nối Gateway WebSocket từ IP Cloud/VPS để triệt tiêu hoàn toàn mã vi phạm
+          và không bao giờ bị Discord gửi email bắt đặt lại mật khẩu trong 2 giây!
+        - Quét nhẹ nhàng các kênh và DM đang hoạt động bằng request HTTPS REST chuẩn Chrome 131,
+          giúp bảo tồn Token sống vĩnh viễn và nhận lệnh .menu, .help, .nhay, .stop siêu mượt."""
+        self.ws_status = "Discord Stealth REST Shield (.menu Sẵn Sàng)"
+        last_box_refresh = 0.0
+        cached_boxes = []
+
+        while not self.stop_ev.is_set():
+            acc_now = self._get_acc_row()
+            if not acc_now or not acc_now.get("chat_cmd_enabled", 1):
+                self.ws_status = "Đã tắt nhận lệnh"
+                break
+
+            now = time.time()
+            if now - last_box_refresh >= 90.0 or not cached_boxes:
+                try:
+                    dm_boxes = client.get_dm_and_group_boxes()
+                    cached_boxes = [str(b["id"]) for b in dm_boxes]
+                    last_box_refresh = now
+                except Exception:
+                    pass
+
+            ch_set = list(DiscordStealthAntiBanEngine.ACTIVE_DISCORD_POLL_CHANNELS.get(self.acc_id, set()))
+            for b_id in cached_boxes[:8]:
+                if b_id not in ch_set:
+                    ch_set.append(b_id)
+
+            if not ch_set:
+                self.ws_status = "Discord Stealth Idle (Chờ kênh hoạt động)"
+                self.stop_ev.wait(3.5)
+                continue
+
+            self.ws_status = f"Discord Stealth Active ({len(ch_set[:8])} kênh - .menu Sẵn Sàng)"
+            for cid in ch_set[:8]:
+                if self.stop_ev.is_set():
+                    break
+                try:
+                    ep = DiscordStealthAntiBanEngine.pick_stealth_endpoint(client.token, f"/channels/{cid}/messages?limit=5", 0)
+                    r = client.s.get(ep, timeout=5)
+                    if r.status_code == 200 and isinstance(r.json(), list):
+                        msgs = list(reversed(r.json()))
+                        if cid not in self.seeded_channels:
+                            for m in msgs:
+                                if isinstance(m, dict) and m.get("id"):
+                                    self.seen_msg_ids.append(str(m["id"]))
+                            self.seeded_channels.add(cid)
+                        else:
+                            for m in msgs:
+                                if isinstance(m, dict):
+                                    m["channel_id"] = cid
+                                    self._handle_discord_message_event(client, acc_now, m)
+                except Exception:
+                    continue
+                time.sleep(0.25)
+
+            self.stop_ev.wait(2.2)
+
     def _run_loop(self):
         while not self.stop_ev.is_set():
             acc_row = self._get_acc_row()
@@ -4897,7 +4948,8 @@ class DiscordSelfBotListener:
                 continue
 
             try:
-                client = DiscordBot(acc_row["token"], is_bot=bool(acc_row.get("is_bot", 0)))
+                is_bot = bool(acc_row.get("is_bot", 0))
+                client = DiscordBot(acc_row["token"], is_bot=is_bot)
                 if not client.check():
                     self.ws_status = "Token cần kiểm tra lại"
                     self.stop_ev.wait(15.0)
@@ -4912,11 +4964,15 @@ class DiscordSelfBotListener:
                     except Exception:
                         pass
 
-                self._run_gateway_session(client, acc_row)
-                self.stop_ev.wait(4.5)
+                if is_bot:
+                    self._run_gateway_session(client, acc_row)
+                    self.stop_ev.wait(4.5)
+                else:
+                    self._run_stealth_rest_session(client, acc_row)
+                    self.stop_ev.wait(2.2)
             except Exception:
                 self.ws_status = "Đang kết nối lại..."
-                self.stop_ev.wait(6.0)
+                self.stop_ev.wait(5.0)
 
 
 def sync_all_zalo_listeners():
@@ -4946,7 +5002,19 @@ def sync_all_zalo_listeners():
         pass
 
 
-threading.Timer(1.2, sync_all_zalo_listeners).start()
+def _listener_watchdog_loop():
+    time.sleep(1.2)
+    while True:
+        try:
+            sync_all_zalo_listeners()
+        except Exception:
+            pass
+        time.sleep(8.0)
+
+
+threading.Thread(target=_listener_watchdog_loop, daemon=True).start()
+
+
 # ============================================================
 # GIAO DIỆN WEB CHÍNH: NOEL (100% VECTOR SVG HIỆN ĐẠI, CHỐNG TRÀN VIỀN TUYỆT ĐỐI,
 # THANH TAB NGANG DƯỚI NHỎ GỌN HIỆN ĐẠI, NÚT BẤM CÓ HÌNH ẢNH DESIGN NOEL)
