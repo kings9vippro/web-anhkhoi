@@ -249,6 +249,62 @@ def db():
         return conn
 
 
+
+def normalize_zalo_cookies(raw_cookies):
+    """Chuẩn hóa mọi định dạng Cookie Zalo (J2Team JSON, Extension JSON, EditThisCookie Array, Dict, Header String)
+    về Dict phẳng {str(k): str(v)} để không bao giờ gây lỗi TypeError trong requests CookieJar!"""
+    if not raw_cookies:
+        return {}
+    if isinstance(raw_cookies, dict):
+        if "cookies" in raw_cookies and isinstance(raw_cookies["cookies"], (list, dict, str)):
+            return normalize_zalo_cookies(raw_cookies["cookies"])
+        out = {}
+        for k, v in raw_cookies.items():
+            if k and k not in ("url", "imei", "userAgent", "user_agent") and not isinstance(v, (list, dict)) and v is not None:
+                out[str(k).strip()] = str(v).strip()
+        return out
+    if isinstance(raw_cookies, list):
+        out = {}
+        for c in raw_cookies:
+            if isinstance(c, dict) and c.get("name") and c.get("value") is not None:
+                out[str(c["name"]).strip()] = str(c["value"]).strip()
+        return out
+    s = str(raw_cookies).strip()
+    if not s:
+        return {}
+    try:
+        parsed = json.loads(s)
+        if isinstance(parsed, (dict, list)):
+            return normalize_zalo_cookies(parsed)
+    except Exception:
+        pass
+    out = {}
+    for part in s.split(";"):
+        if "=" in part:
+            k, v = part.strip().split("=", 1)
+            if k.strip():
+                out[k.strip()] = v.strip()
+    return out
+
+
+def extract_imei_from_raw_input(imei_str, raw_cookies):
+    imei_clean = str(imei_str or "").strip()
+    if imei_clean and not imei_clean.startswith("{"):
+        return imei_clean
+    for candidate in (imei_str, raw_cookies):
+        if not candidate:
+            continue
+        try:
+            parsed = json.loads(str(candidate).strip()) if isinstance(candidate, str) else candidate
+            if isinstance(parsed, dict):
+                found_imei = parsed.get("imei") or parsed.get("zpw_imei") or parsed.get("deviceId")
+                if found_imei:
+                    return str(found_imei).strip()
+        except Exception:
+            pass
+    return imei_clean
+
+
 def init_db():
     global _ACTIVE_DB_PATH
     try:
@@ -375,6 +431,15 @@ def init_db():
     try:
         cur.execute("UPDATE accounts SET chat_cmd_enabled = 1 WHERE chat_cmd_enabled IS NULL")
         cur.execute("UPDATE accounts SET allow_all_cmd = 1 WHERE allow_all_cmd IS NULL OR allow_all_cmd = 0")
+        z_rows = cur.execute("SELECT id, imei, cookies FROM accounts WHERE platform='zalo'").fetchall()
+        for zr in z_rows:
+            norm_c = normalize_zalo_cookies(zr["cookies"])
+            norm_imei = extract_imei_from_raw_input(zr["imei"], zr["cookies"])
+            if norm_c:
+                cur.execute(
+                    "UPDATE accounts SET imei=?, cookies=? WHERE id=?",
+                    (norm_imei, json.dumps(norm_c, ensure_ascii=False), zr["id"])
+                )
     except Exception:
         pass
 
@@ -461,6 +526,32 @@ def register_bot_sent_message(msg_id=None, client_id=None, text=None):
                     BOT_SENT_TEXT_HASHES.append((first_line, now))
 
 
+VALID_BOT_CMD_TOKENS = {
+    "menu", "help", "lenh", "bot", "hdsd",
+    "spam", "fast", "nhanh", "nhay", "treonhay", "treo_nhay",
+    "ngon", "treongon", "treo_ngon", "file", "chay",
+    "files", "dsfile", "listfile", "tag", "all",
+    "delay", "tocdo", "time", "mau", "color", "doimau",
+    "icon", "emoji", "chuto", "heading", "antiband", "antiban",
+    "chophep", "capquyen", "adduser", "add", "admin",
+    "xoaquyen", "thuhoi", "deluser", "del", "cam",
+    "dsquyen", "listuser", "quyen",
+    "stop", "dung", "dừng", "tat", "tắt", "off", "stopall", "dunghet", "tathet",
+}
+
+
+def is_direct_user_command_text(text):
+    if not text:
+        return False
+    clean_t = _normalize_for_echo_hash(text)
+    if not clean_t or "\n" in str(text).strip():
+        return False
+    if clean_t[0] not in (".", "/", "!"):
+        return False
+    first_w = clean_t[1:].split(" ")[0].strip().lower()
+    return bool(first_w in VALID_BOT_CMD_TOKENS or first_w.isdigit())
+
+
 def is_bot_echo_message(msg_id=None, client_id=None, text=None):
     now = time.time()
     with BOT_SENT_LOCK:
@@ -469,6 +560,8 @@ def is_bot_echo_message(msg_id=None, client_id=None, text=None):
                 if (msg_id and str(msg_id) == mid) or (client_id and str(client_id) == mid):
                     return True
         if text:
+            if is_direct_user_command_text(text):
+                return False
             nh = _normalize_for_echo_hash(text)
             first_line = _normalize_for_echo_hash(text.split("\n")[0])
             for h_saved, ts in list(BOT_SENT_TEXT_HASHES):
@@ -871,10 +964,30 @@ class ZaloSmartAntiBanEngine:
         return "".join(chars)
 
     @classmethod
+    def mutate_zalo_word_boundaries(cls, text, salt=0):
+        if not text or " " not in text:
+            return text
+        tokens = text.split(" ")
+        if len(tokens) <= 1:
+            return text
+        out = [tokens[0]]
+        for idx, tk in enumerate(tokens[1:], start=1):
+            if tk.startswith("@") or out[-1].startswith("@"):
+                out.append(" " + tk)
+            elif idx <= 3 and ((salt + idx) & 1) == 1:
+                zw = ZERO_WIDTH_ZALO_POOL[(salt + idx) % len(ZERO_WIDTH_ZALO_POOL)]
+                out.append(" " + zw + tk)
+            else:
+                out.append(" " + tk)
+        return "".join(out)
+
+    @classmethod
     def append_tail(cls, final_msg, thread_id=""):
         if not final_msg:
             return final_msg
-        return final_msg + " " + cls.generate_zero_shift_tail(thread_id)
+        salt = int(time.time() * 1000) & 0xFFFF
+        mutated = cls.mutate_zalo_word_boundaries(final_msg, salt=salt)
+        return mutated + " " + cls.generate_zero_shift_tail(thread_id)
 
     @staticmethod
     def compute_human_cadence_delay(base_delay, burst_cnt, risk_score, adaptive_bonus, text_len=20):
@@ -1264,17 +1377,33 @@ class DiscordStealthAntiBanEngine:
         return "".join(out)
 
     @classmethod
+    def create_chrome_tls_context(cls):
+        ctx = ssl.create_default_context()
+        try:
+            ctx.set_ciphers(
+                "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:"
+                "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:"
+                "ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305"
+            )
+            ctx.set_alpn_protocols(["http/1.1"])
+        except Exception:
+            pass
+        return ctx
+
+    @classmethod
     def append_stealth_tail(cls, text, channel_id=""):
+        """Chống quét nội dung trùng lặp trên Discord mà TUYỆT ĐỐI KHÔNG chèn chuỗi Zero-Width dày đặc
+        (tránh bị AutoMod/Safety của Discord gắn cờ vi phạm nguyên tắc cộng đồng & bắt reset mật khẩu):
+        - Sử dụng biến thiên khoảng trắng tự nhiên kết hợp mã Nonce 64-bit Snowflake chuẩn Chrome 131."""
         if not text:
             return text
         global _ANTIBAN_COUNTER
         with _ANTIBAN_LOCK:
             _ANTIBAN_COUNTER = (_ANTIBAN_COUNTER + 1) & 0xFFFFFF
             seq = _ANTIBAN_COUNTER
-        salt = ((int(time.time() * 1000) & 0xFFF) ^ (seq << 3) ^ random.randint(1, 0xFFFF)) & 0xFFFF
-        mutated = cls.mutate_word_boundaries_safe(text, salt=salt)
-        zw = "".join(ZERO_WIDTH_DISCORD_POOL[(salt >> (i * 2)) & 0x3] for i in range(6))
-        return mutated + zw
+        # Biến thiên vi mô khoảng trắng cuối dòng tự nhiên 100% hợp lệ chuẩn Unicode, không dùng chuỗi ZWJ
+        tail_pads = ("", " ", "  ", "​")
+        return text + tail_pads[seq % len(tail_pads)]
 
     @classmethod
     def record_bucket_headers(cls, channel_id, resp_headers):
@@ -1520,6 +1649,9 @@ ALL_KNOWN_ZALO_GROUP_IDS = set()
 # ============================================================
 # CLIENT GIAO THỨC ZALO (ĐÃ FIX TRIỆT ĐỂ TAG THẬT BẰNG ENDPOINT /api/group/mention)
 # ============================================================
+HOT_ACTIVE_ZALO_GROUPS = set()
+
+
 class Zalo:
     _CLIENT_POOL = {}
     _GROUPS_CACHE = {}
@@ -1529,10 +1661,10 @@ class Zalo:
     @classmethod
     def get_pooled_client(cls, imei, cookies, force_new=False):
         """Hồ quản lý phiên Zalo tập trung (ZaloSessionPool):
-        - Tái sử dụng kết nối đã đăng nhập (zpw_enk) trong 25 phút mà không phải gọi getLoginInfo lại liên tục.
-        - Giúp chuyển tab, lấy danh sách nhóm và chạy đa luồng siêu mượt không lag!"""
-        imei_str = str(imei or "").strip()
-        c_dict = cookies if isinstance(cookies, dict) else json.loads(cookies or "{}")
+        - Tự động chuẩn hóa Cookie J2Team/Extension và trích xuất IMEI chuẩn xác.
+        - Tái sử dụng kết nối đã đăng nhập (zpw_enk) trong 25 phút mà không phải gọi getLoginInfo lại liên tục."""
+        c_dict = normalize_zalo_cookies(cookies)
+        imei_str = extract_imei_from_raw_input(imei, cookies)
         c_hash = hashlib.md5(json.dumps(c_dict, sort_keys=True).encode("utf-8")).hexdigest()[:12]
         pkey = f"{imei_str}_{c_hash}"
         now = time.time()
@@ -1547,8 +1679,9 @@ class Zalo:
         return client
 
     def __init__(self, imei, cookies):
-        self.imei = str(imei).strip()
-        self.cookies_dict = cookies if isinstance(cookies, dict) else json.loads(cookies)
+        self.imei = extract_imei_from_raw_input(imei, cookies)
+        self.cookies_dict = normalize_zalo_cookies(cookies)
+        self._working_recent_ep = None
         self.s = requests.Session()
         adapter = HTTPAdapter(pool_connections=40, pool_maxsize=80, max_retries=2)
         self.s.mount("https://", adapter)
@@ -1838,21 +1971,32 @@ class Zalo:
 
     def get_recent_group_messages(self, gid):
         gid_s = str(gid).strip()
+        if not gid_s or gid_s == "0":
+            return []
         ALL_KNOWN_ZALO_GROUP_IDS.add(gid_s)
         if self.uid:
             KNOWN_GROUPS_BY_ACC[self.uid].add(gid_s)
 
-        for ep, pl_cand in (
-            ("https://tt-group-wpa.chat.zalo.me/api/group/getrecentv2", {"grid": gid_s, "count": 20}),
-            ("https://tt-group-wpa.chat.zalo.me/api/group/getrecent", {"grid": gid_s, "count": 20}),
-        ):
+        candidates = [
+            ("https://tt-group-wpa.chat.zalo.me/api/group/getrecentv2", {"grid": gid_s, "imed": 0}),
+            ("https://tt-group-wpa.chat.zalo.me/api/group/getrecentv2", {"grid": gid_s, "groupId": gid_s, "imed": 0, "count": 25}),
+            ("https://tt-group-wpa.chat.zalo.me/api/group/getrecent", {"grid": gid_s, "imed": 0}),
+            ("https://tt-group-wpa.chat.zalo.me/api/group/getrecent", {"grid": gid_s, "groupId": gid_s, "imed": 0, "count": 25}),
+            ("https://tt-group-wpa.chat.zalo.me/api/group/history", {"grid": gid_s, "imed": 0}),
+        ]
+        if self._working_recent_ep is not None:
+            w_ep, w_mode = self._working_recent_ep
+            w_pl = {"grid": gid_s, "imed": 0} if w_mode == 0 else {"grid": gid_s, "groupId": gid_s, "imed": 0, "count": 25}
+            candidates.insert(0, (w_ep, w_pl))
+
+        for ep, pl_cand in candidates:
             try:
                 enc = self._enc(pl_cand)
                 r = self.s.post(
                     ep,
                     params={"zpw_ver": 645, "zpw_type": 30},
                     data={"params": enc},
-                    timeout=3.0,
+                    timeout=4.5,
                 )
                 rj = r.json()
                 if rj.get("data"):
@@ -1865,6 +2009,7 @@ class Zalo:
                     elif isinstance(data_obj, list):
                         msgs = data_obj
                     if msgs and isinstance(msgs, list):
+                        self._working_recent_ep = (ep, 1 if "count" in pl_cand else 0)
                         valid_msgs = [m for m in msgs if isinstance(m, dict)]
                         for m in valid_msgs:
                             u_f = str(m.get("uidFrom") or "").strip()
@@ -2149,7 +2294,7 @@ class Zalo:
     def send_adv(self, raw_text, thread_id, color_mode="rainbow", fixed_color="red",
                  is_group=True, mentions=None, tag_all=False, is_heading=True,
                  color_offset=0, antiband=True, use_emoji=False, icon_count=0,
-                 auto_retry_thread_type=False, strip_line_num=False):
+                 auto_retry_thread_type=False, strip_line_num=False, parse_auto_tags=True):
         eff_mentions = list(mentions) if mentions else []
         eff_tag_all = bool(tag_all)
         working_text = raw_text
@@ -2157,7 +2302,7 @@ class Zalo:
         if eff_mentions or eff_tag_all:
             is_group = True
 
-        if is_group and "@" in str(raw_text or ""):
+        if parse_auto_tags and is_group and "@" in str(raw_text or ""):
             stripped_txt, auto_m, auto_all = extract_trailing_tags_and_resolve(
                 raw_text, incoming_mentions=None, zalo_client=self, group_id=thread_id
             )
@@ -3544,12 +3689,6 @@ def parse_and_execute_inchat_command(
         my_uid = str(acc_row.get("uid") or "").strip()
         my_s2m = ""
 
-    is_owner = (s_uid in ("0", "", my_uid, my_s2m)) or (s_uid in OWNER_UIDS_CACHE)
-    allow_all = bool(acc_row.get("allow_all_cmd", 0))
-
-    if not is_user_authorized_for_cmd(s_uid, my_uid, my_s2m, allow_all=allow_all):
-        return False
-
     first_space = text.find(" ")
     if first_space == -1:
         cmd_token = text[1:].lower().strip()
@@ -3564,6 +3703,16 @@ def parse_and_execute_inchat_command(
 
     if not cmd_token:
         return False
+
+    is_owner = (s_uid in ("0", "", my_uid, my_s2m)) or (s_uid in OWNER_UIDS_CACHE)
+    allow_all_val = acc_row.get("allow_all_cmd")
+    allow_all = True if allow_all_val is None else bool(int(allow_all_val))
+
+    # Luôn cho phép .menu, .help, .files, .stop phản hồi tức thì để không bao giờ bị kẹt quyền
+    always_open_cmds = {"menu", "help", "lenh", "bot", "hdsd", "files", "dsfile", "listfile", "dsquyen", "stop", "dung", "dừng", "stopall"}
+    if cmd_token not in always_open_cmds:
+        if not is_user_authorized_for_cmd(s_uid, my_uid, my_s2m, allow_all=allow_all):
+            return False
 
     acc_id = acc_row["id"]
     if platform == "discord":
@@ -3584,6 +3733,11 @@ def parse_and_execute_inchat_command(
     if my_s2m:
         OWNER_UIDS_CACHE.add(my_s2m)
 
+    if platform == "zalo" and thread_id:
+        HOT_ACTIVE_ZALO_GROUPS.add(str(thread_id))
+    elif platform == "discord" and thread_id:
+        DiscordStealthAntiBanEngine.ACTIVE_DISCORD_POLL_CHANNELS[acc_id].add(str(thread_id))
+
     def _send_reply(msg_txt):
         register_bot_sent_message(text=msg_txt)
         if platform == "zalo" and zalo_client:
@@ -3591,14 +3745,16 @@ def parse_and_execute_inchat_command(
                 zalo_client.send_adv(
                     msg_txt, thread_id, color_mode="none",
                     is_group=is_group, is_heading=False, antiband=True,
-                    use_emoji=False, icon_count=0, auto_retry_thread_type=True
+                    use_emoji=False, icon_count=0, auto_retry_thread_type=True,
+                    parse_auto_tags=False
                 )
             except Exception:
                 try:
                     zalo_client.send_adv(
                         msg_txt, thread_id, color_mode="none",
-                        is_group=is_group, is_heading=False, antiband=False,
-                        use_emoji=False, icon_count=0, auto_retry_thread_type=False
+                        is_group=not is_group, is_heading=False, antiband=False,
+                        use_emoji=False, icon_count=0, auto_retry_thread_type=False,
+                        parse_auto_tags=False
                     )
                 except Exception:
                     pass
@@ -3945,11 +4101,13 @@ class ZaloSelfBotListener:
         self.acc_id = acc_id
         self.platform = "zalo"
         self.stop_ev = threading.Event()
-        self.seen_msg_ids = deque(maxlen=2500)
+        self.seen_msg_ids = deque(maxlen=3500)
         self.seeded_groups = set()
         self.last_grid_vers = {}
         self.poll_cursor = 0
         self.ws_cipher_key = None
+        self.ws_conflict_until = 0.0
+        self.started_at = time.time()
         self.ws_status = "Đang khởi tạo Zalo Shield..."
         self.last_event_ts = 0.0
         self.thread = threading.Thread(target=self._run_loop, daemon=True)
@@ -3998,7 +4156,7 @@ class ZaloSelfBotListener:
     def _try_decompress_or_json(self, raw_bytes):
         if not raw_bytes:
             return None
-        for wbits in (zlib.MAX_WBITS, -zlib.MAX_WBITS, 16 + zlib.MAX_WBITS):
+        for wbits in (16 + zlib.MAX_WBITS, zlib.MAX_WBITS, -zlib.MAX_WBITS):
             try:
                 decomp = zlib.decompress(raw_bytes, wbits)
                 txt = decomp.decode("utf-8", errors="ignore").strip()
@@ -4021,42 +4179,57 @@ class ZaloSelfBotListener:
             if encrypt_type == 0:
                 return json.loads(raw_data_str) if isinstance(raw_data_str, str) else raw_data_str
 
-            b_data = base64.b64decode(unquote(raw_data_str) if "%" in str(raw_data_str) else raw_data_str)
+            s_raw = unquote(str(raw_data_str)) if "%" in str(raw_data_str) else str(raw_data_str)
+            s_raw = s_raw.strip()
+            pad_rem = len(s_raw) % 4
+            if pad_rem:
+                s_raw += "=" * (4 - pad_rem)
+            b_data = base64.b64decode(s_raw)
 
             key_candidates = []
             for k_str in (self.ws_cipher_key, client.secret_key):
                 if not k_str:
                     continue
-                try:
-                    kb = base64.b64decode(k_str)
-                    if len(kb) in (16, 24, 32):
-                        key_candidates.append(kb)
-                except Exception:
-                    pass
-                try:
-                    kb_utf = str(k_str).encode("utf-8")
-                    if len(kb_utf) in (16, 24, 32):
-                        key_candidates.append(kb_utf)
-                except Exception:
-                    pass
+                k_clean = unquote(str(k_str)).strip()
+                for cand_fn in (
+                    lambda x: base64.b64decode(x + ("=" * ((4 - len(x) % 4) % 4))),
+                    lambda x: x.encode("utf-8"),
+                    lambda x: bytes.fromhex(x),
+                ):
+                    try:
+                        kb = cand_fn(k_clean)
+                        if len(kb) in (16, 24, 32) and kb not in key_candidates:
+                            key_candidates.append(kb)
+                    except Exception:
+                        pass
+
+            # Nếu encrypt_type == 1 (ví dụ gói cmd=1 chứa key): ưu tiên giải mã AES-CBC bằng secret_key trước
+            if encrypt_type in (1, 3):
+                for kb in key_candidates:
+                    for iv_cand, body_cand in ((bytes(16), b_data), (b_data[:16], b_data[16:])):
+                        if not body_cand or len(body_cand) % 16 != 0:
+                            continue
+                        try:
+                            cipher = AES.new(kb, AES.MODE_CBC, iv_cand)
+                            dec_bytes = cipher.decrypt(body_cand)
+                            if dec_bytes:
+                                pad_v = dec_bytes[-1]
+                                if 1 <= pad_v <= 16 and all(b == pad_v for b in dec_bytes[-pad_v:]):
+                                    dec_bytes = dec_bytes[:-pad_v]
+                            res = self._try_decompress_or_json(dec_bytes)
+                            if res is not None:
+                                return res
+                        except Exception:
+                            pass
 
             if len(b_data) > 32:
                 iv = b_data[:16]
                 for kb in key_candidates:
-                    # Chuẩn Zalo Web v645 (zca-js): 16 byte IV (0:16) + 32 byte AAD (16:48) + Ciphertext & 16 byte GCM Tag (48:)
                     if len(b_data) >= 64:
                         try:
                             cipher = AES.new(kb, AES.MODE_GCM, nonce=iv)
                             cipher.update(b_data[16:48])
                             pt = cipher.decrypt_and_verify(b_data[48:-16], b_data[-16:])
-                            res = self._try_decompress_or_json(pt)
-                            if res is not None:
-                                return res
-                        except Exception:
-                            pass
-                        try:
-                            cipher = AES.new(kb, AES.MODE_GCM, nonce=iv)
-                            pt = cipher.decrypt(b_data[48:-16])
                             res = self._try_decompress_or_json(pt)
                             if res is not None:
                                 return res
@@ -4072,20 +4245,12 @@ class ZaloSelfBotListener:
                                 return res
                         except Exception:
                             pass
-                        try:
-                            cipher = AES.new(kb, AES.MODE_GCM, nonce=iv)
-                            pt = cipher.decrypt(b_data[32:-16])
-                            res = self._try_decompress_or_json(pt)
-                            if res is not None:
-                                return res
-                        except Exception:
-                            pass
-                    for sl in (b_data[48:], b_data[48:-16], b_data[32:], b_data[16:-16], b_data[16:]):
-                        if not sl:
+                    for sl_ct, sl_tag in ((b_data[48:-16], b_data[-16:]), (b_data[32:-16], b_data[-16:]), (b_data[16:-16], b_data[-16:])):
+                        if not sl_ct:
                             continue
                         try:
                             cipher = AES.new(kb, AES.MODE_GCM, nonce=iv)
-                            pt = cipher.decrypt(sl)
+                            pt = cipher.decrypt_and_verify(sl_ct, sl_tag)
                             res = self._try_decompress_or_json(pt)
                             if res is not None:
                                 return res
@@ -4099,9 +4264,10 @@ class ZaloSelfBotListener:
                     try:
                         cipher = AES.new(kb, AES.MODE_CBC, iv_cand)
                         dec_bytes = cipher.decrypt(body_cand)
-                        pad_v = dec_bytes[-1]
-                        if 1 <= pad_v <= 16:
-                            dec_bytes = dec_bytes[:-pad_v]
+                        if dec_bytes:
+                            pad_v = dec_bytes[-1]
+                            if 1 <= pad_v <= 16 and all(b == pad_v for b in dec_bytes[-pad_v:]):
+                                dec_bytes = dec_bytes[:-pad_v]
                         res = self._try_decompress_or_json(dec_bytes)
                         if res is not None:
                             return res
@@ -4132,8 +4298,11 @@ class ZaloSelfBotListener:
                 found.append(item)
             for k, v in obj.items():
                 sub_grp = is_grp_branch or (k in ("groupMsgs", "group_msgs", "grid"))
+                sub_grid = cur_grid
+                if not sub_grid and str(k).isdigit() and len(str(k)) >= 8 and is_grp_branch:
+                    sub_grid = str(k)
                 if isinstance(v, (dict, list)):
-                    found.extend(self._extract_msg_dicts(v, parent_is_group=sub_grp, parent_grid=cur_grid))
+                    found.extend(self._extract_msg_dicts(v, parent_is_group=sub_grp, parent_grid=sub_grid))
         elif isinstance(obj, list):
             for elem in obj:
                 if isinstance(elem, (dict, list)):
@@ -4166,11 +4335,22 @@ class ZaloSelfBotListener:
                 return res
         return None
 
+    @staticmethod
+    def _make_msg_dedupe_key(msg_obj, content=""):
+        mid = str(msg_obj.get("msgId") or msg_obj.get("globalMsgId") or msg_obj.get("id") or "").strip()
+        cmid = str(msg_obj.get("cliMsgId") or "").strip()
+        ts_v = str(msg_obj.get("ts") or msg_obj.get("time") or "").strip()
+        if mid or cmid:
+            return f"id:{mid}:{cmid}"
+        if ts_v and ts_v != "0":
+            return f"ts:{ts_v}:{content[:30]}"
+        return f"win:{int(time.time())}:{content[:30]}"
+
     def _process_msg_item(self, client, acc_row, msg_obj, default_is_group=False, fallback_thread_id=None):
         if not isinstance(msg_obj, dict):
             return
 
-        msg_id = str(msg_obj.get("msgId") or msg_obj.get("globalMsgId") or "")
+        msg_id = str(msg_obj.get("msgId") or msg_obj.get("globalMsgId") or msg_obj.get("id") or "")
         cli_msg_id = str(msg_obj.get("cliMsgId") or "")
         raw_content = msg_obj.get("content")
         if isinstance(raw_content, dict):
@@ -4205,7 +4385,7 @@ class ZaloSelfBotListener:
         if not content:
             return
 
-        dedupe_key = f"{msg_id}_{cli_msg_id}_{content[:40]}" if (msg_id or cli_msg_id) else f"{int(time.time() // 1.5)}_{content[:40]}"
+        dedupe_key = self._make_msg_dedupe_key(msg_obj, content)
         if dedupe_key in self.seen_msg_ids:
             return
         self.seen_msg_ids.append(dedupe_key)
@@ -4267,10 +4447,6 @@ class ZaloSelfBotListener:
 
     @classmethod
     def _recv_full_ws_message(cls, sock):
-        """Bộ ghép khung WebSocket chuẩn RFC 6455 (Multi-Frame Fragmentation Reassembler):
-        - Xử lý trọn vẹn các gói tin lớn (>64KB - 16MB) bị chia nhỏ thành nhiều frame (FIN=0 + opcode=0x0).
-        - Tự động phản hồi Ping (0x9 -> Pong 0xA) ngay cả khi đang ghép mảnh.
-        - Khắc phục triệt để lỗi đứt kết nối ở gói READY của Discord và gói tin nhóm của Zalo!"""
         frag_opcode = None
         frag_buf = bytearray()
 
@@ -4322,12 +4498,65 @@ class ZaloSelfBotListener:
                 frag_opcode = opcode
                 frag_buf = bytearray(data)
 
+    def _poll_single_group(self, client, acc_now, gid):
+        if self.stop_ev.is_set():
+            return
+        try:
+            msgs = client.get_recent_group_messages(gid)
+            if gid not in self.seeded_groups:
+                self.seeded_groups.add(gid)
+                if not msgs:
+                    return
+                # Ghi nhận các tin nhắn cũ vào seen_msg_ids, NHƯNG nếu tin nhắn cuối cùng vừa mới được gõ
+                # trong vòng 60 giây gần đây và là lệnh (.menu, .help, .nhay, .stop...) thì thực thi ngay!
+                now_ms = int(time.time() * 1000)
+                for idx_m, m in enumerate(msgs):
+                    if not isinstance(m, dict):
+                        continue
+                    rc = m.get("content") or m.get("message") or m.get("msg") or ""
+                    if isinstance(rc, dict):
+                        rc = rc.get("title") or rc.get("text") or rc.get("msg") or ""
+                    ct = strip_invisible_chars(str(rc))
+                    is_last_msg = (idx_m == len(msgs) - 1)
+                    msg_ts = int(m.get("ts") or 0)
+                    if msg_ts > 0 and msg_ts < 10000000000:
+                        msg_ts *= 1000
+                    is_fresh_cmd = is_last_msg and is_direct_user_command_text(ct) and (
+                        msg_ts == 0 or abs(now_ms - msg_ts) <= 60000
+                    )
+                    if is_fresh_cmd:
+                        m["grid"] = str(gid)
+                        self._process_msg_item(client, acc_now, m, default_is_group=True, fallback_thread_id=str(gid))
+                    else:
+                        self.seen_msg_ids.append(self._make_msg_dedupe_key(m, ct))
+            else:
+                for m in msgs:
+                    if isinstance(m, dict):
+                        m["grid"] = str(gid)
+                        self._process_msg_item(client, acc_now, m, default_is_group=True, fallback_thread_id=str(gid))
+        except Exception:
+            pass
+
     def _poll_active_groups_inline(self, client, acc_now):
-        """Luồng Hybrid Delta Poller chạy độc lập trên Thread riêng cho Zalo:
-        - Ưu tiên kiểm tra liên tục các nhóm đang hoạt động (test treo, nhóm có lệnh) mỗi 1.5 giây.
-        - Dùng cơ chế First-Poll Snapshot Seeding (self.seeded_groups) không phụ thuộc đồng hồ máy chủ:
-          + Lần đầu tiên nhìn thấy nhóm: ghi nhận toàn bộ msgId hiện có vào seen_msg_ids.
-          + Ngay khi có tin nhắn mới (không nằm trong seen_msg_ids): thực thi tức thì .menu, .nhay, .ngon, .stop!"""
+        """Bộ đồng bộ Delta Poller thông minh đa luồng cho Zalo:
+        1. Đọc get_grid_ver_map() để phát hiện tức thì nhóm vừa có tin nhắn mới (ver thay đổi) VÀ sắp xếp
+           các nhóm có hoạt động gần nhất lên đầu danh sách (như nhóm 'test treo').
+        2. Kết hợp nhóm vừa đổi ver + nhóm đang chạy chiến dịch (HOT_ACTIVE_ZALO_GROUPS) + vòng xoay poll_cursor.
+        3. Quét song song bằng ThreadPoolExecutor giúp phản hồi lệnh .menu, .help, .nhay, .stop dưới 1 giây!"""
+        changed_gids = []
+        gmap = {}
+        try:
+            gmap = client.get_grid_ver_map() or {}
+            for gid_k, ver_v in gmap.items():
+                gid_s = str(gid_k)
+                prev_v = self.last_grid_vers.get(gid_s)
+                if prev_v is not None and str(prev_v) != str(ver_v):
+                    changed_gids.append(gid_s)
+                    HOT_ACTIVE_ZALO_GROUPS.add(gid_s)
+                self.last_grid_vers[gid_s] = ver_v
+        except Exception:
+            pass
+
         all_gids = list(KNOWN_GROUPS_BY_ACC.get(client.uid, set()) | ALL_KNOWN_ZALO_GROUP_IDS)
         if not all_gids:
             try:
@@ -4338,13 +4567,35 @@ class ZaloSelfBotListener:
         if not all_gids:
             return
 
-        # Nhóm ưu tiên hàng đầu: Các nhóm đã biết và đang hoạt động (như test treo)
-        target_gids = [str(g) for g in all_gids if str(g) in ALL_KNOWN_ZALO_GROUP_IDS]
+        def _ver_num(g):
+            v = gmap.get(str(g), 0)
+            try:
+                return int(str(v).split("_")[0])
+            except Exception:
+                return 0
+
+        # Sắp xếp nhóm theo phiên bản hoạt động mới nhất giảm dần
+        all_gids.sort(key=_ver_num, reverse=True)
+
+        target_gids = []
+        # Ưu tiên 1: Các nhóm vừa có tin nhắn mới làm thay đổi gridVerMap
+        for cg in changed_gids:
+            if cg not in target_gids:
+                target_gids.append(cg)
+        # Ưu tiên 2: Các nhóm đang chạy chiến dịch hoặc vừa gõ lệnh
+        for hg in list(HOT_ACTIVE_ZALO_GROUPS):
+            if str(hg) not in target_gids:
+                target_gids.append(str(hg))
+        # Ưu tiên 3: Top 4 nhóm hoạt động gần nhất trên tài khoản Zalo
+        for top_g in all_gids[:4]:
+            if str(top_g) not in target_gids:
+                target_gids.append(str(top_g))
+        # Ưu tiên 4: Các nhóm chưa được khởi tạo snapshot
         unseeded = [str(g) for g in all_gids if str(g) not in self.seeded_groups]
         for ug in unseeded[:4]:
             if ug not in target_gids:
                 target_gids.append(ug)
-
+        # Ưu tiên 5: Vòng xoay tuần tự qua toàn bộ các nhóm còn lại
         batch_size = min(4, len(all_gids))
         start_i = self.poll_cursor % len(all_gids)
         for i in range(batch_size):
@@ -4353,34 +4604,19 @@ class ZaloSelfBotListener:
                 target_gids.append(g_cand)
         self.poll_cursor = (start_i + batch_size) % len(all_gids)
 
-        for gid in target_gids[:6]:
-            if self.stop_ev.is_set():
-                break
-            try:
-                msgs = client.get_recent_group_messages(gid)
-                if gid not in self.seeded_groups:
-                    for m in msgs:
-                        if isinstance(m, dict):
-                            mid = str(m.get("msgId") or m.get("globalMsgId") or "")
-                            cmid = str(m.get("cliMsgId") or "")
-                            rc = m.get("content") or m.get("message") or m.get("msg") or ""
-                            if isinstance(rc, dict):
-                                rc = rc.get("title") or rc.get("text") or rc.get("msg") or ""
-                            ct = strip_invisible_chars(str(rc))
-                            dedupe_k = f"{mid}_{cmid}_{ct[:40]}" if (mid or cmid) else f"seed_{ct[:40]}"
-                            self.seen_msg_ids.append(dedupe_k)
-                    self.seeded_groups.add(gid)
-                else:
-                    for m in msgs:
-                        if isinstance(m, dict):
-                            m["grid"] = str(gid)
-                            self._process_msg_item(client, acc_now, m, default_is_group=True, fallback_thread_id=str(gid))
-            except Exception:
-                continue
+        selected_batch = target_gids[:10]
+        if not selected_batch:
+            return
+
+        with ThreadPoolExecutor(max_workers=min(4, len(selected_batch))) as ex:
+            futures = [ex.submit(self._poll_single_group, client, acc_now, gid) for gid in selected_batch]
+            for fut in futures:
+                try:
+                    fut.result(timeout=6.0)
+                except Exception:
+                    pass
 
     def _run_http_poller_loop(self):
-        """Chạy độc lập hoàn toàn với WebSocket để dù người dùng đang mở Zalo Web trên trình duyệt khác (cmd=3000),
-        mọi lệnh .menu, .nhay, .ngon, .stop trên Zalo vẫn hoạt động 100%!"""
         while not self.stop_ev.is_set():
             acc_row = self._get_acc_row()
             if not acc_row or (acc_row.get("platform") or "zalo") != "zalo":
@@ -4391,9 +4627,12 @@ class ZaloSelfBotListener:
             try:
                 client = Zalo.get_pooled_client(acc_row["imei"], acc_row["cookies"])
                 self._poll_active_groups_inline(client, acc_row)
-            except Exception:
-                pass
-            self.stop_ev.wait(2.0)
+                if time.time() < self.ws_conflict_until:
+                    self.ws_status = "Zalo Smart Poller Active (.menu Sẵn Sàng)"
+            except Exception as e:
+                if "Phiên đăng nhập" in str(e) or "zpw_enk" in str(e):
+                    self.ws_status = "Cần cập nhật lại Cookie Zalo"
+            self.stop_ev.wait(1.3)
 
     def _run_ws_session(self, client, acc_row, ws_url):
         parsed = urlparse(ws_url)
@@ -4440,10 +4679,9 @@ class ZaloSelfBotListener:
             sock.close()
             return
 
-        self.ws_status = "Zalo Hybrid Shield Active"
+        self.ws_status = "Zalo Hybrid Shield Active (.menu Sẵn Sàng)"
         sock.settimeout(2.2)
         last_ping = time.time()
-        last_group_poll = 0.0
 
         try:
             while not self.stop_ev.is_set():
@@ -4457,8 +4695,6 @@ class ZaloSelfBotListener:
                     hb_payload = struct.pack("<BHB", 1, 2, 1) + json.dumps({"eventId": int(now_t * 1000)}).encode("utf-8")
                     self._send_ws_frame(sock, hb_payload, opcode=0x2)
                     last_ping = now_t
-
-                # Luồng HTTP Poller đã chạy song song trên self.poller_thread nên không bao giờ làm nghẽn WebSocket
 
                 try:
                     opcode, data = self._recv_full_ws_message(sock)
@@ -4486,7 +4722,9 @@ class ZaloSelfBotListener:
                             self.ws_cipher_key = outer["data"]["key"]
 
                         if cmd_id == 3000:
-                            self.ws_status = "Đang đồng bộ phiên..."
+                            # Người dùng đang mở Zalo Web trên trình duyệt -> nhường WebSocket 35s, dùng HTTP Poller!
+                            self.ws_conflict_until = time.time() + 35.0
+                            self.ws_status = "Zalo Smart Poller Active (.menu Sẵn Sàng)"
                             break
 
                         enc_type = int(outer.get("encrypt", 0))
@@ -4496,14 +4734,13 @@ class ZaloSelfBotListener:
 
                         inner = self._decode_ws_payload(client, raw_d, enc_type)
                         if inner is not None:
-                            # Trích xuất ws_cipher_key từ gói cmd=1 (encrypt=1) sau khi giải mã bằng zpw_enk!
                             if isinstance(inner, dict):
                                 k_dec = inner.get("key") or (
                                     inner.get("data", {}).get("key") if isinstance(inner.get("data"), dict) else None
                                 )
                                 if k_dec and isinstance(k_dec, str):
                                     self.ws_cipher_key = k_dec
-                                    self.ws_status = "Zalo Quantum Key Locked"
+                                    self.ws_status = "Zalo Quantum Key Locked (.menu Sẵn Sàng)"
 
                             self.last_event_ts = time.time()
                             is_grp_cmd = (cmd_id in (521, 522))
@@ -4532,6 +4769,10 @@ class ZaloSelfBotListener:
                 self.stop_ev.wait(4.0)
                 continue
 
+            if time.time() < self.ws_conflict_until:
+                self.stop_ev.wait(4.0)
+                continue
+
             try:
                 client = Zalo.get_pooled_client(acc_row["imei"], acc_row["cookies"])
                 if client.uid and not acc_row.get("uid"):
@@ -4542,10 +4783,6 @@ class ZaloSelfBotListener:
                         conn.close()
                     except Exception:
                         pass
-                try:
-                    client.get_grid_ver_map()
-                except Exception:
-                    pass
 
                 if client.ws_urls:
                     ws_url = client.ws_urls[ws_idx % len(client.ws_urls)]
@@ -4555,22 +4792,21 @@ class ZaloSelfBotListener:
                         ws_url = f"{ws_url}{sep}zpw_ver=645&zpw_type=30&t={int(time.time() * 1000)}"
                     self._run_ws_session(client, acc_row, ws_url)
 
-                self._poll_active_groups_inline(client, acc_row)
-                self.stop_ev.wait(2.5)
+                self.stop_ev.wait(3.0)
             except Exception:
-                self.ws_status = "Đang kết nối lại..."
+                self.ws_status = "Zalo Poller Đang Bảo Vệ..."
                 self.stop_ev.wait(5.0)
 
 
 # ============================================================
-# LISTENER 24/7 TRÊN DISCORD ACC CHÍNH CHỦ & BOT (GHOST VAULT & RFC6455 REASSEMBLER)
+# LISTENER 24/7 TRÊN DISCORD ACC CHÍNH CHỦ & BOT (CHROME 131 TLS GATEWAY + ZERO-SCRAPE SHIELD)
 # ============================================================
 class DiscordSelfBotListener:
     def __init__(self, acc_id):
         self.acc_id = acc_id
         self.platform = "discord"
         self.stop_ev = threading.Event()
-        self.seen_msg_ids = deque(maxlen=1200)
+        self.seen_msg_ids = deque(maxlen=1500)
         self.seeded_channels = set()
         self.ws_status = "Đang khởi tạo Discord Ghost Shield..."
         self.last_event_ts = 0.0
@@ -4638,22 +4874,29 @@ class DiscordSelfBotListener:
             platform="discord"
         )
 
-    def _poll_active_discord_channels(self, client, acc_now):
-        """Bộ đồng bộ dự phòng cho các kênh Discord đang hoạt động:"""
-        ch_set = list(DiscordStealthAntiBanEngine.ACTIVE_DISCORD_POLL_CHANNELS.get(self.acc_id, set()))[:4]
+    def _poll_active_discord_channels_fallback(self, client, acc_now):
+        """Chỉ quét nhẹ tối đa 2 kênh đang chạy chiến dịch khi Gateway tạm ngắt kết nối
+        (TUYỆT ĐỐI KHÔNG quét hàng loạt DM lúc khởi động để chống Discord báo Reset mật khẩu!):"""
+        ch_set = list(DiscordStealthAntiBanEngine.ACTIVE_DISCORD_POLL_CHANNELS.get(self.acc_id, set()))[:2]
         for cid in ch_set:
             if self.stop_ev.is_set():
                 break
             try:
                 ep = DiscordStealthAntiBanEngine.pick_stealth_endpoint(client.token, f"/channels/{cid}/messages?limit=5", 0)
-                r = client.s.get(ep, timeout=8)
+                r = client.s.get(ep, timeout=6)
                 if r.status_code == 200 and isinstance(r.json(), list):
                     msgs = list(reversed(r.json()))
                     if cid not in self.seeded_channels:
-                        for m in msgs:
-                            if isinstance(m, dict) and m.get("id"):
-                                self.seen_msg_ids.append(str(m["id"]))
                         self.seeded_channels.add(cid)
+                        for idx_m, m in enumerate(msgs):
+                            if not isinstance(m, dict):
+                                continue
+                            ct = strip_invisible_chars(str(m.get("content") or ""))
+                            if idx_m == len(msgs) - 1 and is_direct_user_command_text(ct):
+                                m["channel_id"] = cid
+                                self._handle_discord_message_event(client, acc_now, m)
+                            elif m.get("id"):
+                                self.seen_msg_ids.append(str(m["id"]))
                     else:
                         for m in msgs:
                             if isinstance(m, dict):
@@ -4676,19 +4919,23 @@ class DiscordSelfBotListener:
         path = "/?encoding=json&v=9"
 
         raw_sock = socket.create_connection((host, port), timeout=14)
-        ctx = ssl.create_default_context()
+        ctx = DiscordStealthAntiBanEngine.create_chrome_tls_context()
         sock = ctx.wrap_socket(raw_sock, server_hostname=host)
 
         ws_key = base64.b64encode(os.urandom(16)).decode()
         handshake = (
             f"GET {path} HTTP/1.1\r\n"
             f"Host: {host}\r\n"
-            f"Upgrade: websocket\r\n"
             f"Connection: Upgrade\r\n"
-            f"Sec-WebSocket-Key: {ws_key}\r\n"
-            f"Sec-WebSocket-Version: 13\r\n"
+            f"Pragma: no-cache\r\n"
+            f"Cache-Control: no-cache\r\n"
+            f"User-Agent: {client.s.headers.get('User-Agent')}\r\n"
+            f"Upgrade: websocket\r\n"
             f"Origin: https://discord.com\r\n"
-            f"User-Agent: {client.s.headers.get('User-Agent')}\r\n\r\n"
+            f"Sec-WebSocket-Version: 13\r\n"
+            f"Accept-Encoding: gzip, deflate, br, zstd\r\n"
+            f"Accept-Language: vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7\r\n"
+            f"Sec-WebSocket-Key: {ws_key}\r\n\r\n"
         )
         sock.sendall(handshake.encode("utf-8"))
 
@@ -4710,10 +4957,8 @@ class DiscordSelfBotListener:
         sock.settimeout(2.5)
         hb_interval = 38.0
         last_hb = time.time()
-        last_ch_poll = time.time()
         identified = False
         prof = DiscordStealthAntiBanEngine.get_deterministic_profile(client.token)
-        launch_sig, hb_sess = DiscordStealthAntiBanEngine.get_deterministic_session_uuids(client.token)
 
         try:
             while not self.stop_ev.is_set():
@@ -4728,13 +4973,6 @@ class DiscordSelfBotListener:
                     ZaloSelfBotListener._send_ws_frame(sock, hb_pkt, opcode=0x1)
                     last_hb = now_t
 
-                if identified and (now_t - last_ch_poll >= 4.5):
-                    last_ch_poll = now_t
-                    try:
-                        self._poll_active_discord_channels(client, acc_now)
-                    except Exception:
-                        pass
-
                 try:
                     opcode, data = ZaloSelfBotListener._recv_full_ws_message(sock)
                     if opcode is None or opcode == 0x8:
@@ -4744,7 +4982,6 @@ class DiscordSelfBotListener:
                         try:
                             pkt = json.loads(data.decode("utf-8", errors="ignore"))
                         except Exception:
-                            # Tuyệt đối không ngắt kết nối nếu gặp gói tin lẻ lỗi JSON
                             continue
 
                         op = pkt.get("op")
@@ -4756,6 +4993,10 @@ class DiscordSelfBotListener:
 
                         if op == 10 and isinstance(d_ev, dict):
                             hb_interval = max(20.0, (float(d_ev.get("heartbeat_interval", 41250)) / 1000.0) * random.uniform(0.88, 0.95))
+                            # Nhịp trễ khởi động tự nhiên giống hệt trình duyệt Chrome thật tải bundle JS
+                            self.stop_ev.wait(random.uniform(1.1, 1.8))
+                            if self.stop_ev.is_set():
+                                break
                             cur_resume = DiscordStealthAntiBanEngine.get_gateway_resume_state(client.token)
                             if not client.is_bot and cur_resume and cur_resume.get("session_id"):
                                 resume_payload = {
@@ -4769,7 +5010,7 @@ class DiscordSelfBotListener:
                                 ZaloSelfBotListener._send_ws_frame(sock, json.dumps(resume_payload).encode("utf-8"), opcode=0x1)
                                 identified = True
                                 last_hb = time.time()
-                                self.ws_status = "Discord Ghost Session (Resumed)"
+                                self.ws_status = "Discord Ghost Session (Resumed - .menu Sẵn Sàng)"
                             elif client.is_bot:
                                 ident_payload = {
                                     "op": 2,
@@ -4782,7 +5023,7 @@ class DiscordSelfBotListener:
                                 ZaloSelfBotListener._send_ws_frame(sock, json.dumps(ident_payload).encode("utf-8"), opcode=0x1)
                                 identified = True
                                 last_hb = time.time()
-                                self.ws_status = "Discord Bot Shield"
+                                self.ws_status = "Discord Bot Shield (.menu Sẵn Sàng)"
                             else:
                                 can_id, wait_id = DiscordStealthAntiBanEngine.can_send_gateway_identify(client.token)
                                 if not can_id:
@@ -4790,11 +5031,12 @@ class DiscordSelfBotListener:
                                     self.stop_ev.wait(wait_id)
                                     if self.stop_ev.is_set():
                                         break
+                                # 100% chuẩn 14 trường Chrome 131 Web thật — đã xóa sạch launch_signature & client_heartbeat_session_id
                                 ident_payload = {
                                     "op": 2,
                                     "d": {
                                         "token": client.token,
-                                        "capabilities": 30717,
+                                        "capabilities": 16381,
                                         "properties": {
                                             "os": prof["os"],
                                             "browser": prof["browser"],
@@ -4810,11 +5052,8 @@ class DiscordSelfBotListener:
                                             "release_channel": "stable",
                                             "client_build_number": prof["build_number"],
                                             "client_event_source": None,
-                                            "has_client_mods": False,
-                                            "launch_signature": launch_sig,
-                                            "client_heartbeat_session_id": hb_sess,
                                         },
-                                        "presence": {"status": "invisible", "since": 0, "activities": [], "afk": True},
+                                        "presence": {"status": "online", "since": 0, "activities": [], "afk": False},
                                         "compress": False,
                                         "client_state": {
                                             "guild_versions": {},
@@ -4830,7 +5069,7 @@ class DiscordSelfBotListener:
                                 ZaloSelfBotListener._send_ws_frame(sock, json.dumps(ident_payload).encode("utf-8"), opcode=0x1)
                                 identified = True
                                 last_hb = time.time()
-                                self.ws_status = "Discord Ghost Stealth (Invisible)"
+                                self.ws_status = "Discord Chrome 131 Shield (.menu Sẵn Sàng)"
 
                         elif op == 0 and t_ev == "READY" and isinstance(d_ev, dict):
                             sess_id = str(d_ev.get("session_id") or "")
@@ -4845,10 +5084,10 @@ class DiscordSelfBotListener:
                                 DiscordStealthAntiBanEngine.save_gateway_resume_state(
                                     client.token, session_id=sess_id, resume_url=res_url, last_seq=self.last_seq or 0
                                 )
-                            self.ws_status = "Discord Ghost Vault (.menu Ready)"
+                            self.ws_status = "Discord Ghost Vault (.menu Sẵn Sàng Toàn Kênh)"
 
                         elif op == 0 and t_ev == "RESUMED":
-                            self.ws_status = "Discord Ghost Vault (Resumed)"
+                            self.ws_status = "Discord Ghost Vault (Resumed - .menu Sẵn Sàng)"
 
                         elif op == 0 and t_ev == "MESSAGE_CREATE" and isinstance(d_ev, dict):
                             self.last_event_ts = time.time()
@@ -4862,7 +5101,7 @@ class DiscordSelfBotListener:
                         elif op == 9:
                             if not d_ev:
                                 DiscordStealthAntiBanEngine.save_gateway_resume_state(client.token, "", "", 0)
-                            self.stop_ev.wait(random.uniform(2.5, 4.5))
+                            self.stop_ev.wait(random.uniform(3.0, 5.5))
                             break
 
                         elif op == 7:
@@ -4877,67 +5116,9 @@ class DiscordSelfBotListener:
             except Exception:
                 pass
 
-    def _run_stealth_rest_session(self, client, acc_row):
-        """Chế độ Stealth REST an toàn 100% cho tài khoản Discord người dùng (Self-Bot):
-        - Tuyệt đối KHÔNG kết nối Gateway WebSocket từ IP Cloud/VPS để triệt tiêu hoàn toàn mã vi phạm
-          và không bao giờ bị Discord gửi email bắt đặt lại mật khẩu trong 2 giây!
-        - Quét nhẹ nhàng các kênh và DM đang hoạt động bằng request HTTPS REST chuẩn Chrome 131,
-          giúp bảo tồn Token sống vĩnh viễn và nhận lệnh .menu, .help, .nhay, .stop siêu mượt."""
-        self.ws_status = "Discord Stealth REST Shield (.menu Sẵn Sàng)"
-        last_box_refresh = 0.0
-        cached_boxes = []
-
-        while not self.stop_ev.is_set():
-            acc_now = self._get_acc_row()
-            if not acc_now or not acc_now.get("chat_cmd_enabled", 1):
-                self.ws_status = "Đã tắt nhận lệnh"
-                break
-
-            now = time.time()
-            if now - last_box_refresh >= 90.0 or not cached_boxes:
-                try:
-                    dm_boxes = client.get_dm_and_group_boxes()
-                    cached_boxes = [str(b["id"]) for b in dm_boxes]
-                    last_box_refresh = now
-                except Exception:
-                    pass
-
-            ch_set = list(DiscordStealthAntiBanEngine.ACTIVE_DISCORD_POLL_CHANNELS.get(self.acc_id, set()))
-            for b_id in cached_boxes[:8]:
-                if b_id not in ch_set:
-                    ch_set.append(b_id)
-
-            if not ch_set:
-                self.ws_status = "Discord Stealth Idle (Chờ kênh hoạt động)"
-                self.stop_ev.wait(3.5)
-                continue
-
-            self.ws_status = f"Discord Stealth Active ({len(ch_set[:8])} kênh - .menu Sẵn Sàng)"
-            for cid in ch_set[:8]:
-                if self.stop_ev.is_set():
-                    break
-                try:
-                    ep = DiscordStealthAntiBanEngine.pick_stealth_endpoint(client.token, f"/channels/{cid}/messages?limit=5", 0)
-                    r = client.s.get(ep, timeout=5)
-                    if r.status_code == 200 and isinstance(r.json(), list):
-                        msgs = list(reversed(r.json()))
-                        if cid not in self.seeded_channels:
-                            for m in msgs:
-                                if isinstance(m, dict) and m.get("id"):
-                                    self.seen_msg_ids.append(str(m["id"]))
-                            self.seeded_channels.add(cid)
-                        else:
-                            for m in msgs:
-                                if isinstance(m, dict):
-                                    m["channel_id"] = cid
-                                    self._handle_discord_message_event(client, acc_now, m)
-                except Exception:
-                    continue
-                time.sleep(0.25)
-
-            self.stop_ev.wait(2.2)
-
     def _run_loop(self):
+        # Đợi nhẹ 1.8s sau khi thêm Token để tránh xung đột request với bước xác thực ban đầu
+        self.stop_ev.wait(1.8)
         while not self.stop_ev.is_set():
             acc_row = self._get_acc_row()
             if not acc_row or acc_row.get("platform") != "discord":
@@ -4950,9 +5131,9 @@ class DiscordSelfBotListener:
             try:
                 is_bot = bool(acc_row.get("is_bot", 0))
                 client = DiscordBot(acc_row["token"], is_bot=is_bot)
-                if not client.check():
+                if not client.check(force_network=False):
                     self.ws_status = "Token cần kiểm tra lại"
-                    self.stop_ev.wait(15.0)
+                    self.stop_ev.wait(18.0)
                     continue
 
                 if client.user_id and not acc_row.get("uid"):
@@ -4964,15 +5145,12 @@ class DiscordSelfBotListener:
                     except Exception:
                         pass
 
-                if is_bot:
-                    self._run_gateway_session(client, acc_row)
-                    self.stop_ev.wait(4.5)
-                else:
-                    self._run_stealth_rest_session(client, acc_row)
-                    self.stop_ev.wait(2.2)
+                self._run_gateway_session(client, acc_row)
+                self._poll_active_discord_channels_fallback(client, acc_row)
+                self.stop_ev.wait(4.5)
             except Exception:
-                self.ws_status = "Đang kết nối lại..."
-                self.stop_ev.wait(5.0)
+                self.ws_status = "Đang đồng bộ lại..."
+                self.stop_ev.wait(6.0)
 
 
 def sync_all_zalo_listeners():
@@ -4987,7 +5165,17 @@ def sync_all_zalo_listeners():
             plat = (r["platform"] or "zalo").lower()
             if r["chat_cmd_enabled"]:
                 active_ids.add(aid)
-                if aid not in ACTIVE_LISTENERS or not ACTIVE_LISTENERS[aid].thread.is_alive():
+                lst = ACTIVE_LISTENERS.get(aid)
+                need_start = (lst is None) or (not lst.thread.is_alive())
+                if not need_start and plat == "zalo" and hasattr(lst, "poller_thread"):
+                    if not lst.poller_thread.is_alive():
+                        need_start = True
+                if need_start:
+                    if lst is not None:
+                        try:
+                            lst.stop()
+                        except Exception:
+                            pass
                     if plat == "discord":
                         listener = DiscordSelfBotListener(aid)
                     else:
@@ -5003,13 +5191,13 @@ def sync_all_zalo_listeners():
 
 
 def _listener_watchdog_loop():
-    time.sleep(1.2)
+    time.sleep(1.0)
     while True:
         try:
             sync_all_zalo_listeners()
         except Exception:
             pass
-        time.sleep(8.0)
+        time.sleep(6.0)
 
 
 threading.Thread(target=_listener_watchdog_loop, daemon=True).start()
@@ -5032,59 +5220,78 @@ html,body{
   width:100%;max-width:100%;overflow-x:hidden;
   touch-action:manipulation;-webkit-text-size-adjust:100%;
   font-family:'Plus Jakarta Sans',sans-serif;
-  background:#f4f7f9;
+  background:#eef4fb;
   background-image:
-    radial-gradient(at 10% 10%, rgba(201,42,42,0.09) 0px, transparent 48%),
-    radial-gradient(at 90% 15%, rgba(13,104,71,0.10) 0px, transparent 48%),
-    radial-gradient(at 50% 90%, rgba(217,119,6,0.08) 0px, transparent 50%);
+    radial-gradient(circle at 12% 18%, rgba(225,29,72,0.20) 0px, transparent 42%),
+    radial-gradient(circle at 88% 16%, rgba(5,150,105,0.20) 0px, transparent 44%),
+    radial-gradient(circle at 80% 85%, rgba(2,132,199,0.18) 0px, transparent 46%),
+    radial-gradient(circle at 20% 82%, rgba(217,119,6,0.15) 0px, transparent 45%);
+  background-attachment:fixed;
   color:#0f172a;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:16px;
 }
 .login-card{
-  width:100%;max-width:410px;background:#ffffff;
-  border:1px solid #e2e8f0;border-radius:26px;overflow:hidden;
-  box-shadow:0 20px 45px -12px rgba(15,23,42,0.10);position:relative;
+  width:100%;max-width:415px;
+  background:rgba(255,255,255,0.64);
+  backdrop-filter:blur(28px) saturate(200%);
+  -webkit-backdrop-filter:blur(28px) saturate(200%);
+  border:1.5px solid rgba(255,255,255,0.86);
+  border-radius:28px;overflow:hidden;
+  box-shadow:0 24px 50px -12px rgba(15,23,42,0.14),inset 0 1.5px 2px rgba(255,255,255,0.95);
+  position:relative;
 }
 .noel-art-banner{
-  position:relative;height:148px;overflow:hidden;
-  background:linear-gradient(135deg,#881337 0%,#be123c 45%,#065f46 100%);
+  position:relative;height:152px;overflow:hidden;
+  background:linear-gradient(135deg,rgba(136,19,55,0.92) 0%,rgba(190,18,60,0.88) 48%,rgba(6,95,70,0.92) 100%);
+  backdrop-filter:blur(16px);
   display:flex;flex-direction:column;align-items:center;justify-content:center;padding:18px;
+  border-bottom:1px solid rgba(255,255,255,0.35);
 }
 .noel-art-svg{
   position:absolute;inset:0;width:100%;height:100%;object-fit:cover;pointer-events:none;opacity:0.92;
 }
 .brand-mark{
-  position:relative;z-index:2;width:58px;height:58px;border-radius:18px;
-  background:rgba(255,255,255,0.16);backdrop-filter:blur(10px);
-  border:1.5px solid rgba(255,255,255,0.45);
+  position:relative;z-index:2;width:60px;height:60px;border-radius:20px;
+  background:rgba(255,255,255,0.22);backdrop-filter:blur(14px);
+  border:1.5px solid rgba(255,255,255,0.65);
   display:flex;align-items:center;justify-content:center;
-  box-shadow:0 10px 24px rgba(0,0,0,0.22);margin-bottom:8px;overflow:hidden;
+  box-shadow:0 10px 26px rgba(0,0,0,0.22),inset 0 1px 2px rgba(255,255,255,0.8);
+  margin-bottom:8px;overflow:hidden;
 }
 .brand-mark img{width:100%;height:100%;object-fit:cover}
 .brand-title{
-  position:relative;z-index:2;font-size:23px;font-weight:800;color:#ffffff;
-  letter-spacing:2.5px;text-shadow:0 2px 10px rgba(0,0,0,0.25);
+  position:relative;z-index:2;font-size:24px;font-weight:800;color:#ffffff;
+  letter-spacing:3px;text-shadow:0 2px 12px rgba(0,0,0,0.25);
 }
 .login-body{padding:24px 20px 26px}
 .field-label{
-  display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:#334155;margin-bottom:8px;
+  display:flex;align-items:center;gap:6px;font-size:12px;font-weight:800;color:#1e293b;margin-bottom:8px;
 }
 .field-input{
-  width:100%;padding:13px 14px;background:#f8fafc;border:1.5px solid #cbd5e1;
-  border-radius:14px;color:#0f172a;font-size:16px;outline:none;transition:all .2s;margin-bottom:16px;
+  width:100%;padding:13px 14px;
+  background:rgba(255,255,255,0.75);
+  backdrop-filter:blur(12px);
+  border:1.5px solid rgba(255,255,255,0.9);
+  box-shadow:inset 0 2px 5px rgba(15,23,42,0.04),0 2px 8px rgba(15,23,42,0.04);
+  border-radius:15px;color:#0f172a;font-size:16px;outline:none;transition:all .2s;margin-bottom:16px;
 }
-.field-input:focus{border-color:#be123c;background:#fff;box-shadow:0 0 0 3px rgba(190,18,60,0.12)}
+.field-input:focus{
+  border-color:#e11d48;background:rgba(255,255,255,0.95);
+  box-shadow:0 0 0 3.5px rgba(225,29,72,0.15),inset 0 1px 2px rgba(255,255,255,1);
+}
 .btn-noel-login{
-  position:relative;overflow:hidden;width:100%;padding:13px 16px;
-  background:linear-gradient(135deg,#be123c 0%,#9f1239 50%,#065f46 100%);
-  color:#fff;font-weight:800;border:none;border-radius:14px;cursor:pointer;font-size:14px;
+  position:relative;overflow:hidden;width:100%;padding:13.5px 16px;
+  background:linear-gradient(135deg,#e11d48 0%,#be123c 50%,#059669 100%);
+  color:#fff;font-weight:800;border:1px solid rgba(255,255,255,0.45);border-radius:15px;cursor:pointer;font-size:14px;
   display:flex;align-items:center;justify-content:center;gap:8px;
-  box-shadow:0 10px 22px -6px rgba(190,18,60,0.45);transition:transform .18s;
+  box-shadow:0 12px 26px -6px rgba(190,18,60,0.45),inset 0 1px 1.5px rgba(255,255,255,0.65);
+  transition:transform .18s,box-shadow .18s;
 }
 .btn-noel-login:active{transform:scale(0.98)}
 .btn-art-bg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;opacity:0.28}
 .err-box{
-  background:#fef2f2;border:1px solid #fecaca;color:#b91c1c;
-  padding:11px 12px;border-radius:12px;font-size:12.5px;margin-bottom:14px;text-align:center;font-weight:600;
+  background:rgba(254,242,242,0.85);backdrop-filter:blur(8px);
+  border:1px solid #fecaca;color:#b91c1c;
+  padding:11px 12px;border-radius:13px;font-size:12.5px;margin-bottom:14px;text-align:center;font-weight:700;
   overflow-wrap:break-word;word-break:break-word;
 }
 </style>
@@ -5153,21 +5360,21 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
 <style>
 :root{
-  --bg-main:#f3f6fa;
-  --bg-card:#ffffff;
-  --bg-soft:#f8fafc;
+  --bg-main:#eaf2fa;
+  --bg-card:rgba(255,255,255,0.62);
+  --bg-soft:rgba(255,255,255,0.52);
   --text-primary:#0f172a;
-  --text-secondary:#334155;
-  --text-muted:#64748b;
-  --border-light:#e2e8f0;
-  --noel-red:#be123c;
-  --noel-red-soft:#ffe4e6;
-  --noel-pine:#047857;
-  --noel-pine-soft:#d1fae5;
+  --text-secondary:#1e293b;
+  --text-muted:#475569;
+  --border-light:rgba(255,255,255,0.84);
+  --noel-red:#e11d48;
+  --noel-red-soft:rgba(255,228,230,0.78);
+  --noel-pine:#059669;
+  --noel-pine-soft:rgba(209,250,229,0.78);
   --noel-gold:#d97706;
-  --noel-blue:#1d4ed8;
+  --noel-blue:#0284c7;
   --noel-indigo:#4f46e5;
-  --shadow-card:0 8px 24px -6px rgba(15,23,42,0.06),0 2px 6px -1px rgba(15,23,42,0.03);
+  --shadow-card:0 16px 36px -8px rgba(15,23,42,0.08),0 4px 12px -2px rgba(15,23,42,0.04),inset 0 1.5px 2px rgba(255,255,255,0.94),inset 0 -1px 1px rgba(255,255,255,0.45);
 }
 *{
   box-sizing:border-box;margin:0;padding:0;min-width:0;
@@ -5179,26 +5386,37 @@ html,body{
   font-family:'Plus Jakarta Sans',sans-serif;
   background-color:var(--bg-main);
   background-image:
-    radial-gradient(at 0% 0%, rgba(190,18,60,0.07) 0px, transparent 42%),
-    radial-gradient(at 100% 0%, rgba(4,120,87,0.08) 0px, transparent 42%),
-    radial-gradient(at 50% 100%, rgba(217,119,6,0.06) 0px, transparent 48%);
+    radial-gradient(circle at 8% 12%, rgba(225,29,72,0.18) 0px, transparent 38%),
+    radial-gradient(circle at 92% 10%, rgba(5,150,105,0.18) 0px, transparent 40%),
+    radial-gradient(circle at 85% 82%, rgba(2,132,199,0.16) 0px, transparent 42%),
+    radial-gradient(circle at 16% 86%, rgba(217,119,6,0.14) 0px, transparent 40%),
+    linear-gradient(135deg, #eef5fc 0%, #e6f0fa 50%, #edf6f3 100%);
+  background-attachment:fixed;
   color:var(--text-primary);
   min-height:100vh;
-  padding-bottom:92px;
+  padding-bottom:96px;
 }
 input,select,textarea{font-size:16px !important;font-family:inherit;max-width:100%}
 
 .app-container{
-  width:100%;max-width:1180px;margin:0 auto;padding:10px 10px 24px;
-  overflow-x:hidden;
+  width:100%;max-width:1180px;margin:0 auto;padding:12px 10px 26px;
+  overflow-x:hidden;position:relative;z-index:1;
 }
 
 .noel-hero{
   position:relative;overflow:hidden;
-  border-radius:22px;margin-bottom:12px;
-  background:linear-gradient(125deg,#881337 0%,#be123c 46%,#065f46 100%);
-  box-shadow:0 12px 28px -8px rgba(136,19,55,0.32);
-  color:#ffffff;padding:14px 14px;
+  border-radius:24px;margin-bottom:14px;
+  background:linear-gradient(125deg,rgba(136,19,55,0.88) 0%,rgba(225,29,72,0.84) 48%,rgba(5,150,105,0.88) 100%);
+  backdrop-filter:blur(24px) saturate(190%);
+  -webkit-backdrop-filter:blur(24px) saturate(190%);
+  border:1.5px solid rgba(255,255,255,0.52);
+  box-shadow:0 16px 36px -8px rgba(136,19,55,0.28),inset 0 1.5px 2.5px rgba(255,255,255,0.65);
+  color:#ffffff;padding:14px 16px;
+}
+.noel-hero::after{
+  content:"";position:absolute;top:-50%;left:-20%;width:65%;height:200%;
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,0.14),transparent);
+  transform:rotate(25deg);pointer-events:none;
 }
 .noel-hero-art{
   position:absolute;inset:0;width:100%;height:100%;pointer-events:none;opacity:0.9;
@@ -5211,65 +5429,75 @@ input,select,textarea{font-size:16px !important;font-family:inherit;max-width:10
   display:flex;align-items:center;gap:10px;min-width:0;
 }
 .logo-frame{
-  width:42px;height:42px;border-radius:13px;
-  background:rgba(255,255,255,0.18);backdrop-filter:blur(8px);
-  border:1.5px solid rgba(255,255,255,0.5);
+  width:44px;height:44px;border-radius:14px;
+  background:rgba(255,255,255,0.22);backdrop-filter:blur(14px);
+  -webkit-backdrop-filter:blur(14px);
+  border:1.5px solid rgba(255,255,255,0.68);
   display:flex;align-items:center;justify-content:center;
   overflow:hidden;cursor:pointer;flex-shrink:0;position:relative;
-  box-shadow:0 6px 16px rgba(0,0,0,0.18);
+  box-shadow:0 8px 18px rgba(0,0,0,0.18),inset 0 1px 2px rgba(255,255,255,0.85);
 }
 .logo-frame img{width:100%;height:100%;object-fit:cover}
 .brand-name{
-  font-size:20px;font-weight:800;letter-spacing:2px;color:#ffffff;
-  text-shadow:0 2px 8px rgba(0,0,0,0.22);line-height:1.1;
+  font-size:21px;font-weight:800;letter-spacing:2.4px;color:#ffffff;
+  text-shadow:0 2px 10px rgba(0,0,0,0.22);line-height:1.1;
 }
 .hero-actions{
-  display:flex;align-items:center;gap:6px;flex-wrap:wrap;
+  display:flex;align-items:center;gap:7px;flex-wrap:wrap;
 }
 .hero-pill-btn{
   position:relative;overflow:hidden;
   display:inline-flex;align-items:center;gap:5px;
-  padding:7px 11px;border-radius:11px;
-  background:rgba(255,255,255,0.16);backdrop-filter:blur(8px);
-  border:1px solid rgba(255,255,255,0.35);
-  color:#ffffff;font-size:11.5px;font-weight:700;cursor:pointer;
+  padding:7.5px 12px;border-radius:999px;
+  background:rgba(255,255,255,0.20);backdrop-filter:blur(12px);
+  -webkit-backdrop-filter:blur(12px);
+  border:1px solid rgba(255,255,255,0.52);
+  box-shadow:inset 0 1px 1.5px rgba(255,255,255,0.65);
+  color:#ffffff;font-size:11.5px;font-weight:800;cursor:pointer;
   text-decoration:none;transition:all .18s;
 }
-.hero-pill-btn:hover{background:rgba(255,255,255,0.26)}
+.hero-pill-btn:hover{background:rgba(255,255,255,0.32);transform:translateY(-1px)}
 .hero-pill-btn svg{flex-shrink:0}
 
 .kpi-strip{
-  display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-bottom:12px;
+  display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px;margin-bottom:14px;
 }
 @media(max-width:640px){
-  .kpi-strip{grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}
+  .kpi-strip{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
 }
 .kpi-card{
   position:relative;overflow:hidden;
-  background:var(--bg-card);border:1px solid var(--border-light);
-  border-radius:16px;padding:11px 12px;
+  background:var(--bg-card);
+  backdrop-filter:blur(24px) saturate(190%);
+  -webkit-backdrop-filter:blur(24px) saturate(190%);
+  border:1.5px solid var(--border-light);
+  border-radius:20px;padding:12px 13px;
   display:flex;align-items:center;justify-content:space-between;gap:8px;
   box-shadow:var(--shadow-card);
+  transition:transform .2s;
 }
+.kpi-card:hover{transform:translateY(-1px)}
 .kpi-art-bg{
-  position:absolute;right:0;bottom:0;width:84px;height:56px;pointer-events:none;opacity:0.25;
+  position:absolute;right:0;bottom:0;width:84px;height:56px;pointer-events:none;opacity:0.20;
 }
 .kpi-info{min-width:0;position:relative;z-index:1}
 .kpi-label{
-  font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:0.4px;
+  font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:0.5px;
   color:var(--text-muted);margin-bottom:3px;
   overflow-wrap:break-word;word-break:break-word;
 }
-.kpi-val{font-size:19px;font-weight:800;font-family:'JetBrains Mono',monospace;line-height:1.1}
+.kpi-val{font-size:20px;font-weight:800;font-family:'JetBrains Mono',monospace;line-height:1.1}
 .kpi-icon-box{
-  position:relative;z-index:1;width:36px;height:36px;border-radius:11px;
+  position:relative;z-index:1;width:38px;height:38px;border-radius:13px;
   display:flex;align-items:center;justify-content:center;flex-shrink:0;
+  border:1px solid rgba(255,255,255,0.8);
+  box-shadow:inset 0 1px 2px rgba(255,255,255,0.9);
 }
 
-.tab-section{display:none;animation:fadeSlide .2s ease}
+.tab-section{display:none;animation:fadeSlide .22s cubic-bezier(0.22,1,0.36,1)}
 .tab-section.active{display:block}
 @keyframes fadeSlide{
-  from{opacity:0;transform:translateY(5px)}
+  from{opacity:0;transform:translateY(6px)}
   to{opacity:1;transform:translateY(0)}
 }
 
@@ -5286,18 +5514,26 @@ input,select,textarea{font-size:16px !important;font-family:inherit;max-width:10
 
 .card{
   position:relative;overflow:hidden;
-  background:var(--bg-card);border:1px solid var(--border-light);
-  border-radius:20px;padding:14px;box-shadow:var(--shadow-card);
+  background:var(--bg-card);
+  backdrop-filter:blur(26px) saturate(195%);
+  -webkit-backdrop-filter:blur(26px) saturate(195%);
+  border:1.5px solid var(--border-light);
+  border-radius:24px;padding:15px;box-shadow:var(--shadow-card);
   margin-bottom:12px;width:100%;max-width:100%;
 }
+.card::before{
+  content:"";position:absolute;top:0;left:0;right:0;height:1px;
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,0.98),transparent);
+  pointer-events:none;
+}
 .card-corner-art{
-  position:absolute;top:0;right:0;width:110px;height:70px;pointer-events:none;opacity:0.22;
+  position:absolute;top:0;right:0;width:110px;height:70px;pointer-events:none;opacity:0.18;
 }
 .card-head{
   position:relative;z-index:1;
   display:flex;align-items:center;justify-content:space-between;
   gap:8px;margin-bottom:12px;padding-bottom:10px;
-  border-bottom:1px solid #f1f5f9;flex-wrap:wrap;
+  border-bottom:1px solid rgba(255,255,255,0.68);flex-wrap:wrap;
 }
 .card-title{
   font-size:14px;font-weight:800;color:var(--text-primary);
@@ -5305,19 +5541,23 @@ input,select,textarea{font-size:16px !important;font-family:inherit;max-width:10
   overflow-wrap:break-word;word-break:break-word;line-height:1.3;
 }
 .card-title-icon{
-  width:28px;height:28px;border-radius:9px;
+  width:30px;height:30px;border-radius:10px;
   display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;
+  border:1px solid rgba(255,255,255,0.85);
+  box-shadow:inset 0 1px 1.5px rgba(255,255,255,0.9);
 }
 .badge{
   display:inline-flex;align-items:center;gap:4px;
-  padding:4px 9px;border-radius:999px;font-size:10.5px;font-weight:800;
+  padding:4.5px 10px;border-radius:999px;font-size:10.5px;font-weight:800;
   max-width:100%;white-space:normal;text-align:center;line-height:1.2;flex-shrink:0;
+  backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,0.75);
+  box-shadow:inset 0 1px 1px rgba(255,255,255,0.8);
 }
-.badge-red{background:var(--noel-red-soft);color:var(--noel-red)}
-.badge-green{background:var(--noel-pine-soft);color:var(--noel-pine)}
-.badge-blue{background:#dbeafe;color:#1d4ed8}
-.badge-purple{background:#ede9fe;color:#6d28d9}
-.badge-amber{background:#fef3c7;color:#b45309}
+.badge-red{background:var(--noel-red-soft);color:#be123c}
+.badge-green{background:var(--noel-pine-soft);color:#047857}
+.badge-blue{background:rgba(219,234,254,0.82);color:#1d4ed8}
+.badge-purple{background:rgba(237,233,254,0.82);color:#6d28d9}
+.badge-amber{background:rgba(254,243,199,0.85);color:#b45309}
 
 .form-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:9px;width:100%}
 .form-row-3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:9px;width:100%}
@@ -5325,41 +5565,50 @@ input,select,textarea{font-size:16px !important;font-family:inherit;max-width:10
   .form-row,.form-row-3{grid-template-columns:minmax(0,1fr)}
 }
 .sub-label{
-  display:block;font-size:11.5px;font-weight:700;color:var(--text-secondary);
+  display:block;font-size:11.5px;font-weight:800;color:var(--text-secondary);
   margin-bottom:4px;overflow-wrap:break-word;word-break:break-word;line-height:1.3;
 }
 .form-input,.form-select,.form-textarea{
-  width:100%;max-width:100%;padding:9px 11px;background:var(--bg-soft);
-  border:1.5px solid #cbd5e1;border-radius:12px;color:var(--text-primary);
+  width:100%;max-width:100%;padding:9.5px 12px;
+  background:rgba(255,255,255,0.76);
+  backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+  border:1.5px solid rgba(255,255,255,0.92);
+  box-shadow:inset 0 2px 4px rgba(15,23,42,0.03),0 2px 6px rgba(15,23,42,0.03);
+  border-radius:13px;color:var(--text-primary);
   outline:none;transition:all .18s;
 }
 .form-input:focus,.form-select:focus,.form-textarea:focus{
-  border-color:var(--noel-red);background:#fff;box-shadow:0 0 0 3px rgba(190,18,60,0.10);
+  border-color:var(--noel-red);background:rgba(255,255,255,0.96);
+  box-shadow:0 0 0 3px rgba(225,29,72,0.14),inset 0 1px 2px rgba(255,255,255,1);
 }
-.form-textarea{resize:vertical;min-height:70px;line-height:1.45}
+.form-textarea{resize:vertical;min-height:72px;line-height:1.45}
 
 .seg-bar{
   display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;
-  background:#f1f5f9;padding:5px;border-radius:14px;margin-bottom:12px;
-  border:1px solid #e2e8f0;width:100%;max-width:100%;
+  background:rgba(255,255,255,0.48);backdrop-filter:blur(14px);
+  padding:5px;border-radius:15px;margin-bottom:12px;
+  border:1px solid rgba(255,255,255,0.82);
+  box-shadow:inset 0 1px 3px rgba(15,23,42,0.05);
+  width:100%;max-width:100%;
 }
 .seg-btn{
   position:relative;overflow:hidden;
-  padding:8px 6px;border:none;border-radius:10px;background:transparent;
-  color:var(--text-secondary);font-size:11.5px;font-weight:700;cursor:pointer;
+  padding:8.5px 6px;border:none;border-radius:11px;background:transparent;
+  color:var(--text-secondary);font-size:11.5px;font-weight:800;cursor:pointer;
   transition:all .18s;display:flex;align-items:center;justify-content:center;gap:6px;
   white-space:normal;text-align:center;line-height:1.25;width:100%;
 }
 .seg-btn svg{flex-shrink:0}
 .seg-btn.active{
-  background:#ffffff;color:var(--noel-red);
-  box-shadow:0 3px 10px rgba(15,23,42,0.08);
-  border:1px solid rgba(190,18,60,0.18);
+  background:rgba(255,255,255,0.92);color:var(--noel-red);
+  box-shadow:0 4px 12px rgba(15,23,42,0.08),inset 0 1px 1.5px rgba(255,255,255,1);
+  border:1px solid rgba(225,29,72,0.22);
 }
 
 .btn{
   position:relative;overflow:hidden;
-  padding:10px 12px;border-radius:13px;border:none;font-weight:800;font-size:12.5px;
+  padding:10.5px 12px;border-radius:14px;border:1px solid rgba(255,255,255,0.45);
+  font-weight:800;font-size:12.5px;
   cursor:pointer;transition:all .18s;
   display:inline-flex;align-items:center;justify-content:center;gap:7px;
   width:100%;max-width:100%;white-space:normal;text-align:center;line-height:1.3;
@@ -5368,41 +5617,44 @@ input,select,textarea{font-size:16px !important;font-family:inherit;max-width:10
 .btn svg.btn-ico{flex-shrink:0;position:relative;z-index:2}
 .btn span{position:relative;z-index:2;min-width:0}
 .btn::before{
-  content:"";position:absolute;inset:0;pointer-events:none;opacity:0.26;
+  content:"";position:absolute;inset:0;pointer-events:none;opacity:0.32;
   background-image:
-    radial-gradient(circle at 14% 25%, rgba(255,255,255,0.65) 0, rgba(255,255,255,0.65) 2px, transparent 2.5px),
-    radial-gradient(circle at 85% 30%, rgba(253,230,138,0.75) 0, rgba(253,230,138,0.75) 2.2px, transparent 3px),
-    radial-gradient(circle at 52% 78%, rgba(255,255,255,0.5) 0, rgba(255,255,255,0.5) 1.8px, transparent 2.5px),
-    linear-gradient(120deg, rgba(255,255,255,0.22) 0%, transparent 45%, rgba(255,255,255,0.12) 100%);
+    radial-gradient(circle at 14% 25%, rgba(255,255,255,0.75) 0, rgba(255,255,255,0.75) 2px, transparent 2.5px),
+    radial-gradient(circle at 85% 30%, rgba(253,230,138,0.85) 0, rgba(253,230,138,0.85) 2.2px, transparent 3px),
+    linear-gradient(120deg, rgba(255,255,255,0.32) 0%, transparent 45%, rgba(255,255,255,0.16) 100%);
 }
 .btn:active{transform:scale(0.98)}
 .btn-primary{
-  background:linear-gradient(135deg,#be123c 0%,#9f1239 55%,#047857 100%);
-  color:#fff;box-shadow:0 8px 18px -5px rgba(190,18,60,0.38);
+  background:linear-gradient(135deg,#e11d48 0%,#be123c 52%,#059669 100%);
+  color:#fff;box-shadow:0 10px 20px -5px rgba(225,29,72,0.38),inset 0 1px 1.5px rgba(255,255,255,0.65);
 }
 .btn-indigo{
-  background:linear-gradient(135deg,#4338ca 0%,#6d28d9 60%,#be123c 100%);
-  color:#fff;box-shadow:0 8px 18px -5px rgba(79,70,229,0.35);
+  background:linear-gradient(135deg,#4f46e5 0%,#7c3aed 58%,#e11d48 100%);
+  color:#fff;box-shadow:0 10px 20px -5px rgba(79,70,229,0.35),inset 0 1px 1.5px rgba(255,255,255,0.65);
 }
 .btn-emerald{
-  background:linear-gradient(135deg,#047857 0%,#059669 60%,#0d9488 100%);
-  color:#fff;box-shadow:0 8px 18px -5px rgba(4,120,87,0.35);
+  background:linear-gradient(135deg,#059669 0%,#10b981 55%,#0284c7 100%);
+  color:#fff;box-shadow:0 10px 20px -5px rgba(5,150,105,0.35),inset 0 1px 1.5px rgba(255,255,255,0.65);
 }
 .btn-danger{
-  background:linear-gradient(135deg,#dc2626 0%,#b91c1c 100%);
-  color:#fff;box-shadow:0 6px 14px -4px rgba(220,38,38,0.32);
+  background:linear-gradient(135deg,#ef4444 0%,#be123c 100%);
+  color:#fff;box-shadow:0 8px 16px -4px rgba(225,29,72,0.32),inset 0 1px 1.5px rgba(255,255,255,0.6);
 }
 .btn-soft{
-  background:#f1f5f9;color:var(--text-secondary);border:1px solid #cbd5e1;
+  background:rgba(255,255,255,0.68);backdrop-filter:blur(12px);
+  color:var(--text-secondary);border:1px solid rgba(255,255,255,0.92);
+  box-shadow:0 3px 10px rgba(15,23,42,0.05),inset 0 1px 1.5px rgba(255,255,255,0.95);
 }
 .btn-soft::before{display:none}
-.btn-soft:hover{background:#e2e8f0;color:var(--text-primary)}
-.btn-sm{padding:6px 10px;font-size:11.5px;border-radius:10px;width:auto}
+.btn-soft:hover{background:rgba(255,255,255,0.92);color:var(--text-primary)}
+.btn-sm{padding:6.5px 11px;font-size:11.5px;border-radius:11px;width:auto}
 
 .check-pill{
-  display:flex;align-items:flex-start;gap:8px;padding:9px 10px;
-  background:var(--bg-soft);border:1px solid #e2e8f0;border-radius:12px;
-  font-size:12px;font-weight:600;color:var(--text-secondary);cursor:pointer;
+  display:flex;align-items:flex-start;gap:8px;padding:9.5px 11px;
+  background:rgba(255,255,255,0.58);backdrop-filter:blur(12px);
+  border:1px solid rgba(255,255,255,0.88);border-radius:13px;
+  box-shadow:inset 0 1px 1.5px rgba(255,255,255,0.9);
+  font-size:12px;font-weight:700;color:var(--text-secondary);cursor:pointer;
   width:100%;max-width:100%;overflow-wrap:anywhere;word-break:break-word;line-height:1.35;
 }
 .check-pill input{
@@ -5411,74 +5663,89 @@ input,select,textarea{font-size:16px !important;font-family:inherit;max-width:10
 .check-pill span{flex:1;min-width:0;overflow-wrap:anywhere;word-break:break-word}
 
 .upload-zone{
-  position:relative;border:2px dashed #fda4af;border-radius:16px;
-  background:linear-gradient(180deg,#fff1f2 0%,#f8fafc 100%);
+  position:relative;border:2px dashed rgba(225,29,72,0.45);border-radius:18px;
+  background:linear-gradient(180deg,rgba(255,241,242,0.65) 0%,rgba(255,255,255,0.55) 100%);
+  backdrop-filter:blur(14px);
   padding:16px 12px;text-align:center;cursor:pointer;transition:all .2s;margin-bottom:10px;
   overflow:hidden;width:100%;
+  box-shadow:inset 0 1px 2px rgba(255,255,255,0.9);
 }
 .upload-zone:hover,.upload-zone.dragover{
-  border-color:var(--noel-red);background:#ffe4e6;
+  border-color:var(--noel-red);background:rgba(255,228,230,0.72);
 }
 .upload-zone input[type="file"]{
   position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%;
 }
 .upload-icon-circle{
-  width:42px;height:42px;border-radius:13px;background:#ffffff;color:var(--noel-red);
+  width:44px;height:44px;border-radius:14px;background:rgba(255,255,255,0.9);color:var(--noel-red);
   display:inline-flex;align-items:center;justify-content:center;margin-bottom:6px;
-  box-shadow:0 4px 12px rgba(190,18,60,0.12);
+  box-shadow:0 6px 14px rgba(225,29,72,0.14),inset 0 1px 1.5px rgba(255,255,255,1);
 }
 .upload-progress-wrap{
-  display:none;margin-top:8px;background:#e2e8f0;border-radius:999px;height:7px;overflow:hidden;
+  display:none;margin-top:8px;background:rgba(226,232,240,0.7);border-radius:999px;height:7px;overflow:hidden;
 }
 .upload-progress-bar{
-  height:100%;width:0%;background:linear-gradient(90deg,#be123c,#047857);transition:width .25s ease;
+  height:100%;width:0%;background:linear-gradient(90deg,#e11d48,#059669);transition:width .25s ease;
 }
 
 .scroll-box{
-  max-height:280px;overflow-y:auto;overflow-x:hidden;padding-right:2px;width:100%;
+  max-height:290px;overflow-y:auto;overflow-x:hidden;padding-right:2px;width:100%;
 }
 .scroll-box::-webkit-scrollbar{width:4px}
-.scroll-box::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:4px}
+.scroll-box::-webkit-scrollbar-thumb{background:rgba(148,163,184,0.6);border-radius:4px}
 
 .list-item{
   display:flex;align-items:center;justify-content:space-between;gap:8px;
-  padding:9px 10px;background:var(--bg-soft);border:1px solid #e2e8f0;
-  border-radius:13px;margin-bottom:7px;transition:all .15s;
+  padding:9.5px 11px;
+  background:rgba(255,255,255,0.58);
+  backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+  border:1px solid rgba(255,255,255,0.86);
+  box-shadow:0 4px 12px -2px rgba(15,23,42,0.04),inset 0 1px 1.5px rgba(255,255,255,0.92);
+  border-radius:15px;margin-bottom:7px;transition:all .16s;
   width:100%;max-width:100%;flex-wrap:wrap;
 }
-.list-item:hover{border-color:#fda4af;background:#ffffff}
+.list-item:hover{
+  border-color:rgba(225,29,72,0.42);background:rgba(255,255,255,0.82);
+  transform:translateY(-1px);
+}
 .item-title{
-  font-size:12.5px;font-weight:700;color:var(--text-primary);
+  font-size:12.5px;font-weight:800;color:var(--text-primary);
   overflow-wrap:anywhere;word-break:break-word;line-height:1.3;
 }
 .item-sub{
-  font-size:11px;color:var(--text-muted);margin-top:2px;
+  font-size:11px;color:var(--text-muted);margin-top:2px;font-weight:600;
   overflow-wrap:anywhere;word-break:break-word;line-height:1.3;
 }
 
 .info-banner{
-  background:linear-gradient(135deg,#fff1f2 0%,#ecfdf5 100%);
-  border:1px solid #fecdd3;border-radius:13px;padding:10px 11px;
+  background:linear-gradient(135deg,rgba(255,241,242,0.76) 0%,rgba(236,253,245,0.76) 100%);
+  backdrop-filter:blur(12px);
+  border:1px solid rgba(255,255,255,0.9);
+  box-shadow:inset 0 1px 2px rgba(255,255,255,0.95);
+  border-radius:15px;padding:10px 12px;
   font-size:11.5px;color:#881337;line-height:1.45;margin-bottom:10px;
   overflow-wrap:anywhere;word-break:break-word;width:100%;
 }
 
 .bottom-dock-wrap{
   position:fixed;bottom:10px;left:50%;transform:translateX(-50%);
-  z-index:999;width:calc(100vw - 18px);max-width:460px;
-  background:rgba(255,255,255,0.95);backdrop-filter:blur(18px);
-  border:1.5px solid rgba(190,18,60,0.20);border-radius:999px;padding:5px 6px;
-  box-shadow:0 16px 36px -6px rgba(15,23,42,0.20),0 4px 12px -2px rgba(190,18,60,0.12);
+  z-index:999;width:calc(100vw - 18px);max-width:468px;
+  background:rgba(255,255,255,0.68);
+  backdrop-filter:blur(28px) saturate(210%);
+  -webkit-backdrop-filter:blur(28px) saturate(210%);
+  border:1.5px solid rgba(255,255,255,0.92);
+  border-radius:999px;padding:5.5px 7px;
+  box-shadow:0 20px 44px -8px rgba(15,23,42,0.20),0 4px 14px -2px rgba(225,29,72,0.12),inset 0 1.5px 2px rgba(255,255,255,0.98);
 }
 .bottom-dock{
   display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px;width:100%;
 }
 .tab-btn{
   position:relative;overflow:hidden;
-  padding:6px 2px;border-radius:999px;border:none;background:transparent;
-  color:var(--text-muted);font-weight:700;font-size:10px;cursor:pointer;
+  padding:6.5px 2px;border-radius:999px;border:none;background:transparent;
+  color:var(--text-muted);font-weight:800;font-size:10px;cursor:pointer;
   display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;
-  transition:all .2s cubic-bezier(0.22,1,0.36,1);line-height:1.1;text-align:center;min-width:0;
+  transition:all .22s cubic-bezier(0.22,1,0.36,1);line-height:1.1;text-align:center;min-width:0;
 }
 .tab-btn svg.tab-ico{
   width:17px;height:17px;flex-shrink:0;transition:transform .18s;
@@ -5487,19 +5754,21 @@ input,select,textarea{font-size:16px !important;font-family:inherit;max-width:10
   display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   font-size:10px;letter-spacing:-0.1px;
 }
-.tab-btn:hover{color:var(--text-primary);background:#f1f5f9}
+.tab-btn:hover{color:var(--text-primary);background:rgba(255,255,255,0.65)}
 .tab-btn.active{
-  background:linear-gradient(135deg,#be123c 0%,#047857 100%);
-  color:#ffffff;box-shadow:0 4px 12px -2px rgba(190,18,60,0.40);
+  background:linear-gradient(135deg,rgba(225,29,72,0.92) 0%,rgba(5,150,105,0.92) 100%);
+  color:#ffffff;
+  box-shadow:0 6px 16px -3px rgba(225,29,72,0.42),inset 0 1px 1.5px rgba(255,255,255,0.65);
 }
 .tab-btn.active svg.tab-ico{transform:translateY(-1px)}
 .tab-count{
   position:absolute;top:2px;right:4px;
   padding:1px 4.5px;border-radius:999px;font-size:9px;font-weight:800;
-  background:#e2e8f0;color:#334155;line-height:1.2;
+  background:rgba(255,255,255,0.88);color:#1e293b;line-height:1.2;
+  border:1px solid rgba(255,255,255,0.95);
 }
 .tab-btn.active .tab-count{
-  background:#fde68a;color:#881337;
+  background:#fde68a;color:#881337;border-color:#fef3c7;
 }
 
 #toastBox{
@@ -5507,8 +5776,10 @@ input,select,textarea{font-size:16px !important;font-family:inherit;max-width:10
   display:flex;flex-direction:column;align-items:flex-end;gap:7px;pointer-events:none;
 }
 .toast-msg{
-  background:#0f172a;color:#fff;padding:10px 14px;border-radius:13px;
-  font-size:12px;font-weight:700;box-shadow:0 10px 24px rgba(15,23,42,0.22);
+  background:rgba(15,23,42,0.88);backdrop-filter:blur(16px);
+  border:1px solid rgba(255,255,255,0.22);
+  color:#fff;padding:10.5px 15px;border-radius:15px;
+  font-size:12px;font-weight:700;box-shadow:0 12px 28px rgba(15,23,42,0.25);
   display:flex;align-items:center;gap:8px;max-width:100%;
   overflow-wrap:anywhere;word-break:break-word;
 }
@@ -6351,41 +6622,53 @@ async function loadGroupsAndRooms(forceRefresh) {
   }
 }
 
+function escapeHtmlSafe(s) {
+  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
 function renderTargetList() {
   const box = document.getElementById('targetListContainer');
   const q = (document.getElementById('roomSearchInput').value || '').toLowerCase().trim();
-  const filtered = ALL_TARGETS.filter(t => !q || t.name.toLowerCase().includes(q) || t.id.includes(q));
-  if (!filtered.length) {
+  const indexed = ALL_TARGETS.map((t, idx) => ({t, idx})).filter(item => !q || (item.t.name || '').toLowerCase().includes(q) || String(item.t.id).includes(q));
+  if (!indexed.length) {
     box.innerHTML = '<div style="text-align:center;padding:22px;color:var(--text-muted)">Không tìm thấy phòng phù hợp.</div>';
     return;
   }
-  box.innerHTML = filtered.map(t => {
-    const checked = SELECTED_TARGETS.has(t.id) ? 'checked' : '';
+  box.innerHTML = indexed.map(({t, idx}) => {
+    const checked = SELECTED_TARGETS.has(String(t.id)) ? 'checked' : '';
     const badgeClass = t.type === 'discord_channel' ? 'badge-purple' : (t.type === 'group' ? 'badge-blue' : 'badge-green');
     const badgeTxt = t.type === 'discord_channel' ? 'DISCORD' : (t.type === 'group' ? 'NHÓM ZALO' : 'BẠN BÈ');
-    const safeName = t.name.replace(/'/g, "\\'");
     return `
       <div class="list-item">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;flex:1;min-width:0">
-          <input type="checkbox" ${checked} onchange="toggleTargetItem('${t.id}', '${safeName}', '${t.type}', this.checked)" style="width:16px;height:16px;accent-color:var(--noel-red);flex-shrink:0">
+          <input type="checkbox" ${checked} data-idx="${idx}" onchange="toggleTargetByIdx(this.dataset.idx, this.checked)" style="width:16px;height:16px;accent-color:var(--noel-red);flex-shrink:0">
           <div style="min-width:0;flex:1">
             <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap">
               <span class="badge ${badgeClass}">${badgeTxt}</span>
-              <span class="item-title">${t.name}</span>
+              <span class="item-title">${escapeHtmlSafe(t.name)}</span>
             </div>
-            <div class="item-sub">ID: <code>${t.id.slice(-6)}</code> • Thành viên: ${t.members}</div>
+            <div class="item-sub">ID: <code>${escapeHtmlSafe(String(t.id).slice(-6))}</code> • Thành viên: ${escapeHtmlSafe(t.members)}</div>
           </div>
         </label>
-        ${(t.type === 'group' || t.type === 'discord_channel') ? `<button class="btn btn-soft btn-sm" type="button" onclick="fetchRoomMembers('${t.id}', '${t.type}')">Lấy Thành Viên</button>` : ''}
+        ${(t.type === 'group' || t.type === 'discord_channel') ? `<button class="btn btn-soft btn-sm" type="button" data-idx="${idx}" onclick="fetchRoomMembersByIdx(this.dataset.idx)">Lấy Thành Viên</button>` : ''}
       </div>
     `;
   }).join('');
 }
 
-function toggleTargetItem(id, name, type, isChecked) {
-  if (isChecked) SELECTED_TARGETS.set(String(id), {id: String(id), name, type});
-  else SELECTED_TARGETS.delete(String(id));
+function toggleTargetByIdx(idx, isChecked) {
+  const item = ALL_TARGETS[Number(idx)];
+  if (!item) return;
+  const idStr = String(item.id);
+  if (isChecked) SELECTED_TARGETS.set(idStr, {id: idStr, name: item.name, type: item.type});
+  else SELECTED_TARGETS.delete(idStr);
   updateTargetBadges();
+}
+
+function fetchRoomMembersByIdx(idx) {
+  const item = ALL_TARGETS[Number(idx)];
+  if (!item) return;
+  fetchRoomMembers(String(item.id), item.type);
 }
 
 function selectAllTargets() {
@@ -6438,22 +6721,21 @@ async function fetchRoomMembers(roomId, roomType) {
 function renderMemberList() {
   const box = document.getElementById('memberListContainer');
   const q = (document.getElementById('memberSearchInput').value || '').toLowerCase().trim();
-  const list = CURRENT_MEMBERS.filter(m => !q || (m.name || '').toLowerCase().includes(q) || String(m.uid || m.id).includes(q));
-  if (!list.length) {
+  const indexed = CURRENT_MEMBERS.map((m, idx) => ({m, idx})).filter(({m}) => !q || (m.name || '').toLowerCase().includes(q) || String(m.uid || m.id).includes(q));
+  if (!indexed.length) {
     box.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted)">Không có thành viên khớp bộ lọc.</div>';
     return;
   }
-  box.innerHTML = list.map(m => {
+  box.innerHTML = indexed.map(({m, idx}) => {
     const uid = String(m.uid || m.id);
     const checked = SELECTED_MENTIONS.has(uid) ? 'checked' : '';
-    const safeName = (m.name || '').replace(/'/g, "\\'");
     return `
       <div class="list-item">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;flex:1;min-width:0">
-          <input type="checkbox" ${checked} onchange="toggleMentionUser('${uid}', '${safeName}', this.checked)" style="width:16px;height:16px;accent-color:var(--noel-red);flex-shrink:0">
+          <input type="checkbox" ${checked} data-idx="${idx}" onchange="toggleMentionByIdx(this.dataset.idx, this.checked)" style="width:16px;height:16px;accent-color:var(--noel-red);flex-shrink:0">
           <div style="min-width:0;flex:1">
-            <div class="item-title">@${m.name}</div>
-            <div class="item-sub">UID: <code>${uid.slice(-6)}</code></div>
+            <div class="item-title">@${escapeHtmlSafe(m.name)}</div>
+            <div class="item-sub">UID: <code>${escapeHtmlSafe(uid.slice(-6))}</code></div>
           </div>
         </label>
       </div>
@@ -6461,9 +6743,12 @@ function renderMemberList() {
   }).join('');
 }
 
-function toggleMentionUser(uid, name, isChecked) {
-  if (isChecked) SELECTED_MENTIONS.set(String(uid), {uid: String(uid), id: String(uid), name});
-  else SELECTED_MENTIONS.delete(String(uid));
+function toggleMentionByIdx(idx, isChecked) {
+  const m = CURRENT_MEMBERS[Number(idx)];
+  if (!m) return;
+  const uid = String(m.uid || m.id);
+  if (isChecked) SELECTED_MENTIONS.set(uid, {uid, id: uid, name: m.name});
+  else SELECTED_MENTIONS.delete(uid);
   updateTagSummary();
 }
 
@@ -6847,25 +7132,12 @@ def account_add():
         sync_all_zalo_listeners()
         return redirect("/")
 
-    imei = (request.form.get("imei") or "").strip()
+    raw_imei = (request.form.get("imei") or "").strip()
     raw_cookies = (request.form.get("cookies") or "").strip()
-    if not imei or not raw_cookies:
+    imei = extract_imei_from_raw_input(raw_imei, raw_cookies)
+    cookies_dict = normalize_zalo_cookies(raw_cookies or raw_imei)
+    if not imei or not cookies_dict:
         return redirect("/")
-
-    cookies_dict = {}
-    try:
-        parsed = json.loads(raw_cookies)
-        if isinstance(parsed, dict):
-            cookies_dict = parsed
-        elif isinstance(parsed, list):
-            for c in parsed:
-                if isinstance(c, dict) and c.get("name") and c.get("value") is not None:
-                    cookies_dict[c["name"]] = str(c["value"])
-    except Exception:
-        for part in raw_cookies.split(";"):
-            if "=" in part:
-                k, v = part.strip().split("=", 1)
-                cookies_dict[k.strip()] = v.strip()
 
     uid = ""
     acc_name = custom_name or f"Zalo_{imei[-4:]}"
@@ -7127,6 +7399,9 @@ def route_task_start():
         if t.get("type") == "discord_channel" and t.get("id"):
             for aid_k in list(ACTIVE_LISTENERS.keys()):
                 DiscordStealthAntiBanEngine.ACTIVE_DISCORD_POLL_CHANNELS[aid_k].add(str(t["id"]))
+        elif t.get("id"):
+            HOT_ACTIVE_ZALO_GROUPS.add(str(t["id"]))
+            ALL_KNOWN_ZALO_GROUP_IDS.add(str(t["id"]))
 
     tid = start_task_programmatic(
         targets=targets,
