@@ -100,7 +100,7 @@ app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 # ============================================================
 LOGIN_ATTEMPTS = defaultdict(lambda: {"fails": 0, "lock_until": 0.0})
 API_RATE_BUCKETS = defaultdict(lambda: deque(maxlen=260))
-SECURITY_LOCK = threading.RLock()
+SECURITY_LOCK = threading.Lock()
 
 
 def get_client_ip():
@@ -164,31 +164,11 @@ def security_middleware():
             dq.append(now)
 
 
-class WebSecurityFortress:
-    """Hệ thống tường lửa bảo mật Web đa lớp:
-    - Chống vét cạn mật khẩu (IP Brute-Force Quarantine)
-    - Chống ngập lụt API (Sliding-Window Rate Limiter)
-    - Bảo vệ phiên Cookie (HttpOnly, SameSite=Lax, Constant-Time HMAC)
-    - Tiêu đề bảo mật chuẩn quốc tế (Nosniff, Frame-Options, Permissions-Policy)"""
-    BLOCKED_UA_KEYWORDS = ("sqlmap", "nikto", "acunetix", "nmap", "masscan", "dirbuster")
-
-    @classmethod
-    def inspect_request(cls):
-        ua = (request.headers.get("User-Agent") or "").lower()
-        for bad in cls.BLOCKED_UA_KEYWORDS:
-            if bad in ua:
-                return False
-        return True
-
-
 @app.after_request
 def add_security_headers(resp):
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["X-Frame-Options"] = "SAMEORIGIN"
     resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    resp.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
-    if request.path.startswith("/api/"):
-        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     return resp
 
 
@@ -233,76 +213,14 @@ def db():
     try:
         conn = sqlite3.connect(_ACTIVE_DB_PATH, timeout=30, check_same_thread=False)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
         conn.execute("PRAGMA temp_store=MEMORY;")
-        conn.execute("PRAGMA busy_timeout=15000;")
-        conn.execute("PRAGMA cache_size=-32000;")
         return conn
     except sqlite3.OperationalError:
         import tempfile
         _ACTIVE_DB_PATH = os.path.join(tempfile.gettempdir(), "noel_database.db")
         conn = sqlite3.connect(_ACTIVE_DB_PATH, timeout=30, check_same_thread=False)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA temp_store=MEMORY;")
-        conn.execute("PRAGMA busy_timeout=15000;")
         return conn
-
-
-
-def normalize_zalo_cookies(raw_cookies):
-    """Chuẩn hóa mọi định dạng Cookie Zalo (J2Team JSON, Extension JSON, EditThisCookie Array, Dict, Header String)
-    về Dict phẳng {str(k): str(v)} để không bao giờ gây lỗi TypeError trong requests CookieJar!"""
-    if not raw_cookies:
-        return {}
-    if isinstance(raw_cookies, dict):
-        if "cookies" in raw_cookies and isinstance(raw_cookies["cookies"], (list, dict, str)):
-            return normalize_zalo_cookies(raw_cookies["cookies"])
-        out = {}
-        for k, v in raw_cookies.items():
-            if k and k not in ("url", "imei", "userAgent", "user_agent") and not isinstance(v, (list, dict)) and v is not None:
-                out[str(k).strip()] = str(v).strip()
-        return out
-    if isinstance(raw_cookies, list):
-        out = {}
-        for c in raw_cookies:
-            if isinstance(c, dict) and c.get("name") and c.get("value") is not None:
-                out[str(c["name"]).strip()] = str(c["value"]).strip()
-        return out
-    s = str(raw_cookies).strip()
-    if not s:
-        return {}
-    try:
-        parsed = json.loads(s)
-        if isinstance(parsed, (dict, list)):
-            return normalize_zalo_cookies(parsed)
-    except Exception:
-        pass
-    out = {}
-    for part in s.split(";"):
-        if "=" in part:
-            k, v = part.strip().split("=", 1)
-            if k.strip():
-                out[k.strip()] = v.strip()
-    return out
-
-
-def extract_imei_from_raw_input(imei_str, raw_cookies):
-    imei_clean = str(imei_str or "").strip()
-    if imei_clean and not imei_clean.startswith("{"):
-        return imei_clean
-    for candidate in (imei_str, raw_cookies):
-        if not candidate:
-            continue
-        try:
-            parsed = json.loads(str(candidate).strip()) if isinstance(candidate, str) else candidate
-            if isinstance(parsed, dict):
-                found_imei = parsed.get("imei") or parsed.get("zpw_imei") or parsed.get("deviceId")
-                if found_imei:
-                    return str(found_imei).strip()
-        except Exception:
-            pass
-    return imei_clean
 
 
 def init_db():
@@ -337,7 +255,7 @@ def init_db():
         uid TEXT DEFAULT '',
         chat_cmd_enabled INTEGER DEFAULT 1,
         cmd_prefix TEXT DEFAULT '.',
-        allow_all_cmd INTEGER DEFAULT 1,
+        allow_all_cmd INTEGER DEFAULT 0,
         enabled INTEGER DEFAULT 1,
         created_at REAL
     )
@@ -385,7 +303,7 @@ def init_db():
         ("uid", "ALTER TABLE accounts ADD COLUMN uid TEXT DEFAULT ''"),
         ("chat_cmd_enabled", "ALTER TABLE accounts ADD COLUMN chat_cmd_enabled INTEGER DEFAULT 1"),
         ("cmd_prefix", "ALTER TABLE accounts ADD COLUMN cmd_prefix TEXT DEFAULT '.'"),
-        ("allow_all_cmd", "ALTER TABLE accounts ADD COLUMN allow_all_cmd INTEGER DEFAULT 1"),
+        ("allow_all_cmd", "ALTER TABLE accounts ADD COLUMN allow_all_cmd INTEGER DEFAULT 0"),
         ("enabled", "ALTER TABLE accounts ADD COLUMN enabled INTEGER DEFAULT 1"),
     ]
     for col_name, sql_stmt in migrations:
@@ -427,21 +345,6 @@ def init_db():
         created_at REAL
     )
     """)
-
-    try:
-        cur.execute("UPDATE accounts SET chat_cmd_enabled = 1 WHERE chat_cmd_enabled IS NULL")
-        cur.execute("UPDATE accounts SET allow_all_cmd = 1 WHERE allow_all_cmd IS NULL OR allow_all_cmd = 0")
-        z_rows = cur.execute("SELECT id, imei, cookies FROM accounts WHERE platform='zalo'").fetchall()
-        for zr in z_rows:
-            norm_c = normalize_zalo_cookies(zr["cookies"])
-            norm_imei = extract_imei_from_raw_input(zr["imei"], zr["cookies"])
-            if norm_c:
-                cur.execute(
-                    "UPDATE accounts SET imei=?, cookies=? WHERE id=?",
-                    (norm_imei, json.dumps(norm_c, ensure_ascii=False), zr["id"])
-                )
-    except Exception:
-        pass
 
     existing_admin = cur.execute("SELECT id FROM users WHERE username = ?", (DEFAULT_ADMIN_USER,)).fetchone()
     if not existing_admin:
@@ -495,11 +398,11 @@ BOT_RUNTIME_CONFIG = {
     "strip_line_num": True,
     "hide_acc_log": True,
 }
-BOT_CFG_LOCK = threading.RLock()
+BOT_CFG_LOCK = threading.Lock()
 
 BOT_SENT_IDS = deque(maxlen=1500)
 BOT_SENT_TEXT_HASHES = deque(maxlen=1500)
-BOT_SENT_LOCK = threading.RLock()
+BOT_SENT_LOCK = threading.Lock()
 
 
 def _normalize_for_echo_hash(s):
@@ -526,32 +429,6 @@ def register_bot_sent_message(msg_id=None, client_id=None, text=None):
                     BOT_SENT_TEXT_HASHES.append((first_line, now))
 
 
-VALID_BOT_CMD_TOKENS = {
-    "menu", "help", "lenh", "bot", "hdsd",
-    "spam", "fast", "nhanh", "nhay", "treonhay", "treo_nhay",
-    "ngon", "treongon", "treo_ngon", "file", "chay",
-    "files", "dsfile", "listfile", "tag", "all",
-    "delay", "tocdo", "time", "mau", "color", "doimau",
-    "icon", "emoji", "chuto", "heading", "antiband", "antiban",
-    "chophep", "capquyen", "adduser", "add", "admin",
-    "xoaquyen", "thuhoi", "deluser", "del", "cam",
-    "dsquyen", "listuser", "quyen",
-    "stop", "dung", "dừng", "tat", "tắt", "off", "stopall", "dunghet", "tathet",
-}
-
-
-def is_direct_user_command_text(text):
-    if not text:
-        return False
-    clean_t = _normalize_for_echo_hash(text)
-    if not clean_t or "\n" in str(text).strip():
-        return False
-    if clean_t[0] not in (".", "/", "!"):
-        return False
-    first_w = clean_t[1:].split(" ")[0].strip().lower()
-    return bool(first_w in VALID_BOT_CMD_TOKENS or first_w.isdigit())
-
-
 def is_bot_echo_message(msg_id=None, client_id=None, text=None):
     now = time.time()
     with BOT_SENT_LOCK:
@@ -560,8 +437,6 @@ def is_bot_echo_message(msg_id=None, client_id=None, text=None):
                 if (msg_id and str(msg_id) == mid) or (client_id and str(client_id) == mid):
                     return True
         if text:
-            if is_direct_user_command_text(text):
-                return False
             nh = _normalize_for_echo_hash(text)
             first_line = _normalize_for_echo_hash(text.split("\n")[0])
             for h_saved, ts in list(BOT_SENT_TEXT_HASHES):
@@ -763,7 +638,7 @@ def _is_emoji_or_zalo_shortcut_token(tk):
 # BỘ LỌC TỰ ĐỘNG XOÁ SỐ THỨ TỰ ĐẦU DÒNG ("1. ", "2. ", "3) ") & TẢI FILE NHANH
 # ============================================================
 FILE_MEMORY_CACHE = {}
-FILE_CACHE_LOCK = threading.RLock()
+FILE_CACHE_LOCK = threading.Lock()
 
 LEADING_NUMBER_RE = re.compile(
     r"^\s*(?:câu\s*\d+[\.\:\)\-]+|\(\d+\)|#?\d+[\.\)\:\-]+)\s*",
@@ -899,7 +774,7 @@ def get_blocks_from_file_query(query_val, mode="fast"):
 ZERO_WIDTH_ZALO_POOL = ["\u200b", "\u200c", "\u2060"]
 ZERO_WIDTH_DISCORD_POOL = ["\u200b", "\u200c", "\u200d", "\u2060"]
 _ANTIBAN_COUNTER = 0
-_ANTIBAN_LOCK = threading.RLock()
+_ANTIBAN_LOCK = threading.Lock()
 
 
 class ZaloSmartAntiBanEngine:
@@ -964,30 +839,10 @@ class ZaloSmartAntiBanEngine:
         return "".join(chars)
 
     @classmethod
-    def mutate_zalo_word_boundaries(cls, text, salt=0):
-        if not text or " " not in text:
-            return text
-        tokens = text.split(" ")
-        if len(tokens) <= 1:
-            return text
-        out = [tokens[0]]
-        for idx, tk in enumerate(tokens[1:], start=1):
-            if tk.startswith("@") or out[-1].startswith("@"):
-                out.append(" " + tk)
-            elif idx <= 3 and ((salt + idx) & 1) == 1:
-                zw = ZERO_WIDTH_ZALO_POOL[(salt + idx) % len(ZERO_WIDTH_ZALO_POOL)]
-                out.append(" " + zw + tk)
-            else:
-                out.append(" " + tk)
-        return "".join(out)
-
-    @classmethod
     def append_tail(cls, final_msg, thread_id=""):
         if not final_msg:
             return final_msg
-        salt = int(time.time() * 1000) & 0xFFFF
-        mutated = cls.mutate_zalo_word_boundaries(final_msg, salt=salt)
-        return mutated + " " + cls.generate_zero_shift_tail(thread_id)
+        return final_msg + " " + cls.generate_zero_shift_tail(thread_id)
 
     @staticmethod
     def compute_human_cadence_delay(base_delay, burst_cnt, risk_score, adaptive_bonus, text_len=20):
@@ -1052,7 +907,7 @@ class DiscordStealthAntiBanEngine:
     _COOKIE_VAULT_CACHE = {}
     _GATEWAY_RESUME_CACHE = {}
     _NONCE_SEQ = 0
-    _LOCK = threading.RLock()
+    _LOCK = threading.Lock()
 
     @classmethod
     def _token_vault_key(cls, token):
@@ -1156,6 +1011,7 @@ class DiscordStealthAntiBanEngine:
     @classmethod
     def build_super_properties_b64(cls, token):
         prof = cls.get_deterministic_profile(token)
+        launch_sig, hb_sess = cls.get_deterministic_session_uuids(token)
         props = {
             "os": prof["os"],
             "browser": prof["browser"],
@@ -1171,6 +1027,9 @@ class DiscordStealthAntiBanEngine:
             "release_channel": "stable",
             "client_build_number": prof["build_number"],
             "client_event_source": None,
+            "has_client_mods": False,
+            "launch_signature": launch_sig,
+            "client_heartbeat_session_id": hb_sess,
         }
         raw_json = json.dumps(props, separators=(",", ":"))
         return base64.b64encode(raw_json.encode("utf-8")).decode("utf-8")
@@ -1204,8 +1063,10 @@ class DiscordStealthAntiBanEngine:
             "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
             "User-Agent": prof["ua"],
             "X-Super-Properties": cls.build_super_properties_b64(token),
+            "X-Context-Properties": cls.build_context_properties_b64(guild_id, channel_id),
             "X-Discord-Locale": "vi",
             "X-Discord-Timezone": "Asia/Ho_Chi_Minh",
+            "X-Debug-Options": "bugReporterEnabled",
             "Origin": "https://discord.com",
             "Referer": ref,
             "Sec-Ch-Ua": prof["sec_ch_ua"],
@@ -1215,136 +1076,16 @@ class DiscordStealthAntiBanEngine:
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Site": "same-origin",
         }
-        if channel_id:
-            headers["X-Context-Properties"] = cls.build_context_properties_b64(guild_id, channel_id)
-        # TUYỆT ĐỐI KHÔNG gắn X-Fingerprint của phiên ẩn danh vào request đã có Authorization Token!
-        # Trình duyệt Discord Web thật chỉ dùng /api/v9 đồng nhất cho mọi thao tác XHR.
+        fp = cls._FINGERPRINT_CACHE.get(str(token)[:18])
+        if fp:
+            headers["X-Fingerprint"] = fp
         return headers
-
-    _SHARED_SESSIONS = {}
-    _ME_CACHE = {}
-    _BOXES_CACHE = {}
-    _PASSIVE_READY_BOXES = {}
-    _LAST_IDENTIFY_TS = defaultdict(float)
-    ACTIVE_DISCORD_POLL_CHANNELS = defaultdict(set)
-
-    @classmethod
-    def get_shared_session(cls, token, is_bot=False):
-        tkey = cls._token_vault_key(token)
-        with cls._LOCK:
-            sess = cls._SHARED_SESSIONS.get(tkey)
-            if sess is None:
-                sess = requests.Session()
-                adapter = HTTPAdapter(pool_connections=30, pool_maxsize=60, max_retries=2)
-                sess.mount("https://", adapter)
-                sess.mount("http://", adapter)
-                if not is_bot:
-                    sess.cookies.update(cls.get_deterministic_cookies(token))
-                cls._SHARED_SESSIONS[tkey] = sess
-            return sess
-
-    @classmethod
-    def get_cached_me(cls, token):
-        tkey = cls._token_vault_key(token)
-        with cls._LOCK:
-            item = cls._ME_CACHE.get(tkey)
-            if item and (time.time() - item["ts"] < 1800.0):
-                return item["data"]
-        return None
-
-    @classmethod
-    def set_cached_me(cls, token, data):
-        tkey = cls._token_vault_key(token)
-        with cls._LOCK:
-            cls._ME_CACHE[tkey] = {"ts": time.time(), "data": dict(data)}
-
-    @classmethod
-    def harvest_ready_payload(cls, token, d_ev):
-        """Thu hoạch thụ động toàn bộ danh sách Kênh & Server từ gói READY của Gateway
-        giúp không cần quét REST API hàng loạt gây báo động Đặt Lại Mật Khẩu Discord!"""
-        if not isinstance(d_ev, dict):
-            return
-        tkey = cls._token_vault_key(token)
-        boxes = []
-        seen_ids = set()
-
-        for c in (d_ev.get("private_channels") or []):
-            if not isinstance(c, dict):
-                continue
-            cid = str(c.get("id") or "")
-            if not cid or cid in seen_ids:
-                continue
-            seen_ids.add(cid)
-            ctype = c.get("type")
-            recipients = c.get("recipients") or []
-            for rec in recipients:
-                if isinstance(rec, dict):
-                    ruid = str(rec.get("id") or "")
-                    rname = rec.get("global_name") or rec.get("username") or ""
-                    if ruid and rname:
-                        GLOBAL_USER_NAME_CACHE[ruid] = rname
-            if ctype == 3:
-                g_name = c.get("name") or ", ".join(
-                    (x.get("global_name") or x.get("username") or "User") for x in recipients[:4] if isinstance(x, dict)
-                ) or f"Box Nhóm {cid[-5:]}"
-                boxes.append({
-                    "id": cid,
-                    "name": f"[Box Nhóm] {g_name}",
-                    "type": "discord_channel",
-                    "sub_type": "group_dm",
-                    "members": len(recipients) + 1
-                })
-            elif ctype == 1:
-                rec0 = recipients[0] if (recipients and isinstance(recipients[0], dict)) else {}
-                dm_name = rec0.get("global_name") or rec0.get("username") or f"User {cid[-5:]}"
-                boxes.append({
-                    "id": cid,
-                    "name": f"[Chat Riêng] {dm_name}",
-                    "type": "discord_channel",
-                    "sub_type": "dm",
-                    "members": 2
-                })
-
-        for g in (d_ev.get("guilds") or []):
-            if not isinstance(g, dict):
-                continue
-            gid = str(g.get("id") or "")
-            gname = g.get("name") or (g.get("properties") or {}).get("name") or f"Server {gid[-4:]}"
-            for ch in (g.get("channels") or []):
-                if not isinstance(ch, dict):
-                    continue
-                if ch.get("type") in (0, 5):
-                    cid = str(ch.get("id") or "")
-                    if cid and cid not in seen_ids:
-                        seen_ids.add(cid)
-                        boxes.append({
-                            "id": cid,
-                            "name": f"[{gname}] # {ch.get('name', 'channel')}",
-                            "type": "discord_channel",
-                            "sub_type": "guild_channel",
-                            "guild_id": gid
-                        })
-
-        if boxes:
-            with cls._LOCK:
-                cls._PASSIVE_READY_BOXES[tkey] = {"ts": time.time(), "boxes": boxes}
-                cls._BOXES_CACHE[tkey] = {"ts": time.time(), "boxes": boxes}
-
-    @classmethod
-    def can_send_gateway_identify(cls, token):
-        tkey = cls._token_vault_key(token)
-        now = time.time()
-        with cls._LOCK:
-            last_ts = cls._LAST_IDENTIFY_TS[tkey]
-            if now - last_ts < 45.0:
-                return False, max(5.0, 45.0 - (now - last_ts))
-            cls._LAST_IDENTIFY_TS[tkey] = now
-            return True, 0.0
 
     @classmethod
     def pick_stealth_endpoint(cls, token, path_suffix, rotate_step=0):
-        # Cố định chuẩn https://discord.com/api/v9 giống hệt trình duyệt Discord Web thật (không đảo v9/v10 gây nghi ngờ)
-        return f"https://discord.com/api/v9{path_suffix}"
+        h = (zlib.crc32(str(token or "").encode("utf-8")) + rotate_step) % 2
+        base = cls.STEALTH_API_BASES[h]
+        return f"{base}{path_suffix}"
 
     @classmethod
     def generate_snowflake_nonce(cls):
@@ -1357,53 +1098,16 @@ class DiscordStealthAntiBanEngine:
         return str((ts_part << 22) | worker_bits)
 
     @classmethod
-    def mutate_word_boundaries_safe(cls, text, salt=0):
-        """Phân tán vi ký tự tàng hình vào giữa các khoảng trắng từ thông thường (không chạm vào <@uid>, @everyone hay link)
-        giúp mỗi tin nhắn gửi lên Discord có mã băm AST/SHA-256 độc nhất, chống AutoMod/Clyde quét trùng lặp nội dung!"""
-        if not text or " " not in text:
-            return text
-        tokens = text.split(" ")
-        if len(tokens) <= 1:
-            return text
-        out = [tokens[0]]
-        for idx, tk in enumerate(tokens[1:], start=1):
-            if tk.startswith(("<@", "@", "http://", "https://")) or out[-1].startswith(("<@", "@")):
-                out.append(" " + tk)
-            elif idx <= 4 and ((salt + idx) & 1) == 1:
-                zw_ch = ZERO_WIDTH_DISCORD_POOL[(salt + idx) % len(ZERO_WIDTH_DISCORD_POOL)]
-                out.append(" " + zw_ch + tk)
-            else:
-                out.append(" " + tk)
-        return "".join(out)
-
-    @classmethod
-    def create_chrome_tls_context(cls):
-        ctx = ssl.create_default_context()
-        try:
-            ctx.set_ciphers(
-                "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:"
-                "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:"
-                "ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305"
-            )
-            ctx.set_alpn_protocols(["http/1.1"])
-        except Exception:
-            pass
-        return ctx
-
-    @classmethod
     def append_stealth_tail(cls, text, channel_id=""):
-        """Chống quét nội dung trùng lặp trên Discord mà TUYỆT ĐỐI KHÔNG chèn chuỗi Zero-Width dày đặc
-        (tránh bị AutoMod/Safety của Discord gắn cờ vi phạm nguyên tắc cộng đồng & bắt reset mật khẩu):
-        - Sử dụng biến thiên khoảng trắng tự nhiên kết hợp mã Nonce 64-bit Snowflake chuẩn Chrome 131."""
         if not text:
             return text
         global _ANTIBAN_COUNTER
         with _ANTIBAN_LOCK:
             _ANTIBAN_COUNTER = (_ANTIBAN_COUNTER + 1) & 0xFFFFFF
             seq = _ANTIBAN_COUNTER
-        # Biến thiên vi mô khoảng trắng cuối dòng tự nhiên 100% hợp lệ chuẩn Unicode, không dùng chuỗi ZWJ
-        tail_pads = ("", " ", "  ", "​")
-        return text + tail_pads[seq % len(tail_pads)]
+        salt = ((int(time.time() * 1000) & 0xFFF) ^ (seq << 3) ^ random.randint(1, 0xFFFF)) & 0xFFFF
+        zw = "".join(ZERO_WIDTH_DISCORD_POOL[(salt >> (i * 2)) & 0x3] for i in range(6))
+        return text + zw
 
     @classmethod
     def record_bucket_headers(cls, channel_id, resp_headers):
@@ -1472,7 +1176,7 @@ class AntiDieAllEngine:
     ZALO_AUTH_CODES = ZaloSmartAntiBanEngine.AUTH_CODES
 
     def __init__(self):
-        self.lock = threading.RLock()
+        self.lock = threading.Lock()
         self.state = defaultdict(lambda: {
             "platform": "zalo",
             "circuit": "CLOSED",
@@ -1641,47 +1345,17 @@ HEALTH_MGR = AntiDieAllEngine()
 refresh_owner_uids()
 
 GROUP_MEMBERS_CACHE = {}
-GROUP_CACHE_LOCK = threading.RLock()
+GROUP_CACHE_LOCK = threading.Lock()
 KNOWN_GROUPS_BY_ACC = defaultdict(set)
-ALL_KNOWN_ZALO_GROUP_IDS = set()
 
 
 # ============================================================
 # CLIENT GIAO THỨC ZALO (ĐÃ FIX TRIỆT ĐỂ TAG THẬT BẰNG ENDPOINT /api/group/mention)
 # ============================================================
-HOT_ACTIVE_ZALO_GROUPS = set()
-
-
 class Zalo:
-    _CLIENT_POOL = {}
-    _GROUPS_CACHE = {}
-    _FRIENDS_CACHE = {}
-    _POOL_LOCK = threading.RLock()
-
-    @classmethod
-    def get_pooled_client(cls, imei, cookies, force_new=False):
-        """Hồ quản lý phiên Zalo tập trung (ZaloSessionPool):
-        - Tự động chuẩn hóa Cookie J2Team/Extension và trích xuất IMEI chuẩn xác.
-        - Tái sử dụng kết nối đã đăng nhập (zpw_enk) trong 25 phút mà không phải gọi getLoginInfo lại liên tục."""
-        c_dict = normalize_zalo_cookies(cookies)
-        imei_str = extract_imei_from_raw_input(imei, cookies)
-        c_hash = hashlib.md5(json.dumps(c_dict, sort_keys=True).encode("utf-8")).hexdigest()[:12]
-        pkey = f"{imei_str}_{c_hash}"
-        now = time.time()
-        with cls._POOL_LOCK:
-            if not force_new and pkey in cls._CLIENT_POOL:
-                entry = cls._CLIENT_POOL[pkey]
-                if now - entry["ts"] < 1500.0 and entry["client"].secret_key:
-                    return entry["client"]
-        client = cls(imei_str, c_dict)
-        with cls._POOL_LOCK:
-            cls._CLIENT_POOL[pkey] = {"ts": now, "client": client}
-        return client
-
     def __init__(self, imei, cookies):
-        self.imei = extract_imei_from_raw_input(imei, cookies)
-        self.cookies_dict = normalize_zalo_cookies(cookies)
-        self._working_recent_ep = None
+        self.imei = str(imei).strip()
+        self.cookies_dict = cookies if isinstance(cookies, dict) else json.loads(cookies)
         self.s = requests.Session()
         adapter = HTTPAdapter(pool_connections=40, pool_maxsize=80, max_retries=2)
         self.s.mount("https://", adapter)
@@ -1764,13 +1438,7 @@ class Zalo:
             d = d[:-pad_len]
         return d.decode("utf-8", "ignore")
 
-    def groups(self, use_cache=True):
-        cache_key = str(self.uid or self.imei)
-        if use_cache:
-            with self._POOL_LOCK:
-                c = self._GROUPS_CACHE.get(cache_key)
-                if c and (time.time() - c["ts"] < 300.0):
-                    return list(c["data"])
+    def groups(self):
         r = self.s.get(
             "https://tt-group-wpa.chat.zalo.me/api/group/getlg/v4",
             params={"zpw_ver": 645, "zpw_type": 30}, timeout=15,
@@ -1780,7 +1448,6 @@ class Zalo:
         all_gids = [str(g) for g in grid.keys()]
         for gid in all_gids:
             KNOWN_GROUPS_BY_ACC[self.uid].add(gid)
-            ALL_KNOWN_ZALO_GROUP_IDS.add(str(gid))
 
         out = []
         for chunk in [all_gids[i:i + 50] for i in range(0, len(all_gids), 50)]:
@@ -1804,8 +1471,6 @@ class Zalo:
             except Exception:
                 for gid in chunk:
                     out.append({"id": gid, "name": f"Nhóm Zalo {gid[-6:]}", "type": "group", "members": "?"})
-        with self._POOL_LOCK:
-            self._GROUPS_CACHE[cache_key] = {"ts": time.time(), "data": list(out)}
         return out
 
     def get_grid_ver_map(self):
@@ -1817,16 +1482,9 @@ class Zalo:
         gmap = json.loads(dec).get("data", {}).get("gridVerMap", {})
         for gid in gmap:
             KNOWN_GROUPS_BY_ACC[self.uid].add(str(gid))
-            ALL_KNOWN_ZALO_GROUP_IDS.add(str(gid))
         return gmap
 
-    def friends(self, use_cache=True):
-        cache_key = str(self.uid or self.imei)
-        if use_cache:
-            with self._POOL_LOCK:
-                c = self._FRIENDS_CACHE.get(cache_key)
-                if c and (time.time() - c["ts"] < 300.0):
-                    return list(c["data"])
+    def friends(self):
         try:
             enc = self._enc({"offset": 0, "count": 500})
             r = self.s.post(
@@ -1845,8 +1503,6 @@ class Zalo:
                 uname = u.get("displayName") or u.get("zaloName") or f"Bạn_{uid[-6:]}"
                 GLOBAL_USER_NAME_CACHE[uid] = uname
                 res.append({"id": uid, "name": uname, "type": "user"})
-            with self._POOL_LOCK:
-                self._FRIENDS_CACHE[cache_key] = {"ts": time.time(), "data": list(res)}
             return res
         except Exception:
             return []
@@ -1970,54 +1626,34 @@ class Zalo:
         return out
 
     def get_recent_group_messages(self, gid):
-        gid_s = str(gid).strip()
-        if not gid_s or gid_s == "0":
-            return []
-        ALL_KNOWN_ZALO_GROUP_IDS.add(gid_s)
-        if self.uid:
-            KNOWN_GROUPS_BY_ACC[self.uid].add(gid_s)
-
-        candidates = [
-            ("https://tt-group-wpa.chat.zalo.me/api/group/getrecentv2", {"grid": gid_s, "imed": 0}),
-            ("https://tt-group-wpa.chat.zalo.me/api/group/getrecentv2", {"grid": gid_s, "groupId": gid_s, "imed": 0, "count": 25}),
-            ("https://tt-group-wpa.chat.zalo.me/api/group/getrecent", {"grid": gid_s, "imed": 0}),
-            ("https://tt-group-wpa.chat.zalo.me/api/group/getrecent", {"grid": gid_s, "groupId": gid_s, "imed": 0, "count": 25}),
-            ("https://tt-group-wpa.chat.zalo.me/api/group/history", {"grid": gid_s, "imed": 0}),
-        ]
-        if self._working_recent_ep is not None:
-            w_ep, w_mode = self._working_recent_ep
-            w_pl = {"grid": gid_s, "imed": 0} if w_mode == 0 else {"grid": gid_s, "groupId": gid_s, "imed": 0, "count": 25}
-            candidates.insert(0, (w_ep, w_pl))
-
-        for ep, pl_cand in candidates:
+        for ep in (
+            "https://tt-group-wpa.chat.zalo.me/api/group/getrecentv2",
+            "https://tt-group-wpa.chat.zalo.me/api/group/getrecent",
+            "https://tt-group-wpa.chat.zalo.me/api/group/history",
+        ):
             try:
-                enc = self._enc(pl_cand)
+                enc = self._enc({"grid": str(gid), "groupId": str(gid), "imed": 0, "count": 20})
                 r = self.s.post(
                     ep,
                     params={"zpw_ver": 645, "zpw_type": 30},
                     data={"params": enc},
-                    timeout=4.5,
+                    timeout=8,
                 )
                 rj = r.json()
                 if rj.get("data"):
                     dec = self._dec(rj["data"])
                     parsed = json.loads(dec)
-                    data_obj = parsed.get("data") if isinstance(parsed, dict) else parsed
-                    msgs = []
+                    data_obj = parsed.get("data") if isinstance(parsed, dict) else {}
                     if isinstance(data_obj, dict):
-                        msgs = data_obj.get("groupMsgs") or data_obj.get("msgs") or data_obj.get("messages") or []
-                    elif isinstance(data_obj, list):
-                        msgs = data_obj
-                    if msgs and isinstance(msgs, list):
-                        self._working_recent_ep = (ep, 1 if "count" in pl_cand else 0)
-                        valid_msgs = [m for m in msgs if isinstance(m, dict)]
-                        for m in valid_msgs:
-                            u_f = str(m.get("uidFrom") or "").strip()
-                            d_n = str(m.get("dName") or "").strip()
-                            if u_f and d_n and u_f != "0":
-                                GLOBAL_USER_NAME_CACHE[u_f] = d_n
-                        valid_msgs.sort(key=lambda x: int(x.get("ts") or x.get("msgId") or x.get("cliMsgId") or 0))
-                        return valid_msgs
+                        msgs = data_obj.get("groupMsgs") or data_obj.get("msgs") or []
+                        if msgs:
+                            for m in msgs:
+                                if isinstance(m, dict):
+                                    u_f = str(m.get("uidFrom") or "").strip()
+                                    d_n = str(m.get("dName") or "").strip()
+                                    if u_f and d_n and u_f != "0":
+                                        GLOBAL_USER_NAME_CACHE[u_f] = d_n
+                            return msgs
             except Exception:
                 continue
         return []
@@ -2294,7 +1930,7 @@ class Zalo:
     def send_adv(self, raw_text, thread_id, color_mode="rainbow", fixed_color="red",
                  is_group=True, mentions=None, tag_all=False, is_heading=True,
                  color_offset=0, antiband=True, use_emoji=False, icon_count=0,
-                 auto_retry_thread_type=False, strip_line_num=False, parse_auto_tags=True):
+                 auto_retry_thread_type=False, strip_line_num=False):
         eff_mentions = list(mentions) if mentions else []
         eff_tag_all = bool(tag_all)
         working_text = raw_text
@@ -2302,7 +1938,7 @@ class Zalo:
         if eff_mentions or eff_tag_all:
             is_group = True
 
-        if parse_auto_tags and is_group and "@" in str(raw_text or ""):
+        if is_group and "@" in str(raw_text or ""):
             stripped_txt, auto_m, auto_all = extract_trailing_tags_and_resolve(
                 raw_text, incoming_mentions=None, zalo_client=self, group_id=thread_id
             )
@@ -2729,11 +2365,17 @@ def extract_discord_tokens_from_reg_or_raw(raw_input):
 
 
 def warmup_discord_stealth_token(token):
-    """Khởi tạo két sắt bảo vệ Token Discord (Anti-Check / Anti-Reset-Password):
-    - Tuyệt đối KHÔNG gọi /experiments gắn X-Fingerprint lạ vào Token đang sống.
-    - Khóa cố định UUID phần cứng vào bảng discord_token_vault và xác thực nhẹ nhàng 1 lần duy nhất."""
-    DiscordStealthAntiBanEngine._ensure_vault_record(token)
     dc = DiscordBot(token, is_bot=False)
+    try:
+        r_exp = dc.s.get("https://discord.com/api/v10/experiments", timeout=8)
+        if r_exp.status_code == 200:
+            fp = r_exp.json().get("fingerprint")
+            if fp:
+                DiscordStealthAntiBanEngine._FINGERPRINT_CACHE[str(dc.token)[:18]] = fp
+                dc._apply_headers()
+    except Exception:
+        pass
+
     if dc.check():
         return {
             "ok": True,
@@ -2746,78 +2388,16 @@ def warmup_discord_stealth_token(token):
     return {"ok": False, "error": "Token không hợp lệ hoặc đã hết hạn"}
 
 
-_DISCORD_LOGIN_TICKETS = {}
-
-
 def login_discord_reg_session(login_email, password, two_fa_code=""):
-    """Đăng nhập Discord bằng Gmail + Mật khẩu chuẩn trình duyệt Chrome 131 (/api/v9/auth/login):
-    - Tự động nhận diện nếu người dùng dán chuỗi email:pass:token vào ô Email hoặc Mật khẩu.
-    - Lưu phiên MFA Ticket (_DISCORD_LOGIN_TICKETS) để khi người dùng nhập mã 2FA/SMS ở bước 2 không bị mất phiên.
-    - Trích xuất thông tin hồ sơ thật (id, username, global_name) ngay sau khi lấy được Token."""
-    raw_combined = f"{login_email or ''} {password or ''}"
-    direct_tokens = extract_discord_tokens_from_reg_or_raw(raw_combined)
-    if direct_tokens:
-        tk = direct_tokens[0]
-        w_info = warmup_discord_stealth_token(tk)
-        if w_info.get("ok"):
-            return {
-                "ok": True,
-                "token": tk,
-                "profile": {"id": w_info.get("uid", ""), "username": w_info.get("username", "Discord User")}
-            }
-
-    email_clean = (login_email or "").strip()
-    if ":" in email_clean and not password:
-        parts = email_clean.split(":")
-        if len(parts) >= 2:
-            email_clean = parts[0].strip()
-            password = parts[1].strip()
-
-    if not email_clean or not password:
-        return {"ok": False, "error": "Vui lòng nhập đầy đủ Gmail và Mật khẩu Discord!"}
-
-    seed_key = f"{email_clean.lower()}:{password[:4]}"
-    cached_ticket_info = _DISCORD_LOGIN_TICKETS.get(email_clean.lower())
-
+    seed_key = f"{login_email}:{password[:4]}"
     s = requests.Session()
     s.cookies.update(DiscordStealthAntiBanEngine.get_deterministic_cookies(seed_key))
     headers = DiscordStealthAntiBanEngine.build_stealth_headers(seed_key, is_bot=False)
     headers["Referer"] = "https://discord.com/login"
-    headers["X-Context-Properties"] = "eyJsb2NhdGlvbiI6IkxvZ2luIn0="
     s.headers.update(headers)
 
-    # Nếu đã có ticket 2FA từ lần bấm trước và người dùng vừa điền mã 2FA
-    if two_fa_code and cached_ticket_info and (time.time() - cached_ticket_info["ts"] < 240):
-        s = cached_ticket_info["session"]
-        ticket = cached_ticket_info["ticket"]
-        for mfa_ep in ("https://discord.com/api/v9/auth/mfa/totp", "https://discord.com/api/v9/auth/mfa/sms"):
-            try:
-                r_mfa = s.post(
-                    mfa_ep,
-                    json={
-                        "code": str(two_fa_code).strip(),
-                        "ticket": ticket,
-                        "login_source": None,
-                        "gift_code_sku_id": None,
-                    },
-                    timeout=15
-                )
-                d_mfa = r_mfa.json() if r_mfa.content else {}
-                if r_mfa.status_code == 200 and d_mfa.get("token"):
-                    tk = d_mfa["token"]
-                    _DISCORD_LOGIN_TICKETS.pop(email_clean.lower(), None)
-                    w_info = warmup_discord_stealth_token(tk)
-                    return {
-                        "ok": True,
-                        "token": tk,
-                        "profile": {"id": w_info.get("uid", ""), "username": w_info.get("username", "Discord User")}
-                    }
-            except Exception:
-                continue
-
     try:
-        s.get("https://discord.com/login", timeout=8)
-        r_fp = s.get("https://discord.com/api/v9/experiments?with_guild_experiments=true", timeout=10)
+        r_fp = s.get("https://discord.com/api/v10/experiments", timeout=10)
         if r_fp.status_code == 200:
             fp = r_fp.json().get("fingerprint")
             if fp:
@@ -2826,84 +2406,49 @@ def login_discord_reg_session(login_email, password, two_fa_code=""):
         pass
 
     pl = {
-        "login": email_clean,
+        "login": login_email.strip(),
         "password": password,
         "undelete": False,
         "login_source": None,
         "gift_code_sku_id": None,
     }
-    try:
-        r = s.post("https://discord.com/api/v9/auth/login", json=pl, timeout=15)
-        d = r.json() if r.content else {}
-    except Exception as e:
-        return {"ok": False, "error": f"Lỗi kết nối tới máy chủ Discord: {e}"}
+    r = s.post("https://discord.com/api/v10/auth/login", json=pl, timeout=15)
+    d = r.json() if r.content else {}
 
     if r.status_code == 200 and d.get("token"):
         tk = d["token"]
-        w_info = warmup_discord_stealth_token(tk)
-        return {
-            "ok": True,
-            "token": tk,
-            "profile": {"id": w_info.get("uid", ""), "username": w_info.get("username", "Discord User")}
-        }
+        if s.headers.get("X-Fingerprint"):
+            DiscordStealthAntiBanEngine._FINGERPRINT_CACHE[str(tk)[:18]] = s.headers["X-Fingerprint"]
+        return {"ok": True, "token": tk}
 
     if d.get("mfa") and d.get("ticket"):
-        _DISCORD_LOGIN_TICKETS[email_clean.lower()] = {
-            "ticket": d["ticket"],
-            "session": s,
-            "ts": time.time()
-        }
-        if d.get("sms") and not two_fa_code:
-            try:
-                s.post("https://discord.com/api/v9/auth/mfa/sms/send", json={"ticket": d["ticket"]}, timeout=10)
-            except Exception:
-                pass
         if not two_fa_code:
-            return {
-                "ok": False,
-                "need_2fa": True,
-                "error": "Tài khoản có bật bảo mật 2 lớp (2FA/SMS). Hãy nhập mã 6 số vào ô 'Mã 2FA' rồi bấm lại nút Đăng Nhập!"
-            }
-        for mfa_ep in ("https://discord.com/api/v9/auth/mfa/totp", "https://discord.com/api/v9/auth/mfa/sms"):
-            r_mfa = s.post(
-                mfa_ep,
-                json={
-                    "code": str(two_fa_code).strip(),
-                    "ticket": d["ticket"],
-                    "login_source": None,
-                    "gift_code_sku_id": None,
-                },
-                timeout=15
-            )
-            d_mfa = r_mfa.json() if r_mfa.content else {}
-            if r_mfa.status_code == 200 and d_mfa.get("token"):
-                tk = d_mfa["token"]
-                _DISCORD_LOGIN_TICKETS.pop(email_clean.lower(), None)
-                w_info = warmup_discord_stealth_token(tk)
-                return {
-                    "ok": True,
-                    "token": tk,
-                    "profile": {"id": w_info.get("uid", ""), "username": w_info.get("username", "Discord User")}
-                }
-        return {"ok": False, "error": "Mã xác thực 2FA/SMS không đúng hoặc đã hết hạn!"}
+            return {"ok": False, "need_2fa": True, "error": "Tài khoản có bật 2FA, hãy nhập mã 6 số 2FA vào ô bên dưới"}
+        r_mfa = s.post(
+            "https://discord.com/api/v10/auth/mfa/totp",
+            json={
+                "code": str(two_fa_code).strip(),
+                "ticket": d["ticket"],
+                "login_source": None,
+                "gift_code_sku_id": None,
+            },
+            timeout=15
+        )
+        d_mfa = r_mfa.json() if r_mfa.content else {}
+        if r_mfa.status_code == 200 and d_mfa.get("token"):
+            tk = d_mfa["token"]
+            if s.headers.get("X-Fingerprint"):
+                DiscordStealthAntiBanEngine._FINGERPRINT_CACHE[str(tk)[:18]] = s.headers["X-Fingerprint"]
+            return {"ok": True, "token": tk}
+        return {"ok": False, "error": f"Mã 2FA không đúng hoặc hết hạn: {d_mfa.get('message', '')}"}
 
-    raw_err_str = json.dumps(d, ensure_ascii=False)
-    if "ACCOUNT_LOGIN_VERIFICATION_EMAIL" in raw_err_str or "New login location" in raw_err_str:
+    if d.get("captcha_key"):
         return {
             "ok": False,
-            "error": "Discord vừa gửi Email xác nhận vị trí đăng nhập mới về hộp thư Gmail của bạn! Hãy mở Gmail bấm 'Verify Login' (Xác nhận đăng nhập), sau đó quay lại đây bấm nút Đăng Nhập một lần nữa là vào thẳng ngay!"
-        }
-    if "INVALID_LOGIN" in raw_err_str:
-        return {"ok": False, "error": "Email hoặc mật khẩu Discord không chính xác!"}
-
-    if d.get("captcha_key") or "captcha" in raw_err_str.lower():
-        return {
-            "ok": False,
-            "captcha_blocked": True,
-            "error": "IP máy chủ Cloud đang bị Discord chặn Captcha khi đăng nhập bằng mật khẩu. Hãy dùng 'Dán Token / Chuỗi Reg' hoặc làm theo hướng dẫn lấy Token 1 chạm ngay bên dưới để vào thẳng 100% không cần mật khẩu!"
+            "error": "IP máy chủ bị Discord yêu cầu xác minh Captcha khi đăng nhập bằng mật khẩu. Hãy dùng ô 'Dán Chuỗi Reg / mail:pass:token / Header' ở trên để nạp Token trực tiếp không dính Captcha!"
         }
 
-    return {"ok": False, "error": d.get("message") or f"Không thể đăng nhập bằng mật khẩu (Mã {r.status_code})"}
+    return {"ok": False, "error": d.get("message") or f"Không thể đăng nhập (HTTP {r.status_code})"}
 
 
 # ============================================================
@@ -2920,7 +2465,12 @@ class DiscordBot:
             raw_tok = extracted[0]
         self.token = raw_tok
         self.is_bot = bool(is_bot)
-        self.s = DiscordStealthAntiBanEngine.get_shared_session(self.token, is_bot=self.is_bot)
+        self.s = requests.Session()
+        adapter = HTTPAdapter(pool_connections=30, pool_maxsize=60, max_retries=2)
+        self.s.mount("https://", adapter)
+        self.s.mount("http://", adapter)
+        if not self.is_bot:
+            self.s.cookies.update(DiscordStealthAntiBanEngine.get_deterministic_cookies(self.token))
         self.route_step = 0
         self._apply_headers()
         self.user_id = None
@@ -2934,28 +2484,16 @@ class DiscordBot:
             )
         )
 
-    def check(self, force_network=False):
-        if not force_network:
-            cached = DiscordStealthAntiBanEngine.get_cached_me(self.token)
-            if cached:
-                self.user_id = str(cached.get("id") or "")
-                self.username = cached.get("username") or ""
-                self.display_name = cached.get("global_name") or cached.get("username") or "Discord User"
-                if self.user_id:
-                    OWNER_UIDS_CACHE.add(self.user_id)
-                    GLOBAL_USER_NAME_CACHE[self.user_id] = self.display_name
-                return True
-
+    def check(self):
         ep = DiscordStealthAntiBanEngine.pick_stealth_endpoint(self.token, "/users/@me", 0)
         r = self.s.get(ep, timeout=12)
-        if r.status_code == 401 and self.is_bot:
-            self.is_bot = False
+        if r.status_code == 401:
+            self.is_bot = not self.is_bot
             self._apply_headers()
             r = self.s.get(ep, timeout=12)
 
         if r.status_code == 200:
             d = r.json()
-            DiscordStealthAntiBanEngine.set_cached_me(self.token, d)
             self.user_id = str(d.get("id") or "")
             self.username = d.get("username") or ""
             self.display_name = d.get("global_name") or d.get("username") or "Discord User"
@@ -3038,32 +2576,21 @@ class DiscordBot:
             pass
         return []
 
-    def get_all_boxes(self, force_refresh=False):
-        """Lấy danh sách kênh Discord an toàn tuyệt đối (Anti-Check):
-        - Ưu tiên 1: Lấy từ bộ nhớ thụ động READY của Gateway (_PASSIVE_READY_BOXES) -> 0 request REST!
-        - Ưu tiên 2: Lấy từ bộ nhớ đệm _BOXES_CACHE (lưu 10 phút).
-        - Ưu tiên 3: Nếu chưa có, chỉ tải tuần tự tối đa 6 server kèm nhịp nghỉ nhẹ, tuyệt đối không dùng ThreadPoolExecutor quét 25 server cùng lúc!"""
-        tkey = DiscordStealthAntiBanEngine._token_vault_key(self.token)
-        with DiscordStealthAntiBanEngine._LOCK:
-            passive = DiscordStealthAntiBanEngine._PASSIVE_READY_BOXES.get(tkey)
-            if passive and passive.get("boxes") and not force_refresh:
-                return list(passive["boxes"])
-            cached = DiscordStealthAntiBanEngine._BOXES_CACHE.get(tkey)
-            if cached and (time.time() - cached["ts"] < 600.0) and not force_refresh:
-                return list(cached["boxes"])
-
+    def get_all_boxes(self):
         all_boxes = []
         dm_boxes = self.get_dm_and_group_boxes()
         all_boxes.extend(dm_boxes)
 
         guilds = self.get_guilds()
-        for g in guilds[:6]:
-            time.sleep(random.uniform(0.18, 0.35))
-            ch_list = self.get_channels(g["id"], g.get("name", ""))
-            all_boxes.extend(ch_list)
+        if guilds:
+            def _fetch_g(g):
+                return self.get_channels(g["id"], g.get("name", ""))
 
-        with DiscordStealthAntiBanEngine._LOCK:
-            DiscordStealthAntiBanEngine._BOXES_CACHE[tkey] = {"ts": time.time(), "boxes": list(all_boxes)}
+            with ThreadPoolExecutor(max_workers=8) as ex:
+                results = list(ex.map(_fetch_g, guilds[:25]))
+            for ch_list in results:
+                all_boxes.extend(ch_list)
+
         return all_boxes
 
     def get_guild_channels(self, guild_id, guild_name=""):
@@ -3192,17 +2719,13 @@ class DiscordBot:
             DiscordStealthAntiBanEngine.set_channel_cooldown(channel_id, retry_after)
             raise Exception(f"429:RateLimit:{retry_after}:DiscordCode_{err_code}")
 
-        if r.status_code in (401, 403, 404):
+        if r.status_code == 401 or r.status_code == 403:
             try:
                 err_code = int(r.json().get("code", 0))
             except Exception:
                 err_code = 0
             if r.status_code == 401 or err_code in (40001, 40002):
                 raise Exception(f"AuthError:Discord_{r.status_code}_{err_code}")
-            if err_code in (50001, 50013, 10003, 50007) or r.status_code in (403, 404):
-                # Cô lập ngay kênh không có quyền chat để tài khoản không gửi lặp lại gây khóa nick!
-                DiscordStealthAntiBanEngine.set_channel_cooldown(channel_id, 900.0)
-                raise Exception(f"ChannelForbidden:Discord_{r.status_code}_{err_code}")
             raise Exception(f"HTTP {r.status_code}:Code_{err_code}")
 
         if r.status_code not in (200, 201):
@@ -3394,10 +2917,7 @@ def box_target_worker(client, acc_id, plat, target, blocks, runtime_opts,
 
         except Exception as e:
             err_str = str(e)
-            if "ChannelForbidden:" in err_str:
-                # Kênh này bị khóa quyền chat, dừng riêng luồng kênh này để bảo vệ tuổi thọ tài khoản Discord
-                break
-            elif "429:RateLimit:" in err_str:
+            if "429:RateLimit:" in err_str:
                 parts = err_str.split(":")
                 try:
                     retry_after = float(parts[2])
@@ -3406,11 +2926,6 @@ def box_target_worker(client, acc_id, plat, target, blocks, runtime_opts,
                 HEALTH_MGR.report_rate_limit(acc_id, retry_after, reason=err_str, channel_id=target_id)
             elif "AuthError" in err_str:
                 HEALTH_MGR.report_error(acc_id, err_str, is_auth_error=True)
-                if plat == "zalo":
-                    try:
-                        client = Zalo.get_pooled_client(client.imei, client.cookies_dict, force_new=True)
-                    except Exception:
-                        pass
             else:
                 HEALTH_MGR.report_error(acc_id, err_str, is_auth_error=False)
 
@@ -3427,7 +2942,7 @@ def single_acc_multi_box_dispatcher(acc_dict, targets, blocks, runtime_opts, sto
     client = None
     if plat == "zalo":
         try:
-            client = Zalo.get_pooled_client(acc_dict["imei"], acc_dict["cookies"])
+            client = Zalo(acc_dict["imei"], json.loads(acc_dict["cookies"]))
             HEALTH_MGR.report_success(acc_id)
         except Exception as e:
             HEALTH_MGR.report_error(acc_id, str(e), is_auth_error=True)
@@ -3689,6 +3204,12 @@ def parse_and_execute_inchat_command(
         my_uid = str(acc_row.get("uid") or "").strip()
         my_s2m = ""
 
+    is_owner = (s_uid in ("0", "", my_uid, my_s2m)) or (s_uid in OWNER_UIDS_CACHE)
+    allow_all = bool(acc_row.get("allow_all_cmd", 0))
+
+    if not is_user_authorized_for_cmd(s_uid, my_uid, my_s2m, allow_all=allow_all):
+        return False
+
     first_space = text.find(" ")
     if first_space == -1:
         cmd_token = text[1:].lower().strip()
@@ -3704,16 +3225,6 @@ def parse_and_execute_inchat_command(
     if not cmd_token:
         return False
 
-    is_owner = (s_uid in ("0", "", my_uid, my_s2m)) or (s_uid in OWNER_UIDS_CACHE)
-    allow_all_val = acc_row.get("allow_all_cmd")
-    allow_all = True if allow_all_val is None else bool(int(allow_all_val))
-
-    # Luôn cho phép .menu, .help, .files, .stop phản hồi tức thì để không bao giờ bị kẹt quyền
-    always_open_cmds = {"menu", "help", "lenh", "bot", "hdsd", "files", "dsfile", "listfile", "dsquyen", "stop", "dung", "dừng", "stopall"}
-    if cmd_token not in always_open_cmds:
-        if not is_user_authorized_for_cmd(s_uid, my_uid, my_s2m, allow_all=allow_all):
-            return False
-
     acc_id = acc_row["id"]
     if platform == "discord":
         target_obj = [{
@@ -3728,44 +3239,21 @@ def parse_and_execute_inchat_command(
             "type": "group" if is_group else "user"
         }]
 
-    if my_uid:
-        OWNER_UIDS_CACHE.add(my_uid)
-    if my_s2m:
-        OWNER_UIDS_CACHE.add(my_s2m)
-
-    if platform == "zalo" and thread_id:
-        HOT_ACTIVE_ZALO_GROUPS.add(str(thread_id))
-    elif platform == "discord" and thread_id:
-        DiscordStealthAntiBanEngine.ACTIVE_DISCORD_POLL_CHANNELS[acc_id].add(str(thread_id))
-
     def _send_reply(msg_txt):
-        register_bot_sent_message(text=msg_txt)
-        if platform == "zalo" and zalo_client:
-            try:
+        try:
+            register_bot_sent_message(text=msg_txt)
+            if platform == "zalo" and zalo_client:
                 zalo_client.send_adv(
-                    msg_txt, thread_id, color_mode="none",
-                    is_group=is_group, is_heading=False, antiband=True,
-                    use_emoji=False, icon_count=0, auto_retry_thread_type=True,
-                    parse_auto_tags=False
+                    msg_txt, thread_id, color_mode="rainbow",
+                    is_group=is_group, is_heading=True, antiband=True,
+                    use_emoji=False, icon_count=0, auto_retry_thread_type=True
                 )
-            except Exception:
-                try:
-                    zalo_client.send_adv(
-                        msg_txt, thread_id, color_mode="none",
-                        is_group=not is_group, is_heading=False, antiband=False,
-                        use_emoji=False, icon_count=0, auto_retry_thread_type=False,
-                        parse_auto_tags=False
-                    )
-                except Exception:
-                    pass
-        elif platform == "discord" and discord_client:
-            DiscordStealthAntiBanEngine.ACTIVE_DISCORD_POLL_CHANNELS[acc_id].add(str(thread_id))
-            try:
+            elif platform == "discord" and discord_client:
                 discord_client.send_message(
-                    thread_id, msg_txt, color_mode="none", antiband=True, is_heading=False
+                    thread_id, msg_txt, color_mode="rainbow", antiband=True, is_heading=False
                 )
-            except Exception:
-                pass
+        except Exception:
+            pass
 
     if cmd_token in ("menu", "help", "lenh", "bot", "hdsd"):
         with BOT_CFG_LOCK:
@@ -4101,21 +3589,14 @@ class ZaloSelfBotListener:
         self.acc_id = acc_id
         self.platform = "zalo"
         self.stop_ev = threading.Event()
-        self.seen_msg_ids = deque(maxlen=3500)
-        self.seeded_groups = set()
-        self.last_grid_vers = {}
-        self.poll_cursor = 0
+        self.seen_msg_ids = deque(maxlen=1000)
         self.ws_cipher_key = None
-        self.ws_conflict_until = 0.0
-        self.started_at = time.time()
         self.ws_status = "Đang khởi tạo Zalo Shield..."
         self.last_event_ts = 0.0
         self.thread = threading.Thread(target=self._run_loop, daemon=True)
-        self.poller_thread = threading.Thread(target=self._run_http_poller_loop, daemon=True)
 
     def start(self):
         self.thread.start()
-        self.poller_thread.start()
 
     def stop(self):
         self.stop_ev.set()
@@ -4156,7 +3637,7 @@ class ZaloSelfBotListener:
     def _try_decompress_or_json(self, raw_bytes):
         if not raw_bytes:
             return None
-        for wbits in (16 + zlib.MAX_WBITS, zlib.MAX_WBITS, -zlib.MAX_WBITS):
+        for wbits in (zlib.MAX_WBITS, -zlib.MAX_WBITS, 16 + zlib.MAX_WBITS):
             try:
                 decomp = zlib.decompress(raw_bytes, wbits)
                 txt = decomp.decode("utf-8", errors="ignore").strip()
@@ -4179,78 +3660,53 @@ class ZaloSelfBotListener:
             if encrypt_type == 0:
                 return json.loads(raw_data_str) if isinstance(raw_data_str, str) else raw_data_str
 
-            s_raw = unquote(str(raw_data_str)) if "%" in str(raw_data_str) else str(raw_data_str)
-            s_raw = s_raw.strip()
-            pad_rem = len(s_raw) % 4
-            if pad_rem:
-                s_raw += "=" * (4 - pad_rem)
-            b_data = base64.b64decode(s_raw)
+            b_data = base64.b64decode(unquote(raw_data_str) if "%" in str(raw_data_str) else raw_data_str)
 
             key_candidates = []
             for k_str in (self.ws_cipher_key, client.secret_key):
                 if not k_str:
                     continue
-                k_clean = unquote(str(k_str)).strip()
-                for cand_fn in (
-                    lambda x: base64.b64decode(x + ("=" * ((4 - len(x) % 4) % 4))),
-                    lambda x: x.encode("utf-8"),
-                    lambda x: bytes.fromhex(x),
-                ):
-                    try:
-                        kb = cand_fn(k_clean)
-                        if len(kb) in (16, 24, 32) and kb not in key_candidates:
-                            key_candidates.append(kb)
-                    except Exception:
-                        pass
-
-            # Nếu encrypt_type == 1 (ví dụ gói cmd=1 chứa key): ưu tiên giải mã AES-CBC bằng secret_key trước
-            if encrypt_type in (1, 3):
-                for kb in key_candidates:
-                    for iv_cand, body_cand in ((bytes(16), b_data), (b_data[:16], b_data[16:])):
-                        if not body_cand or len(body_cand) % 16 != 0:
-                            continue
-                        try:
-                            cipher = AES.new(kb, AES.MODE_CBC, iv_cand)
-                            dec_bytes = cipher.decrypt(body_cand)
-                            if dec_bytes:
-                                pad_v = dec_bytes[-1]
-                                if 1 <= pad_v <= 16 and all(b == pad_v for b in dec_bytes[-pad_v:]):
-                                    dec_bytes = dec_bytes[:-pad_v]
-                            res = self._try_decompress_or_json(dec_bytes)
-                            if res is not None:
-                                return res
-                        except Exception:
-                            pass
+                try:
+                    kb = base64.b64decode(k_str)
+                    if len(kb) in (16, 24, 32):
+                        key_candidates.append(kb)
+                except Exception:
+                    pass
+                try:
+                    kb_utf = str(k_str).encode("utf-8")
+                    if len(kb_utf) in (16, 24, 32):
+                        key_candidates.append(kb_utf)
+                except Exception:
+                    pass
 
             if len(b_data) > 32:
                 iv = b_data[:16]
+                aad = b_data[16:32]
                 for kb in key_candidates:
-                    if len(b_data) >= 64:
-                        try:
-                            cipher = AES.new(kb, AES.MODE_GCM, nonce=iv)
-                            cipher.update(b_data[16:48])
-                            pt = cipher.decrypt_and_verify(b_data[48:-16], b_data[-16:])
-                            res = self._try_decompress_or_json(pt)
-                            if res is not None:
-                                return res
-                        except Exception:
-                            pass
                     if len(b_data) >= 48:
                         try:
                             cipher = AES.new(kb, AES.MODE_GCM, nonce=iv)
-                            cipher.update(b_data[16:32])
+                            cipher.update(aad)
                             pt = cipher.decrypt_and_verify(b_data[32:-16], b_data[-16:])
                             res = self._try_decompress_or_json(pt)
                             if res is not None:
                                 return res
                         except Exception:
                             pass
-                    for sl_ct, sl_tag in ((b_data[48:-16], b_data[-16:]), (b_data[32:-16], b_data[-16:]), (b_data[16:-16], b_data[-16:])):
-                        if not sl_ct:
+                        try:
+                            cipher = AES.new(kb, AES.MODE_GCM, nonce=iv)
+                            pt = cipher.decrypt(b_data[32:-16])
+                            res = self._try_decompress_or_json(pt)
+                            if res is not None:
+                                return res
+                        except Exception:
+                            pass
+                    for sl in (b_data[32:], b_data[16:-16], b_data[16:]):
+                        if not sl:
                             continue
                         try:
                             cipher = AES.new(kb, AES.MODE_GCM, nonce=iv)
-                            pt = cipher.decrypt_and_verify(sl_ct, sl_tag)
+                            pt = cipher.decrypt(sl)
                             res = self._try_decompress_or_json(pt)
                             if res is not None:
                                 return res
@@ -4264,10 +3720,9 @@ class ZaloSelfBotListener:
                     try:
                         cipher = AES.new(kb, AES.MODE_CBC, iv_cand)
                         dec_bytes = cipher.decrypt(body_cand)
-                        if dec_bytes:
-                            pad_v = dec_bytes[-1]
-                            if 1 <= pad_v <= 16 and all(b == pad_v for b in dec_bytes[-pad_v:]):
-                                dec_bytes = dec_bytes[:-pad_v]
+                        pad_v = dec_bytes[-1]
+                        if 1 <= pad_v <= 16:
+                            dec_bytes = dec_bytes[:-pad_v]
                         res = self._try_decompress_or_json(dec_bytes)
                         if res is not None:
                             return res
@@ -4282,31 +3737,23 @@ class ZaloSelfBotListener:
             pass
         return None
 
-    def _extract_msg_dicts(self, obj, parent_is_group=False, parent_grid=None):
+    def _extract_msg_dicts(self, obj, parent_is_group=False):
         found = []
         if isinstance(obj, dict):
-            cur_grid = str(obj.get("grid") or obj.get("groupId") or obj.get("group_id") or parent_grid or "").strip()
-            is_grp_branch = parent_is_group or bool(cur_grid and cur_grid != "0") or ("groupMsgs" in obj) or ("grid" in obj)
-            has_content = ("content" in obj) or ("msg" in obj) or ("message" in obj) or ("text" in obj) or ("title" in obj)
-            if has_content and any(k in obj for k in ("uidFrom", "idTo", "msgId", "cliMsgId", "toid", "fromUid", "grid")):
+            has_content = ("content" in obj) or ("msg" in obj and ("uidFrom" in obj or "idTo" in obj))
+            if has_content and any(k in obj for k in ("uidFrom", "idTo", "msgId", "cliMsgId", "toid", "fromUid")):
                 item = dict(obj)
-                if is_grp_branch:
+                if parent_is_group:
                     item["_is_group_hint"] = True
-                if cur_grid and cur_grid != "0":
-                    item["grid"] = cur_grid
-                    item["_grid_hint"] = cur_grid
                 found.append(item)
             for k, v in obj.items():
-                sub_grp = is_grp_branch or (k in ("groupMsgs", "group_msgs", "grid"))
-                sub_grid = cur_grid
-                if not sub_grid and str(k).isdigit() and len(str(k)) >= 8 and is_grp_branch:
-                    sub_grid = str(k)
+                is_grp_branch = parent_is_group or (k in ("groupMsgs", "group_msgs", "grid"))
                 if isinstance(v, (dict, list)):
-                    found.extend(self._extract_msg_dicts(v, parent_is_group=sub_grp, parent_grid=sub_grid))
+                    found.extend(self._extract_msg_dicts(v, parent_is_group=is_grp_branch))
         elif isinstance(obj, list):
             for elem in obj:
                 if isinstance(elem, (dict, list)):
-                    found.extend(self._extract_msg_dicts(elem, parent_is_group=parent_is_group, parent_grid=parent_grid))
+                    found.extend(self._extract_msg_dicts(elem, parent_is_group=parent_is_group))
         return found
 
     def _extract_raw_mentions_from_msg_obj(self, msg_obj):
@@ -4335,22 +3782,11 @@ class ZaloSelfBotListener:
                 return res
         return None
 
-    @staticmethod
-    def _make_msg_dedupe_key(msg_obj, content=""):
-        mid = str(msg_obj.get("msgId") or msg_obj.get("globalMsgId") or msg_obj.get("id") or "").strip()
-        cmid = str(msg_obj.get("cliMsgId") or "").strip()
-        ts_v = str(msg_obj.get("ts") or msg_obj.get("time") or "").strip()
-        if mid or cmid:
-            return f"id:{mid}:{cmid}"
-        if ts_v and ts_v != "0":
-            return f"ts:{ts_v}:{content[:30]}"
-        return f"win:{int(time.time())}:{content[:30]}"
-
     def _process_msg_item(self, client, acc_row, msg_obj, default_is_group=False, fallback_thread_id=None):
         if not isinstance(msg_obj, dict):
             return
 
-        msg_id = str(msg_obj.get("msgId") or msg_obj.get("globalMsgId") or msg_obj.get("id") or "")
+        msg_id = str(msg_obj.get("msgId") or msg_obj.get("globalMsgId") or "")
         cli_msg_id = str(msg_obj.get("cliMsgId") or "")
         raw_content = msg_obj.get("content")
         if isinstance(raw_content, dict):
@@ -4361,22 +3797,8 @@ class ZaloSelfBotListener:
                 or raw_content.get("description")
                 or ""
             )
-        elif isinstance(raw_content, str) and raw_content.strip().startswith("{"):
-            try:
-                rc_json = json.loads(raw_content.strip())
-                if isinstance(rc_json, dict):
-                    raw_content = (
-                        rc_json.get("title")
-                        or rc_json.get("text")
-                        or rc_json.get("msg")
-                        or rc_json.get("description")
-                        or raw_content
-                    )
-            except Exception:
-                pass
-
-        if not raw_content or not isinstance(raw_content, str):
-            raw_content = str(msg_obj.get("message") or msg_obj.get("msg") or msg_obj.get("text") or "")
+        elif not isinstance(raw_content, str):
+            raw_content = str(msg_obj.get("msg") or msg_obj.get("message") or "")
 
         if is_bot_echo_message(msg_id=msg_id, client_id=cli_msg_id, text=raw_content):
             return
@@ -4385,25 +3807,23 @@ class ZaloSelfBotListener:
         if not content:
             return
 
-        dedupe_key = self._make_msg_dedupe_key(msg_obj, content)
+        dedupe_key = f"{msg_id}_{cli_msg_id}_{content[:40]}" if (msg_id or cli_msg_id) else f"{int(time.time() // 3)}_{content[:40]}"
         if dedupe_key in self.seen_msg_ids:
             return
         self.seen_msg_ids.append(dedupe_key)
 
-        grid_id = str(msg_obj.get("grid") or msg_obj.get("groupId") or msg_obj.get("_grid_hint") or fallback_thread_id or "").strip()
-        uid_from = str(msg_obj.get("uidFrom") or msg_obj.get("fromUid") or "").strip()
+        uid_from = str(msg_obj.get("uidFrom") or msg_obj.get("fromUid") or "")
         d_name = str(msg_obj.get("dName") or "").strip()
         if uid_from and d_name and uid_from != "0":
             GLOBAL_USER_NAME_CACHE[uid_from] = d_name
 
-        id_to = str(msg_obj.get("idTo") or msg_obj.get("toid") or "").strip()
+        id_to = str(msg_obj.get("idTo") or msg_obj.get("toid") or fallback_thread_id or "")
         cmd_num = int(msg_obj.get("cmd") or 0)
         raw_mentions = self._extract_raw_mentions_from_msg_obj(msg_obj)
 
-        known_gids = KNOWN_GROUPS_BY_ACC.get(client.uid, set()) | ALL_KNOWN_ZALO_GROUP_IDS
+        known_gids = KNOWN_GROUPS_BY_ACC.get(client.uid, set())
         is_group = bool(
             default_is_group
-            or (grid_id and grid_id != "0")
             or msg_obj.get("_is_group_hint")
             or msg_obj.get("isGroup")
             or (cmd_num in (521, 522))
@@ -4412,19 +3832,14 @@ class ZaloSelfBotListener:
             or bool(raw_mentions)
         )
 
-        my_uid = str(client.uid or acc_row.get("uid") or "").strip()
+        my_uid = str(client.uid or acc_row.get("uid") or "")
         if is_group:
-            if grid_id and grid_id != "0":
-                thread_id = grid_id
-            elif id_to in known_gids:
+            if id_to in known_gids:
                 thread_id = id_to
             elif uid_from in known_gids:
                 thread_id = uid_from
             else:
                 thread_id = id_to if (id_to and id_to not in ("0", my_uid)) else (fallback_thread_id or uid_from)
-            ALL_KNOWN_ZALO_GROUP_IDS.add(thread_id)
-            if client.uid:
-                KNOWN_GROUPS_BY_ACC[client.uid].add(thread_id)
         else:
             if uid_from in ("0", my_uid, ""):
                 thread_id = id_to if id_to not in ("0", "") else my_uid
@@ -4444,195 +3859,6 @@ class ZaloSelfBotListener:
             raw_mentions=raw_mentions,
             platform="zalo"
         )
-
-    @classmethod
-    def _recv_full_ws_message(cls, sock):
-        frag_opcode = None
-        frag_buf = bytearray()
-
-        while True:
-            hdr = cls._recv_exact(sock, 2)
-            if not hdr:
-                return None, None
-            fin = (hdr[0] & 0x80) != 0
-            opcode = hdr[0] & 0x0F
-            masked = (hdr[1] & 0x80) != 0
-            payload_len = hdr[1] & 0x7F
-
-            if payload_len == 126:
-                ext = cls._recv_exact(sock, 2)
-                if not ext:
-                    return None, None
-                payload_len = struct.unpack(">H", ext)[0]
-            elif payload_len == 127:
-                ext = cls._recv_exact(sock, 8)
-                if not ext:
-                    return None, None
-                payload_len = struct.unpack(">Q", ext)[0]
-
-            mask_bytes = cls._recv_exact(sock, 4) if masked else b""
-            data = cls._recv_exact(sock, payload_len) if payload_len > 0 else b""
-            if data is None:
-                return None, None
-            if masked and mask_bytes:
-                data = bytes(b ^ mask_bytes[i % 4] for i, b in enumerate(data))
-
-            if opcode == 0x8:
-                return 0x8, data
-            if opcode == 0x9:
-                try:
-                    cls._send_ws_frame(sock, data, opcode=0xA)
-                except Exception:
-                    pass
-                continue
-            if opcode == 0xA:
-                continue
-
-            if opcode == 0x0:
-                frag_buf.extend(data)
-                if fin and frag_opcode is not None:
-                    return frag_opcode, bytes(frag_buf)
-            else:
-                if fin:
-                    return opcode, data
-                frag_opcode = opcode
-                frag_buf = bytearray(data)
-
-    def _poll_single_group(self, client, acc_now, gid):
-        if self.stop_ev.is_set():
-            return
-        try:
-            msgs = client.get_recent_group_messages(gid)
-            if gid not in self.seeded_groups:
-                self.seeded_groups.add(gid)
-                if not msgs:
-                    return
-                # Ghi nhận các tin nhắn cũ vào seen_msg_ids, NHƯNG nếu tin nhắn cuối cùng vừa mới được gõ
-                # trong vòng 60 giây gần đây và là lệnh (.menu, .help, .nhay, .stop...) thì thực thi ngay!
-                now_ms = int(time.time() * 1000)
-                for idx_m, m in enumerate(msgs):
-                    if not isinstance(m, dict):
-                        continue
-                    rc = m.get("content") or m.get("message") or m.get("msg") or ""
-                    if isinstance(rc, dict):
-                        rc = rc.get("title") or rc.get("text") or rc.get("msg") or ""
-                    ct = strip_invisible_chars(str(rc))
-                    is_last_msg = (idx_m == len(msgs) - 1)
-                    msg_ts = int(m.get("ts") or 0)
-                    if msg_ts > 0 and msg_ts < 10000000000:
-                        msg_ts *= 1000
-                    is_fresh_cmd = is_last_msg and is_direct_user_command_text(ct) and (
-                        msg_ts == 0 or abs(now_ms - msg_ts) <= 60000
-                    )
-                    if is_fresh_cmd:
-                        m["grid"] = str(gid)
-                        self._process_msg_item(client, acc_now, m, default_is_group=True, fallback_thread_id=str(gid))
-                    else:
-                        self.seen_msg_ids.append(self._make_msg_dedupe_key(m, ct))
-            else:
-                for m in msgs:
-                    if isinstance(m, dict):
-                        m["grid"] = str(gid)
-                        self._process_msg_item(client, acc_now, m, default_is_group=True, fallback_thread_id=str(gid))
-        except Exception:
-            pass
-
-    def _poll_active_groups_inline(self, client, acc_now):
-        """Bộ đồng bộ Delta Poller thông minh đa luồng cho Zalo:
-        1. Đọc get_grid_ver_map() để phát hiện tức thì nhóm vừa có tin nhắn mới (ver thay đổi) VÀ sắp xếp
-           các nhóm có hoạt động gần nhất lên đầu danh sách (như nhóm 'test treo').
-        2. Kết hợp nhóm vừa đổi ver + nhóm đang chạy chiến dịch (HOT_ACTIVE_ZALO_GROUPS) + vòng xoay poll_cursor.
-        3. Quét song song bằng ThreadPoolExecutor giúp phản hồi lệnh .menu, .help, .nhay, .stop dưới 1 giây!"""
-        changed_gids = []
-        gmap = {}
-        try:
-            gmap = client.get_grid_ver_map() or {}
-            for gid_k, ver_v in gmap.items():
-                gid_s = str(gid_k)
-                prev_v = self.last_grid_vers.get(gid_s)
-                if prev_v is not None and str(prev_v) != str(ver_v):
-                    changed_gids.append(gid_s)
-                    HOT_ACTIVE_ZALO_GROUPS.add(gid_s)
-                self.last_grid_vers[gid_s] = ver_v
-        except Exception:
-            pass
-
-        all_gids = list(KNOWN_GROUPS_BY_ACC.get(client.uid, set()) | ALL_KNOWN_ZALO_GROUP_IDS)
-        if not all_gids:
-            try:
-                client.groups(use_cache=True)
-                all_gids = list(KNOWN_GROUPS_BY_ACC.get(client.uid, set()) | ALL_KNOWN_ZALO_GROUP_IDS)
-            except Exception:
-                return
-        if not all_gids:
-            return
-
-        def _ver_num(g):
-            v = gmap.get(str(g), 0)
-            try:
-                return int(str(v).split("_")[0])
-            except Exception:
-                return 0
-
-        # Sắp xếp nhóm theo phiên bản hoạt động mới nhất giảm dần
-        all_gids.sort(key=_ver_num, reverse=True)
-
-        target_gids = []
-        # Ưu tiên 1: Các nhóm vừa có tin nhắn mới làm thay đổi gridVerMap
-        for cg in changed_gids:
-            if cg not in target_gids:
-                target_gids.append(cg)
-        # Ưu tiên 2: Các nhóm đang chạy chiến dịch hoặc vừa gõ lệnh
-        for hg in list(HOT_ACTIVE_ZALO_GROUPS):
-            if str(hg) not in target_gids:
-                target_gids.append(str(hg))
-        # Ưu tiên 3: Top 4 nhóm hoạt động gần nhất trên tài khoản Zalo
-        for top_g in all_gids[:4]:
-            if str(top_g) not in target_gids:
-                target_gids.append(str(top_g))
-        # Ưu tiên 4: Các nhóm chưa được khởi tạo snapshot
-        unseeded = [str(g) for g in all_gids if str(g) not in self.seeded_groups]
-        for ug in unseeded[:4]:
-            if ug not in target_gids:
-                target_gids.append(ug)
-        # Ưu tiên 5: Vòng xoay tuần tự qua toàn bộ các nhóm còn lại
-        batch_size = min(4, len(all_gids))
-        start_i = self.poll_cursor % len(all_gids)
-        for i in range(batch_size):
-            g_cand = str(all_gids[(start_i + i) % len(all_gids)])
-            if g_cand not in target_gids:
-                target_gids.append(g_cand)
-        self.poll_cursor = (start_i + batch_size) % len(all_gids)
-
-        selected_batch = target_gids[:10]
-        if not selected_batch:
-            return
-
-        with ThreadPoolExecutor(max_workers=min(4, len(selected_batch))) as ex:
-            futures = [ex.submit(self._poll_single_group, client, acc_now, gid) for gid in selected_batch]
-            for fut in futures:
-                try:
-                    fut.result(timeout=6.0)
-                except Exception:
-                    pass
-
-    def _run_http_poller_loop(self):
-        while not self.stop_ev.is_set():
-            acc_row = self._get_acc_row()
-            if not acc_row or (acc_row.get("platform") or "zalo") != "zalo":
-                break
-            if not acc_row.get("chat_cmd_enabled", 1):
-                self.stop_ev.wait(3.0)
-                continue
-            try:
-                client = Zalo.get_pooled_client(acc_row["imei"], acc_row["cookies"])
-                self._poll_active_groups_inline(client, acc_row)
-                if time.time() < self.ws_conflict_until:
-                    self.ws_status = "Zalo Smart Poller Active (.menu Sẵn Sàng)"
-            except Exception as e:
-                if "Phiên đăng nhập" in str(e) or "zpw_enk" in str(e):
-                    self.ws_status = "Cần cập nhật lại Cookie Zalo"
-            self.stop_ev.wait(1.3)
 
     def _run_ws_session(self, client, acc_row, ws_url):
         parsed = urlparse(ws_url)
@@ -4679,8 +3905,8 @@ class ZaloSelfBotListener:
             sock.close()
             return
 
-        self.ws_status = "Zalo Hybrid Shield Active (.menu Sẵn Sàng)"
-        sock.settimeout(2.2)
+        self.ws_status = "Zalo Quantum Shield Active"
+        sock.settimeout(2.5)
         last_ping = time.time()
 
         try:
@@ -4690,18 +3916,45 @@ class ZaloSelfBotListener:
                     self.ws_status = "Đã tắt nhận lệnh"
                     break
 
-                now_t = time.time()
-                if now_t - last_ping >= 18.0:
-                    hb_payload = struct.pack("<BHB", 1, 2, 1) + json.dumps({"eventId": int(now_t * 1000)}).encode("utf-8")
+                if time.time() - last_ping >= 18.0:
+                    hb_payload = struct.pack("<BHB", 1, 2, 1) + json.dumps({"eventId": int(time.time() * 1000)}).encode("utf-8")
                     self._send_ws_frame(sock, hb_payload, opcode=0x2)
-                    last_ping = now_t
+                    last_ping = time.time()
 
                 try:
-                    opcode, data = self._recv_full_ws_message(sock)
-                    if opcode is None or opcode == 0x8:
+                    hdr = self._recv_exact(sock, 2)
+                    if not hdr:
+                        break
+                    opcode = hdr[0] & 0x0F
+                    masked = (hdr[1] & 0x80) != 0
+                    payload_len = hdr[1] & 0x7F
+
+                    if payload_len == 126:
+                        ext = self._recv_exact(sock, 2)
+                        if not ext:
+                            break
+                        payload_len = struct.unpack(">H", ext)[0]
+                    elif payload_len == 127:
+                        ext = self._recv_exact(sock, 8)
+                        if not ext:
+                            break
+                        payload_len = struct.unpack(">Q", ext)[0]
+
+                    mask_bytes = self._recv_exact(sock, 4) if masked else b""
+                    data = self._recv_exact(sock, payload_len) if payload_len > 0 else b""
+                    if data is None:
                         break
 
-                    if opcode in (0x1, 0x2) and data and len(data) >= 4:
+                    if masked and mask_bytes:
+                        data = bytes(b ^ mask_bytes[i % 4] for i, b in enumerate(data))
+
+                    if opcode == 0x8:
+                        break
+                    if opcode == 0x9:
+                        self._send_ws_frame(sock, data, opcode=0xA)
+                        continue
+
+                    if opcode in (0x1, 0x2) and len(data) >= 4:
                         cmd_id = 0
                         json_part = data
                         if data[0] != ord("{"):
@@ -4711,37 +3964,26 @@ class ZaloSelfBotListener:
                         txt_frame = json_part.decode("utf-8", errors="ignore").strip()
                         if not txt_frame.startswith("{"):
                             continue
-                        try:
-                            outer = json.loads(txt_frame)
-                        except Exception:
-                            continue
+                        outer = json.loads(txt_frame)
 
                         if outer.get("key"):
                             self.ws_cipher_key = outer["key"]
+                            self.ws_status = "Zalo Quantum Shield Active"
                         elif isinstance(outer.get("data"), dict) and outer["data"].get("key"):
                             self.ws_cipher_key = outer["data"]["key"]
+                            self.ws_status = "Zalo Quantum Shield Active"
 
                         if cmd_id == 3000:
-                            # Người dùng đang mở Zalo Web trên trình duyệt -> nhường WebSocket 35s, dùng HTTP Poller!
-                            self.ws_conflict_until = time.time() + 35.0
-                            self.ws_status = "Zalo Smart Poller Active (.menu Sẵn Sàng)"
+                            self.ws_status = "Đang đồng bộ phiên..."
                             break
 
                         enc_type = int(outer.get("encrypt", 0))
                         raw_d = outer.get("data")
-                        if not raw_d:
+                        if not raw_d or (cmd_id in (1, 2) and not isinstance(raw_d, str)):
                             continue
 
                         inner = self._decode_ws_payload(client, raw_d, enc_type)
                         if inner is not None:
-                            if isinstance(inner, dict):
-                                k_dec = inner.get("key") or (
-                                    inner.get("data", {}).get("key") if isinstance(inner.get("data"), dict) else None
-                                )
-                                if k_dec and isinstance(k_dec, str):
-                                    self.ws_cipher_key = k_dec
-                                    self.ws_status = "Zalo Quantum Key Locked (.menu Sẵn Sàng)"
-
                             self.last_event_ts = time.time()
                             is_grp_cmd = (cmd_id in (521, 522))
                             msg_items = self._extract_msg_dicts(inner, parent_is_group=is_grp_cmd)
@@ -4769,20 +4011,12 @@ class ZaloSelfBotListener:
                 self.stop_ev.wait(4.0)
                 continue
 
-            if time.time() < self.ws_conflict_until:
-                self.stop_ev.wait(4.0)
-                continue
-
             try:
-                client = Zalo.get_pooled_client(acc_row["imei"], acc_row["cookies"])
-                if client.uid and not acc_row.get("uid"):
-                    try:
-                        conn = db()
-                        conn.execute("UPDATE accounts SET uid=? WHERE id=?", (client.uid, self.acc_id))
-                        conn.commit()
-                        conn.close()
-                    except Exception:
-                        pass
+                client = Zalo(acc_row["imei"], json.loads(acc_row["cookies"]))
+                try:
+                    client.get_grid_ver_map()
+                except Exception:
+                    pass
 
                 if client.ws_urls:
                     ws_url = client.ws_urls[ws_idx % len(client.ws_urls)]
@@ -4792,23 +4026,28 @@ class ZaloSelfBotListener:
                         ws_url = f"{ws_url}{sep}zpw_ver=645&zpw_type=30&t={int(time.time() * 1000)}"
                     self._run_ws_session(client, acc_row, ws_url)
 
-                self.stop_ev.wait(3.0)
+                known_gids = list(KNOWN_GROUPS_BY_ACC.get(client.uid, set()))[:8]
+                for gid in known_gids:
+                    if self.stop_ev.is_set():
+                        break
+                    for m in client.get_recent_group_messages(gid)[-4:]:
+                        self._process_msg_item(client, acc_row, m, default_is_group=True, fallback_thread_id=str(gid))
+                self.stop_ev.wait(2.0)
             except Exception:
-                self.ws_status = "Zalo Poller Đang Bảo Vệ..."
+                self.ws_status = "Đang kết nối lại..."
                 self.stop_ev.wait(5.0)
 
 
 # ============================================================
-# LISTENER 24/7 TRÊN DISCORD ACC CHÍNH CHỦ & BOT (CHROME 131 TLS GATEWAY + ZERO-SCRAPE SHIELD)
+# LISTENER 24/7 TRÊN DISCORD ACC CHÍNH CHỦ & BOT (ANTI-SCAN GATEWAY v10)
 # ============================================================
 class DiscordSelfBotListener:
     def __init__(self, acc_id):
         self.acc_id = acc_id
         self.platform = "discord"
         self.stop_ev = threading.Event()
-        self.seen_msg_ids = deque(maxlen=1500)
-        self.seeded_channels = set()
-        self.ws_status = "Đang khởi tạo Discord Ghost Shield..."
+        self.seen_msg_ids = deque(maxlen=1000)
+        self.ws_status = "Đang kết nối Discord Anti-Scan..."
         self.last_event_ts = 0.0
         self.last_seq = None
         self.thread = threading.Thread(target=self._run_loop, daemon=True)
@@ -4851,8 +4090,6 @@ class DiscordSelfBotListener:
         if not channel_id:
             return
 
-        DiscordStealthAntiBanEngine.ACTIVE_DISCORD_POLL_CHANNELS[self.acc_id].add(channel_id)
-
         raw_mentions = []
         for m in (msg_data.get("mentions") or []):
             muid = str(m.get("id") or "")
@@ -4874,68 +4111,25 @@ class DiscordSelfBotListener:
             platform="discord"
         )
 
-    def _poll_active_discord_channels_fallback(self, client, acc_now):
-        """Chỉ quét nhẹ tối đa 2 kênh đang chạy chiến dịch khi Gateway tạm ngắt kết nối
-        (TUYỆT ĐỐI KHÔNG quét hàng loạt DM lúc khởi động để chống Discord báo Reset mật khẩu!):"""
-        ch_set = list(DiscordStealthAntiBanEngine.ACTIVE_DISCORD_POLL_CHANNELS.get(self.acc_id, set()))[:2]
-        for cid in ch_set:
-            if self.stop_ev.is_set():
-                break
-            try:
-                ep = DiscordStealthAntiBanEngine.pick_stealth_endpoint(client.token, f"/channels/{cid}/messages?limit=5", 0)
-                r = client.s.get(ep, timeout=6)
-                if r.status_code == 200 and isinstance(r.json(), list):
-                    msgs = list(reversed(r.json()))
-                    if cid not in self.seeded_channels:
-                        self.seeded_channels.add(cid)
-                        for idx_m, m in enumerate(msgs):
-                            if not isinstance(m, dict):
-                                continue
-                            ct = strip_invisible_chars(str(m.get("content") or ""))
-                            if idx_m == len(msgs) - 1 and is_direct_user_command_text(ct):
-                                m["channel_id"] = cid
-                                self._handle_discord_message_event(client, acc_now, m)
-                            elif m.get("id"):
-                                self.seen_msg_ids.append(str(m["id"]))
-                    else:
-                        for m in msgs:
-                            if isinstance(m, dict):
-                                m["channel_id"] = cid
-                                self._handle_discord_message_event(client, acc_now, m)
-            except Exception:
-                continue
-
     def _run_gateway_session(self, client, acc_row):
-        resume_state = DiscordStealthAntiBanEngine.get_gateway_resume_state(client.token)
         host = "gateway.discord.gg"
-        if resume_state and resume_state.get("resume_url"):
-            try:
-                p_url = urlparse(resume_state["resume_url"])
-                if p_url.hostname:
-                    host = p_url.hostname
-            except Exception:
-                host = "gateway.discord.gg"
         port = 443
-        path = "/?encoding=json&v=9"
+        path = "/?encoding=json&v=10"
 
-        raw_sock = socket.create_connection((host, port), timeout=14)
-        ctx = DiscordStealthAntiBanEngine.create_chrome_tls_context()
+        raw_sock = socket.create_connection((host, port), timeout=12)
+        ctx = ssl.create_default_context()
         sock = ctx.wrap_socket(raw_sock, server_hostname=host)
 
         ws_key = base64.b64encode(os.urandom(16)).decode()
         handshake = (
             f"GET {path} HTTP/1.1\r\n"
             f"Host: {host}\r\n"
-            f"Connection: Upgrade\r\n"
-            f"Pragma: no-cache\r\n"
-            f"Cache-Control: no-cache\r\n"
-            f"User-Agent: {client.s.headers.get('User-Agent')}\r\n"
             f"Upgrade: websocket\r\n"
-            f"Origin: https://discord.com\r\n"
+            f"Connection: Upgrade\r\n"
+            f"Sec-WebSocket-Key: {ws_key}\r\n"
             f"Sec-WebSocket-Version: 13\r\n"
-            f"Accept-Encoding: gzip, deflate, br, zstd\r\n"
-            f"Accept-Language: vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7\r\n"
-            f"Sec-WebSocket-Key: {ws_key}\r\n\r\n"
+            f"Origin: https://discord.com\r\n"
+            f"User-Agent: {client.s.headers.get('User-Agent')}\r\n\r\n"
         )
         sock.sendall(handshake.encode("utf-8"))
 
@@ -4959,6 +4153,7 @@ class DiscordSelfBotListener:
         last_hb = time.time()
         identified = False
         prof = DiscordStealthAntiBanEngine.get_deterministic_profile(client.token)
+        launch_sig, hb_sess = DiscordStealthAntiBanEngine.get_deterministic_session_uuids(client.token)
 
         try:
             while not self.stop_ev.is_set():
@@ -4967,23 +4162,45 @@ class DiscordSelfBotListener:
                     self.ws_status = "Đã tắt nhận lệnh"
                     break
 
-                now_t = time.time()
-                if identified and (now_t - last_hb >= hb_interval):
+                if identified and (time.time() - last_hb >= hb_interval):
                     hb_pkt = json.dumps({"op": 1, "d": self.last_seq}).encode("utf-8")
                     ZaloSelfBotListener._send_ws_frame(sock, hb_pkt, opcode=0x1)
-                    last_hb = now_t
+                    last_hb = time.time()
 
                 try:
-                    opcode, data = ZaloSelfBotListener._recv_full_ws_message(sock)
-                    if opcode is None or opcode == 0x8:
+                    hdr = ZaloSelfBotListener._recv_exact(sock, 2)
+                    if not hdr:
                         break
+                    opcode = hdr[0] & 0x0F
+                    masked = (hdr[1] & 0x80) != 0
+                    payload_len = hdr[1] & 0x7F
+
+                    if payload_len == 126:
+                        ext = ZaloSelfBotListener._recv_exact(sock, 2)
+                        if not ext:
+                            break
+                        payload_len = struct.unpack(">H", ext)[0]
+                    elif payload_len == 127:
+                        ext = ZaloSelfBotListener._recv_exact(sock, 8)
+                        if not ext:
+                            break
+                        payload_len = struct.unpack(">Q", ext)[0]
+
+                    mask_bytes = ZaloSelfBotListener._recv_exact(sock, 4) if masked else b""
+                    data = ZaloSelfBotListener._recv_exact(sock, payload_len) if payload_len > 0 else b""
+                    if data is None:
+                        break
+                    if masked and mask_bytes:
+                        data = bytes(b ^ mask_bytes[i % 4] for i, b in enumerate(data))
+
+                    if opcode == 0x8:
+                        break
+                    if opcode == 0x9:
+                        ZaloSelfBotListener._send_ws_frame(sock, data, opcode=0xA)
+                        continue
 
                     if opcode == 0x1 and data:
-                        try:
-                            pkt = json.loads(data.decode("utf-8", errors="ignore"))
-                        except Exception:
-                            continue
-
+                        pkt = json.loads(data.decode("utf-8", errors="ignore"))
                         op = pkt.get("op")
                         seq = pkt.get("s")
                         if seq is not None:
@@ -4992,25 +4209,22 @@ class DiscordSelfBotListener:
                         d_ev = pkt.get("d")
 
                         if op == 10 and isinstance(d_ev, dict):
-                            hb_interval = max(20.0, (float(d_ev.get("heartbeat_interval", 41250)) / 1000.0) * random.uniform(0.88, 0.95))
-                            # Nhịp trễ khởi động tự nhiên giống hệt trình duyệt Chrome thật tải bundle JS
-                            self.stop_ev.wait(random.uniform(1.1, 1.8))
-                            if self.stop_ev.is_set():
-                                break
-                            cur_resume = DiscordStealthAntiBanEngine.get_gateway_resume_state(client.token)
-                            if not client.is_bot and cur_resume and cur_resume.get("session_id"):
+                            hb_interval = max(18.0, (float(d_ev.get("heartbeat_interval", 41250)) / 1000.0) * random.uniform(0.88, 0.95))
+                            resume_state = DiscordStealthAntiBanEngine.get_gateway_resume_state(client.token)
+                            if not client.is_bot and resume_state and resume_state.get("session_id"):
+                                # OP 6 RESUME: Khôi phục phiên âm thầm không tạo thông báo thiết bị đăng nhập mới!
                                 resume_payload = {
                                     "op": 6,
                                     "d": {
                                         "token": client.token,
-                                        "session_id": cur_resume["session_id"],
-                                        "seq": self.last_seq or cur_resume.get("last_seq", 0),
+                                        "session_id": resume_state["session_id"],
+                                        "seq": self.last_seq or resume_state.get("last_seq", 0),
                                     }
                                 }
                                 ZaloSelfBotListener._send_ws_frame(sock, json.dumps(resume_payload).encode("utf-8"), opcode=0x1)
                                 identified = True
                                 last_hb = time.time()
-                                self.ws_status = "Discord Ghost Session (Resumed - .menu Sẵn Sàng)"
+                                self.ws_status = "Discord Ghost Session (Resumed)"
                             elif client.is_bot:
                                 ident_payload = {
                                     "op": 2,
@@ -5023,20 +4237,14 @@ class DiscordSelfBotListener:
                                 ZaloSelfBotListener._send_ws_frame(sock, json.dumps(ident_payload).encode("utf-8"), opcode=0x1)
                                 identified = True
                                 last_hb = time.time()
-                                self.ws_status = "Discord Bot Shield (.menu Sẵn Sàng)"
+                                self.ws_status = "Discord Bot Shield"
                             else:
-                                can_id, wait_id = DiscordStealthAntiBanEngine.can_send_gateway_identify(client.token)
-                                if not can_id:
-                                    self.ws_status = f"Anti-Check Cooldown ({int(wait_id)}s)"
-                                    self.stop_ev.wait(wait_id)
-                                    if self.stop_ev.is_set():
-                                        break
-                                # 100% chuẩn 14 trường Chrome 131 Web thật — đã xóa sạch launch_signature & client_heartbeat_session_id
+                                # Ghost Invisible Device Mode: status='invisible', afk=True -> Discord không báo thiết bị lạ đăng nhập!
                                 ident_payload = {
                                     "op": 2,
                                     "d": {
                                         "token": client.token,
-                                        "capabilities": 16381,
+                                        "capabilities": 30717,
                                         "properties": {
                                             "os": prof["os"],
                                             "browser": prof["browser"],
@@ -5052,8 +4260,11 @@ class DiscordSelfBotListener:
                                             "release_channel": "stable",
                                             "client_build_number": prof["build_number"],
                                             "client_event_source": None,
+                                            "has_client_mods": False,
+                                            "launch_signature": launch_sig,
+                                            "client_heartbeat_session_id": hb_sess,
                                         },
-                                        "presence": {"status": "online", "since": 0, "activities": [], "afk": False},
+                                        "presence": {"status": "invisible", "since": 0, "activities": [], "afk": True},
                                         "compress": False,
                                         "client_state": {
                                             "guild_versions": {},
@@ -5069,39 +4280,28 @@ class DiscordSelfBotListener:
                                 ZaloSelfBotListener._send_ws_frame(sock, json.dumps(ident_payload).encode("utf-8"), opcode=0x1)
                                 identified = True
                                 last_hb = time.time()
-                                self.ws_status = "Discord Chrome 131 Shield (.menu Sẵn Sàng)"
+                                self.ws_status = "Discord Ghost Stealth (Invisible)"
 
                         elif op == 0 and t_ev == "READY" and isinstance(d_ev, dict):
                             sess_id = str(d_ev.get("session_id") or "")
                             res_url = str(d_ev.get("resume_gateway_url") or "wss://gateway.discord.gg")
-                            u_obj = d_ev.get("user") or {}
-                            if isinstance(u_obj, dict) and u_obj.get("id"):
-                                DiscordStealthAntiBanEngine.set_cached_me(client.token, u_obj)
-                                client.user_id = str(u_obj["id"])
-                                OWNER_UIDS_CACHE.add(client.user_id)
-                            DiscordStealthAntiBanEngine.harvest_ready_payload(client.token, d_ev)
                             if sess_id:
                                 DiscordStealthAntiBanEngine.save_gateway_resume_state(
                                     client.token, session_id=sess_id, resume_url=res_url, last_seq=self.last_seq or 0
                                 )
-                            self.ws_status = "Discord Ghost Vault (.menu Sẵn Sàng Toàn Kênh)"
+                            self.ws_status = "Discord Ghost Vault (7-Layer)"
 
                         elif op == 0 and t_ev == "RESUMED":
-                            self.ws_status = "Discord Ghost Vault (Resumed - .menu Sẵn Sàng)"
+                            self.ws_status = "Discord Ghost Vault (Resumed)"
 
                         elif op == 0 and t_ev == "MESSAGE_CREATE" and isinstance(d_ev, dict):
                             self.last_event_ts = time.time()
                             self._handle_discord_message_event(client, acc_now, d_ev)
 
-                        elif op == 1:
-                            hb_pkt = json.dumps({"op": 1, "d": self.last_seq}).encode("utf-8")
-                            ZaloSelfBotListener._send_ws_frame(sock, hb_pkt, opcode=0x1)
-                            last_hb = time.time()
-
                         elif op == 9:
+                            # Invalid Session: nếu d == False thì xóa session cũ để kết nối lại an toàn
                             if not d_ev:
                                 DiscordStealthAntiBanEngine.save_gateway_resume_state(client.token, "", "", 0)
-                            self.stop_ev.wait(random.uniform(3.0, 5.5))
                             break
 
                         elif op == 7:
@@ -5117,8 +4317,6 @@ class DiscordSelfBotListener:
                 pass
 
     def _run_loop(self):
-        # Đợi nhẹ 1.8s sau khi thêm Token để tránh xung đột request với bước xác thực ban đầu
-        self.stop_ev.wait(1.8)
         while not self.stop_ev.is_set():
             acc_row = self._get_acc_row()
             if not acc_row or acc_row.get("platform") != "discord":
@@ -5129,28 +4327,17 @@ class DiscordSelfBotListener:
                 continue
 
             try:
-                is_bot = bool(acc_row.get("is_bot", 0))
-                client = DiscordBot(acc_row["token"], is_bot=is_bot)
-                if not client.check(force_network=False):
+                client = DiscordBot(acc_row["token"], is_bot=bool(acc_row.get("is_bot", 0)))
+                if not client.check():
                     self.ws_status = "Token cần kiểm tra lại"
-                    self.stop_ev.wait(18.0)
+                    self.stop_ev.wait(10.0)
                     continue
 
-                if client.user_id and not acc_row.get("uid"):
-                    try:
-                        conn = db()
-                        conn.execute("UPDATE accounts SET uid=? WHERE id=?", (client.user_id, self.acc_id))
-                        conn.commit()
-                        conn.close()
-                    except Exception:
-                        pass
-
                 self._run_gateway_session(client, acc_row)
-                self._poll_active_discord_channels_fallback(client, acc_row)
-                self.stop_ev.wait(4.5)
+                self.stop_ev.wait(3.0)
             except Exception:
-                self.ws_status = "Đang đồng bộ lại..."
-                self.stop_ev.wait(6.0)
+                self.ws_status = "Đang kết nối lại..."
+                self.stop_ev.wait(5.0)
 
 
 def sync_all_zalo_listeners():
@@ -5165,17 +4352,7 @@ def sync_all_zalo_listeners():
             plat = (r["platform"] or "zalo").lower()
             if r["chat_cmd_enabled"]:
                 active_ids.add(aid)
-                lst = ACTIVE_LISTENERS.get(aid)
-                need_start = (lst is None) or (not lst.thread.is_alive())
-                if not need_start and plat == "zalo" and hasattr(lst, "poller_thread"):
-                    if not lst.poller_thread.is_alive():
-                        need_start = True
-                if need_start:
-                    if lst is not None:
-                        try:
-                            lst.stop()
-                        except Exception:
-                            pass
+                if aid not in ACTIVE_LISTENERS or not ACTIVE_LISTENERS[aid].thread.is_alive():
                     if plat == "discord":
                         listener = DiscordSelfBotListener(aid)
                     else:
@@ -5190,19 +4367,7 @@ def sync_all_zalo_listeners():
         pass
 
 
-def _listener_watchdog_loop():
-    time.sleep(1.0)
-    while True:
-        try:
-            sync_all_zalo_listeners()
-        except Exception:
-            pass
-        time.sleep(6.0)
-
-
-threading.Thread(target=_listener_watchdog_loop, daemon=True).start()
-
-
+threading.Timer(1.2, sync_all_zalo_listeners).start()
 # ============================================================
 # GIAO DIỆN WEB CHÍNH: NOEL (100% VECTOR SVG HIỆN ĐẠI, CHỐNG TRÀN VIỀN TUYỆT ĐỐI,
 # THANH TAB NGANG DƯỚI NHỎ GỌN HIỆN ĐẠI, NÚT BẤM CÓ HÌNH ẢNH DESIGN NOEL)
@@ -5220,78 +4385,59 @@ html,body{
   width:100%;max-width:100%;overflow-x:hidden;
   touch-action:manipulation;-webkit-text-size-adjust:100%;
   font-family:'Plus Jakarta Sans',sans-serif;
-  background:#eef4fb;
+  background:#f4f7f9;
   background-image:
-    radial-gradient(circle at 12% 18%, rgba(225,29,72,0.20) 0px, transparent 42%),
-    radial-gradient(circle at 88% 16%, rgba(5,150,105,0.20) 0px, transparent 44%),
-    radial-gradient(circle at 80% 85%, rgba(2,132,199,0.18) 0px, transparent 46%),
-    radial-gradient(circle at 20% 82%, rgba(217,119,6,0.15) 0px, transparent 45%);
-  background-attachment:fixed;
+    radial-gradient(at 10% 10%, rgba(201,42,42,0.09) 0px, transparent 48%),
+    radial-gradient(at 90% 15%, rgba(13,104,71,0.10) 0px, transparent 48%),
+    radial-gradient(at 50% 90%, rgba(217,119,6,0.08) 0px, transparent 50%);
   color:#0f172a;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:16px;
 }
 .login-card{
-  width:100%;max-width:415px;
-  background:rgba(255,255,255,0.64);
-  backdrop-filter:blur(28px) saturate(200%);
-  -webkit-backdrop-filter:blur(28px) saturate(200%);
-  border:1.5px solid rgba(255,255,255,0.86);
-  border-radius:28px;overflow:hidden;
-  box-shadow:0 24px 50px -12px rgba(15,23,42,0.14),inset 0 1.5px 2px rgba(255,255,255,0.95);
-  position:relative;
+  width:100%;max-width:410px;background:#ffffff;
+  border:1px solid #e2e8f0;border-radius:26px;overflow:hidden;
+  box-shadow:0 20px 45px -12px rgba(15,23,42,0.10);position:relative;
 }
 .noel-art-banner{
-  position:relative;height:152px;overflow:hidden;
-  background:linear-gradient(135deg,rgba(136,19,55,0.92) 0%,rgba(190,18,60,0.88) 48%,rgba(6,95,70,0.92) 100%);
-  backdrop-filter:blur(16px);
+  position:relative;height:148px;overflow:hidden;
+  background:linear-gradient(135deg,#881337 0%,#be123c 45%,#065f46 100%);
   display:flex;flex-direction:column;align-items:center;justify-content:center;padding:18px;
-  border-bottom:1px solid rgba(255,255,255,0.35);
 }
 .noel-art-svg{
   position:absolute;inset:0;width:100%;height:100%;object-fit:cover;pointer-events:none;opacity:0.92;
 }
 .brand-mark{
-  position:relative;z-index:2;width:60px;height:60px;border-radius:20px;
-  background:rgba(255,255,255,0.22);backdrop-filter:blur(14px);
-  border:1.5px solid rgba(255,255,255,0.65);
+  position:relative;z-index:2;width:58px;height:58px;border-radius:18px;
+  background:rgba(255,255,255,0.16);backdrop-filter:blur(10px);
+  border:1.5px solid rgba(255,255,255,0.45);
   display:flex;align-items:center;justify-content:center;
-  box-shadow:0 10px 26px rgba(0,0,0,0.22),inset 0 1px 2px rgba(255,255,255,0.8);
-  margin-bottom:8px;overflow:hidden;
+  box-shadow:0 10px 24px rgba(0,0,0,0.22);margin-bottom:8px;overflow:hidden;
 }
 .brand-mark img{width:100%;height:100%;object-fit:cover}
 .brand-title{
-  position:relative;z-index:2;font-size:24px;font-weight:800;color:#ffffff;
-  letter-spacing:3px;text-shadow:0 2px 12px rgba(0,0,0,0.25);
+  position:relative;z-index:2;font-size:23px;font-weight:800;color:#ffffff;
+  letter-spacing:2.5px;text-shadow:0 2px 10px rgba(0,0,0,0.25);
 }
 .login-body{padding:24px 20px 26px}
 .field-label{
-  display:flex;align-items:center;gap:6px;font-size:12px;font-weight:800;color:#1e293b;margin-bottom:8px;
+  display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:#334155;margin-bottom:8px;
 }
 .field-input{
-  width:100%;padding:13px 14px;
-  background:rgba(255,255,255,0.75);
-  backdrop-filter:blur(12px);
-  border:1.5px solid rgba(255,255,255,0.9);
-  box-shadow:inset 0 2px 5px rgba(15,23,42,0.04),0 2px 8px rgba(15,23,42,0.04);
-  border-radius:15px;color:#0f172a;font-size:16px;outline:none;transition:all .2s;margin-bottom:16px;
+  width:100%;padding:13px 14px;background:#f8fafc;border:1.5px solid #cbd5e1;
+  border-radius:14px;color:#0f172a;font-size:16px;outline:none;transition:all .2s;margin-bottom:16px;
 }
-.field-input:focus{
-  border-color:#e11d48;background:rgba(255,255,255,0.95);
-  box-shadow:0 0 0 3.5px rgba(225,29,72,0.15),inset 0 1px 2px rgba(255,255,255,1);
-}
+.field-input:focus{border-color:#be123c;background:#fff;box-shadow:0 0 0 3px rgba(190,18,60,0.12)}
 .btn-noel-login{
-  position:relative;overflow:hidden;width:100%;padding:13.5px 16px;
-  background:linear-gradient(135deg,#e11d48 0%,#be123c 50%,#059669 100%);
-  color:#fff;font-weight:800;border:1px solid rgba(255,255,255,0.45);border-radius:15px;cursor:pointer;font-size:14px;
+  position:relative;overflow:hidden;width:100%;padding:13px 16px;
+  background:linear-gradient(135deg,#be123c 0%,#9f1239 50%,#065f46 100%);
+  color:#fff;font-weight:800;border:none;border-radius:14px;cursor:pointer;font-size:14px;
   display:flex;align-items:center;justify-content:center;gap:8px;
-  box-shadow:0 12px 26px -6px rgba(190,18,60,0.45),inset 0 1px 1.5px rgba(255,255,255,0.65);
-  transition:transform .18s,box-shadow .18s;
+  box-shadow:0 10px 22px -6px rgba(190,18,60,0.45);transition:transform .18s;
 }
 .btn-noel-login:active{transform:scale(0.98)}
 .btn-art-bg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;opacity:0.28}
 .err-box{
-  background:rgba(254,242,242,0.85);backdrop-filter:blur(8px);
-  border:1px solid #fecaca;color:#b91c1c;
-  padding:11px 12px;border-radius:13px;font-size:12.5px;margin-bottom:14px;text-align:center;font-weight:700;
+  background:#fef2f2;border:1px solid #fecaca;color:#b91c1c;
+  padding:11px 12px;border-radius:12px;font-size:12.5px;margin-bottom:14px;text-align:center;font-weight:600;
   overflow-wrap:break-word;word-break:break-word;
 }
 </style>
@@ -5360,21 +4506,21 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
 <style>
 :root{
-  --bg-main:#eaf2fa;
-  --bg-card:rgba(255,255,255,0.62);
-  --bg-soft:rgba(255,255,255,0.52);
+  --bg-main:#f3f6fa;
+  --bg-card:#ffffff;
+  --bg-soft:#f8fafc;
   --text-primary:#0f172a;
-  --text-secondary:#1e293b;
-  --text-muted:#475569;
-  --border-light:rgba(255,255,255,0.84);
-  --noel-red:#e11d48;
-  --noel-red-soft:rgba(255,228,230,0.78);
-  --noel-pine:#059669;
-  --noel-pine-soft:rgba(209,250,229,0.78);
+  --text-secondary:#334155;
+  --text-muted:#64748b;
+  --border-light:#e2e8f0;
+  --noel-red:#be123c;
+  --noel-red-soft:#ffe4e6;
+  --noel-pine:#047857;
+  --noel-pine-soft:#d1fae5;
   --noel-gold:#d97706;
-  --noel-blue:#0284c7;
+  --noel-blue:#1d4ed8;
   --noel-indigo:#4f46e5;
-  --shadow-card:0 16px 36px -8px rgba(15,23,42,0.08),0 4px 12px -2px rgba(15,23,42,0.04),inset 0 1.5px 2px rgba(255,255,255,0.94),inset 0 -1px 1px rgba(255,255,255,0.45);
+  --shadow-card:0 8px 24px -6px rgba(15,23,42,0.06),0 2px 6px -1px rgba(15,23,42,0.03);
 }
 *{
   box-sizing:border-box;margin:0;padding:0;min-width:0;
@@ -5386,37 +4532,26 @@ html,body{
   font-family:'Plus Jakarta Sans',sans-serif;
   background-color:var(--bg-main);
   background-image:
-    radial-gradient(circle at 8% 12%, rgba(225,29,72,0.18) 0px, transparent 38%),
-    radial-gradient(circle at 92% 10%, rgba(5,150,105,0.18) 0px, transparent 40%),
-    radial-gradient(circle at 85% 82%, rgba(2,132,199,0.16) 0px, transparent 42%),
-    radial-gradient(circle at 16% 86%, rgba(217,119,6,0.14) 0px, transparent 40%),
-    linear-gradient(135deg, #eef5fc 0%, #e6f0fa 50%, #edf6f3 100%);
-  background-attachment:fixed;
+    radial-gradient(at 0% 0%, rgba(190,18,60,0.07) 0px, transparent 42%),
+    radial-gradient(at 100% 0%, rgba(4,120,87,0.08) 0px, transparent 42%),
+    radial-gradient(at 50% 100%, rgba(217,119,6,0.06) 0px, transparent 48%);
   color:var(--text-primary);
   min-height:100vh;
-  padding-bottom:96px;
+  padding-bottom:92px;
 }
 input,select,textarea{font-size:16px !important;font-family:inherit;max-width:100%}
 
 .app-container{
-  width:100%;max-width:1180px;margin:0 auto;padding:12px 10px 26px;
-  overflow-x:hidden;position:relative;z-index:1;
+  width:100%;max-width:1180px;margin:0 auto;padding:10px 10px 24px;
+  overflow-x:hidden;
 }
 
 .noel-hero{
   position:relative;overflow:hidden;
-  border-radius:24px;margin-bottom:14px;
-  background:linear-gradient(125deg,rgba(136,19,55,0.88) 0%,rgba(225,29,72,0.84) 48%,rgba(5,150,105,0.88) 100%);
-  backdrop-filter:blur(24px) saturate(190%);
-  -webkit-backdrop-filter:blur(24px) saturate(190%);
-  border:1.5px solid rgba(255,255,255,0.52);
-  box-shadow:0 16px 36px -8px rgba(136,19,55,0.28),inset 0 1.5px 2.5px rgba(255,255,255,0.65);
-  color:#ffffff;padding:14px 16px;
-}
-.noel-hero::after{
-  content:"";position:absolute;top:-50%;left:-20%;width:65%;height:200%;
-  background:linear-gradient(90deg,transparent,rgba(255,255,255,0.14),transparent);
-  transform:rotate(25deg);pointer-events:none;
+  border-radius:22px;margin-bottom:12px;
+  background:linear-gradient(125deg,#881337 0%,#be123c 46%,#065f46 100%);
+  box-shadow:0 12px 28px -8px rgba(136,19,55,0.32);
+  color:#ffffff;padding:14px 14px;
 }
 .noel-hero-art{
   position:absolute;inset:0;width:100%;height:100%;pointer-events:none;opacity:0.9;
@@ -5429,75 +4564,65 @@ input,select,textarea{font-size:16px !important;font-family:inherit;max-width:10
   display:flex;align-items:center;gap:10px;min-width:0;
 }
 .logo-frame{
-  width:44px;height:44px;border-radius:14px;
-  background:rgba(255,255,255,0.22);backdrop-filter:blur(14px);
-  -webkit-backdrop-filter:blur(14px);
-  border:1.5px solid rgba(255,255,255,0.68);
+  width:42px;height:42px;border-radius:13px;
+  background:rgba(255,255,255,0.18);backdrop-filter:blur(8px);
+  border:1.5px solid rgba(255,255,255,0.5);
   display:flex;align-items:center;justify-content:center;
   overflow:hidden;cursor:pointer;flex-shrink:0;position:relative;
-  box-shadow:0 8px 18px rgba(0,0,0,0.18),inset 0 1px 2px rgba(255,255,255,0.85);
+  box-shadow:0 6px 16px rgba(0,0,0,0.18);
 }
 .logo-frame img{width:100%;height:100%;object-fit:cover}
 .brand-name{
-  font-size:21px;font-weight:800;letter-spacing:2.4px;color:#ffffff;
-  text-shadow:0 2px 10px rgba(0,0,0,0.22);line-height:1.1;
+  font-size:20px;font-weight:800;letter-spacing:2px;color:#ffffff;
+  text-shadow:0 2px 8px rgba(0,0,0,0.22);line-height:1.1;
 }
 .hero-actions{
-  display:flex;align-items:center;gap:7px;flex-wrap:wrap;
+  display:flex;align-items:center;gap:6px;flex-wrap:wrap;
 }
 .hero-pill-btn{
   position:relative;overflow:hidden;
   display:inline-flex;align-items:center;gap:5px;
-  padding:7.5px 12px;border-radius:999px;
-  background:rgba(255,255,255,0.20);backdrop-filter:blur(12px);
-  -webkit-backdrop-filter:blur(12px);
-  border:1px solid rgba(255,255,255,0.52);
-  box-shadow:inset 0 1px 1.5px rgba(255,255,255,0.65);
-  color:#ffffff;font-size:11.5px;font-weight:800;cursor:pointer;
+  padding:7px 11px;border-radius:11px;
+  background:rgba(255,255,255,0.16);backdrop-filter:blur(8px);
+  border:1px solid rgba(255,255,255,0.35);
+  color:#ffffff;font-size:11.5px;font-weight:700;cursor:pointer;
   text-decoration:none;transition:all .18s;
 }
-.hero-pill-btn:hover{background:rgba(255,255,255,0.32);transform:translateY(-1px)}
+.hero-pill-btn:hover{background:rgba(255,255,255,0.26)}
 .hero-pill-btn svg{flex-shrink:0}
 
 .kpi-strip{
-  display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px;margin-bottom:14px;
+  display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-bottom:12px;
 }
 @media(max-width:640px){
-  .kpi-strip{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  .kpi-strip{grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}
 }
 .kpi-card{
   position:relative;overflow:hidden;
-  background:var(--bg-card);
-  backdrop-filter:blur(24px) saturate(190%);
-  -webkit-backdrop-filter:blur(24px) saturate(190%);
-  border:1.5px solid var(--border-light);
-  border-radius:20px;padding:12px 13px;
+  background:var(--bg-card);border:1px solid var(--border-light);
+  border-radius:16px;padding:11px 12px;
   display:flex;align-items:center;justify-content:space-between;gap:8px;
   box-shadow:var(--shadow-card);
-  transition:transform .2s;
 }
-.kpi-card:hover{transform:translateY(-1px)}
 .kpi-art-bg{
-  position:absolute;right:0;bottom:0;width:84px;height:56px;pointer-events:none;opacity:0.20;
+  position:absolute;right:0;bottom:0;width:84px;height:56px;pointer-events:none;opacity:0.25;
 }
 .kpi-info{min-width:0;position:relative;z-index:1}
 .kpi-label{
-  font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:0.5px;
+  font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:0.4px;
   color:var(--text-muted);margin-bottom:3px;
   overflow-wrap:break-word;word-break:break-word;
 }
-.kpi-val{font-size:20px;font-weight:800;font-family:'JetBrains Mono',monospace;line-height:1.1}
+.kpi-val{font-size:19px;font-weight:800;font-family:'JetBrains Mono',monospace;line-height:1.1}
 .kpi-icon-box{
-  position:relative;z-index:1;width:38px;height:38px;border-radius:13px;
+  position:relative;z-index:1;width:36px;height:36px;border-radius:11px;
   display:flex;align-items:center;justify-content:center;flex-shrink:0;
-  border:1px solid rgba(255,255,255,0.8);
-  box-shadow:inset 0 1px 2px rgba(255,255,255,0.9);
 }
 
-.tab-section{display:none;animation:fadeSlide .22s cubic-bezier(0.22,1,0.36,1)}
+.tab-section{display:none;animation:fadeSlide .2s ease}
 .tab-section.active{display:block}
 @keyframes fadeSlide{
-  from{opacity:0;transform:translateY(6px)}
+  from{opacity:0;transform:translateY(5px)}
   to{opacity:1;transform:translateY(0)}
 }
 
@@ -5514,26 +4639,18 @@ input,select,textarea{font-size:16px !important;font-family:inherit;max-width:10
 
 .card{
   position:relative;overflow:hidden;
-  background:var(--bg-card);
-  backdrop-filter:blur(26px) saturate(195%);
-  -webkit-backdrop-filter:blur(26px) saturate(195%);
-  border:1.5px solid var(--border-light);
-  border-radius:24px;padding:15px;box-shadow:var(--shadow-card);
+  background:var(--bg-card);border:1px solid var(--border-light);
+  border-radius:20px;padding:14px;box-shadow:var(--shadow-card);
   margin-bottom:12px;width:100%;max-width:100%;
 }
-.card::before{
-  content:"";position:absolute;top:0;left:0;right:0;height:1px;
-  background:linear-gradient(90deg,transparent,rgba(255,255,255,0.98),transparent);
-  pointer-events:none;
-}
 .card-corner-art{
-  position:absolute;top:0;right:0;width:110px;height:70px;pointer-events:none;opacity:0.18;
+  position:absolute;top:0;right:0;width:110px;height:70px;pointer-events:none;opacity:0.22;
 }
 .card-head{
   position:relative;z-index:1;
   display:flex;align-items:center;justify-content:space-between;
   gap:8px;margin-bottom:12px;padding-bottom:10px;
-  border-bottom:1px solid rgba(255,255,255,0.68);flex-wrap:wrap;
+  border-bottom:1px solid #f1f5f9;flex-wrap:wrap;
 }
 .card-title{
   font-size:14px;font-weight:800;color:var(--text-primary);
@@ -5541,23 +4658,19 @@ input,select,textarea{font-size:16px !important;font-family:inherit;max-width:10
   overflow-wrap:break-word;word-break:break-word;line-height:1.3;
 }
 .card-title-icon{
-  width:30px;height:30px;border-radius:10px;
+  width:28px;height:28px;border-radius:9px;
   display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;
-  border:1px solid rgba(255,255,255,0.85);
-  box-shadow:inset 0 1px 1.5px rgba(255,255,255,0.9);
 }
 .badge{
   display:inline-flex;align-items:center;gap:4px;
-  padding:4.5px 10px;border-radius:999px;font-size:10.5px;font-weight:800;
+  padding:4px 9px;border-radius:999px;font-size:10.5px;font-weight:800;
   max-width:100%;white-space:normal;text-align:center;line-height:1.2;flex-shrink:0;
-  backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,0.75);
-  box-shadow:inset 0 1px 1px rgba(255,255,255,0.8);
 }
-.badge-red{background:var(--noel-red-soft);color:#be123c}
-.badge-green{background:var(--noel-pine-soft);color:#047857}
-.badge-blue{background:rgba(219,234,254,0.82);color:#1d4ed8}
-.badge-purple{background:rgba(237,233,254,0.82);color:#6d28d9}
-.badge-amber{background:rgba(254,243,199,0.85);color:#b45309}
+.badge-red{background:var(--noel-red-soft);color:var(--noel-red)}
+.badge-green{background:var(--noel-pine-soft);color:var(--noel-pine)}
+.badge-blue{background:#dbeafe;color:#1d4ed8}
+.badge-purple{background:#ede9fe;color:#6d28d9}
+.badge-amber{background:#fef3c7;color:#b45309}
 
 .form-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:9px;width:100%}
 .form-row-3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:9px;width:100%}
@@ -5565,50 +4678,41 @@ input,select,textarea{font-size:16px !important;font-family:inherit;max-width:10
   .form-row,.form-row-3{grid-template-columns:minmax(0,1fr)}
 }
 .sub-label{
-  display:block;font-size:11.5px;font-weight:800;color:var(--text-secondary);
+  display:block;font-size:11.5px;font-weight:700;color:var(--text-secondary);
   margin-bottom:4px;overflow-wrap:break-word;word-break:break-word;line-height:1.3;
 }
 .form-input,.form-select,.form-textarea{
-  width:100%;max-width:100%;padding:9.5px 12px;
-  background:rgba(255,255,255,0.76);
-  backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
-  border:1.5px solid rgba(255,255,255,0.92);
-  box-shadow:inset 0 2px 4px rgba(15,23,42,0.03),0 2px 6px rgba(15,23,42,0.03);
-  border-radius:13px;color:var(--text-primary);
+  width:100%;max-width:100%;padding:9px 11px;background:var(--bg-soft);
+  border:1.5px solid #cbd5e1;border-radius:12px;color:var(--text-primary);
   outline:none;transition:all .18s;
 }
 .form-input:focus,.form-select:focus,.form-textarea:focus{
-  border-color:var(--noel-red);background:rgba(255,255,255,0.96);
-  box-shadow:0 0 0 3px rgba(225,29,72,0.14),inset 0 1px 2px rgba(255,255,255,1);
+  border-color:var(--noel-red);background:#fff;box-shadow:0 0 0 3px rgba(190,18,60,0.10);
 }
-.form-textarea{resize:vertical;min-height:72px;line-height:1.45}
+.form-textarea{resize:vertical;min-height:70px;line-height:1.45}
 
 .seg-bar{
   display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;
-  background:rgba(255,255,255,0.48);backdrop-filter:blur(14px);
-  padding:5px;border-radius:15px;margin-bottom:12px;
-  border:1px solid rgba(255,255,255,0.82);
-  box-shadow:inset 0 1px 3px rgba(15,23,42,0.05);
-  width:100%;max-width:100%;
+  background:#f1f5f9;padding:5px;border-radius:14px;margin-bottom:12px;
+  border:1px solid #e2e8f0;width:100%;max-width:100%;
 }
 .seg-btn{
   position:relative;overflow:hidden;
-  padding:8.5px 6px;border:none;border-radius:11px;background:transparent;
-  color:var(--text-secondary);font-size:11.5px;font-weight:800;cursor:pointer;
+  padding:8px 6px;border:none;border-radius:10px;background:transparent;
+  color:var(--text-secondary);font-size:11.5px;font-weight:700;cursor:pointer;
   transition:all .18s;display:flex;align-items:center;justify-content:center;gap:6px;
   white-space:normal;text-align:center;line-height:1.25;width:100%;
 }
 .seg-btn svg{flex-shrink:0}
 .seg-btn.active{
-  background:rgba(255,255,255,0.92);color:var(--noel-red);
-  box-shadow:0 4px 12px rgba(15,23,42,0.08),inset 0 1px 1.5px rgba(255,255,255,1);
-  border:1px solid rgba(225,29,72,0.22);
+  background:#ffffff;color:var(--noel-red);
+  box-shadow:0 3px 10px rgba(15,23,42,0.08);
+  border:1px solid rgba(190,18,60,0.18);
 }
 
 .btn{
   position:relative;overflow:hidden;
-  padding:10.5px 12px;border-radius:14px;border:1px solid rgba(255,255,255,0.45);
-  font-weight:800;font-size:12.5px;
+  padding:10px 12px;border-radius:13px;border:none;font-weight:800;font-size:12.5px;
   cursor:pointer;transition:all .18s;
   display:inline-flex;align-items:center;justify-content:center;gap:7px;
   width:100%;max-width:100%;white-space:normal;text-align:center;line-height:1.3;
@@ -5617,44 +4721,41 @@ input,select,textarea{font-size:16px !important;font-family:inherit;max-width:10
 .btn svg.btn-ico{flex-shrink:0;position:relative;z-index:2}
 .btn span{position:relative;z-index:2;min-width:0}
 .btn::before{
-  content:"";position:absolute;inset:0;pointer-events:none;opacity:0.32;
+  content:"";position:absolute;inset:0;pointer-events:none;opacity:0.26;
   background-image:
-    radial-gradient(circle at 14% 25%, rgba(255,255,255,0.75) 0, rgba(255,255,255,0.75) 2px, transparent 2.5px),
-    radial-gradient(circle at 85% 30%, rgba(253,230,138,0.85) 0, rgba(253,230,138,0.85) 2.2px, transparent 3px),
-    linear-gradient(120deg, rgba(255,255,255,0.32) 0%, transparent 45%, rgba(255,255,255,0.16) 100%);
+    radial-gradient(circle at 14% 25%, rgba(255,255,255,0.65) 0, rgba(255,255,255,0.65) 2px, transparent 2.5px),
+    radial-gradient(circle at 85% 30%, rgba(253,230,138,0.75) 0, rgba(253,230,138,0.75) 2.2px, transparent 3px),
+    radial-gradient(circle at 52% 78%, rgba(255,255,255,0.5) 0, rgba(255,255,255,0.5) 1.8px, transparent 2.5px),
+    linear-gradient(120deg, rgba(255,255,255,0.22) 0%, transparent 45%, rgba(255,255,255,0.12) 100%);
 }
 .btn:active{transform:scale(0.98)}
 .btn-primary{
-  background:linear-gradient(135deg,#e11d48 0%,#be123c 52%,#059669 100%);
-  color:#fff;box-shadow:0 10px 20px -5px rgba(225,29,72,0.38),inset 0 1px 1.5px rgba(255,255,255,0.65);
+  background:linear-gradient(135deg,#be123c 0%,#9f1239 55%,#047857 100%);
+  color:#fff;box-shadow:0 8px 18px -5px rgba(190,18,60,0.38);
 }
 .btn-indigo{
-  background:linear-gradient(135deg,#4f46e5 0%,#7c3aed 58%,#e11d48 100%);
-  color:#fff;box-shadow:0 10px 20px -5px rgba(79,70,229,0.35),inset 0 1px 1.5px rgba(255,255,255,0.65);
+  background:linear-gradient(135deg,#4338ca 0%,#6d28d9 60%,#be123c 100%);
+  color:#fff;box-shadow:0 8px 18px -5px rgba(79,70,229,0.35);
 }
 .btn-emerald{
-  background:linear-gradient(135deg,#059669 0%,#10b981 55%,#0284c7 100%);
-  color:#fff;box-shadow:0 10px 20px -5px rgba(5,150,105,0.35),inset 0 1px 1.5px rgba(255,255,255,0.65);
+  background:linear-gradient(135deg,#047857 0%,#059669 60%,#0d9488 100%);
+  color:#fff;box-shadow:0 8px 18px -5px rgba(4,120,87,0.35);
 }
 .btn-danger{
-  background:linear-gradient(135deg,#ef4444 0%,#be123c 100%);
-  color:#fff;box-shadow:0 8px 16px -4px rgba(225,29,72,0.32),inset 0 1px 1.5px rgba(255,255,255,0.6);
+  background:linear-gradient(135deg,#dc2626 0%,#b91c1c 100%);
+  color:#fff;box-shadow:0 6px 14px -4px rgba(220,38,38,0.32);
 }
 .btn-soft{
-  background:rgba(255,255,255,0.68);backdrop-filter:blur(12px);
-  color:var(--text-secondary);border:1px solid rgba(255,255,255,0.92);
-  box-shadow:0 3px 10px rgba(15,23,42,0.05),inset 0 1px 1.5px rgba(255,255,255,0.95);
+  background:#f1f5f9;color:var(--text-secondary);border:1px solid #cbd5e1;
 }
 .btn-soft::before{display:none}
-.btn-soft:hover{background:rgba(255,255,255,0.92);color:var(--text-primary)}
-.btn-sm{padding:6.5px 11px;font-size:11.5px;border-radius:11px;width:auto}
+.btn-soft:hover{background:#e2e8f0;color:var(--text-primary)}
+.btn-sm{padding:6px 10px;font-size:11.5px;border-radius:10px;width:auto}
 
 .check-pill{
-  display:flex;align-items:flex-start;gap:8px;padding:9.5px 11px;
-  background:rgba(255,255,255,0.58);backdrop-filter:blur(12px);
-  border:1px solid rgba(255,255,255,0.88);border-radius:13px;
-  box-shadow:inset 0 1px 1.5px rgba(255,255,255,0.9);
-  font-size:12px;font-weight:700;color:var(--text-secondary);cursor:pointer;
+  display:flex;align-items:flex-start;gap:8px;padding:9px 10px;
+  background:var(--bg-soft);border:1px solid #e2e8f0;border-radius:12px;
+  font-size:12px;font-weight:600;color:var(--text-secondary);cursor:pointer;
   width:100%;max-width:100%;overflow-wrap:anywhere;word-break:break-word;line-height:1.35;
 }
 .check-pill input{
@@ -5663,89 +4764,74 @@ input,select,textarea{font-size:16px !important;font-family:inherit;max-width:10
 .check-pill span{flex:1;min-width:0;overflow-wrap:anywhere;word-break:break-word}
 
 .upload-zone{
-  position:relative;border:2px dashed rgba(225,29,72,0.45);border-radius:18px;
-  background:linear-gradient(180deg,rgba(255,241,242,0.65) 0%,rgba(255,255,255,0.55) 100%);
-  backdrop-filter:blur(14px);
+  position:relative;border:2px dashed #fda4af;border-radius:16px;
+  background:linear-gradient(180deg,#fff1f2 0%,#f8fafc 100%);
   padding:16px 12px;text-align:center;cursor:pointer;transition:all .2s;margin-bottom:10px;
   overflow:hidden;width:100%;
-  box-shadow:inset 0 1px 2px rgba(255,255,255,0.9);
 }
 .upload-zone:hover,.upload-zone.dragover{
-  border-color:var(--noel-red);background:rgba(255,228,230,0.72);
+  border-color:var(--noel-red);background:#ffe4e6;
 }
 .upload-zone input[type="file"]{
   position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%;
 }
 .upload-icon-circle{
-  width:44px;height:44px;border-radius:14px;background:rgba(255,255,255,0.9);color:var(--noel-red);
+  width:42px;height:42px;border-radius:13px;background:#ffffff;color:var(--noel-red);
   display:inline-flex;align-items:center;justify-content:center;margin-bottom:6px;
-  box-shadow:0 6px 14px rgba(225,29,72,0.14),inset 0 1px 1.5px rgba(255,255,255,1);
+  box-shadow:0 4px 12px rgba(190,18,60,0.12);
 }
 .upload-progress-wrap{
-  display:none;margin-top:8px;background:rgba(226,232,240,0.7);border-radius:999px;height:7px;overflow:hidden;
+  display:none;margin-top:8px;background:#e2e8f0;border-radius:999px;height:7px;overflow:hidden;
 }
 .upload-progress-bar{
-  height:100%;width:0%;background:linear-gradient(90deg,#e11d48,#059669);transition:width .25s ease;
+  height:100%;width:0%;background:linear-gradient(90deg,#be123c,#047857);transition:width .25s ease;
 }
 
 .scroll-box{
-  max-height:290px;overflow-y:auto;overflow-x:hidden;padding-right:2px;width:100%;
+  max-height:280px;overflow-y:auto;overflow-x:hidden;padding-right:2px;width:100%;
 }
 .scroll-box::-webkit-scrollbar{width:4px}
-.scroll-box::-webkit-scrollbar-thumb{background:rgba(148,163,184,0.6);border-radius:4px}
+.scroll-box::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:4px}
 
 .list-item{
   display:flex;align-items:center;justify-content:space-between;gap:8px;
-  padding:9.5px 11px;
-  background:rgba(255,255,255,0.58);
-  backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
-  border:1px solid rgba(255,255,255,0.86);
-  box-shadow:0 4px 12px -2px rgba(15,23,42,0.04),inset 0 1px 1.5px rgba(255,255,255,0.92);
-  border-radius:15px;margin-bottom:7px;transition:all .16s;
+  padding:9px 10px;background:var(--bg-soft);border:1px solid #e2e8f0;
+  border-radius:13px;margin-bottom:7px;transition:all .15s;
   width:100%;max-width:100%;flex-wrap:wrap;
 }
-.list-item:hover{
-  border-color:rgba(225,29,72,0.42);background:rgba(255,255,255,0.82);
-  transform:translateY(-1px);
-}
+.list-item:hover{border-color:#fda4af;background:#ffffff}
 .item-title{
-  font-size:12.5px;font-weight:800;color:var(--text-primary);
+  font-size:12.5px;font-weight:700;color:var(--text-primary);
   overflow-wrap:anywhere;word-break:break-word;line-height:1.3;
 }
 .item-sub{
-  font-size:11px;color:var(--text-muted);margin-top:2px;font-weight:600;
+  font-size:11px;color:var(--text-muted);margin-top:2px;
   overflow-wrap:anywhere;word-break:break-word;line-height:1.3;
 }
 
 .info-banner{
-  background:linear-gradient(135deg,rgba(255,241,242,0.76) 0%,rgba(236,253,245,0.76) 100%);
-  backdrop-filter:blur(12px);
-  border:1px solid rgba(255,255,255,0.9);
-  box-shadow:inset 0 1px 2px rgba(255,255,255,0.95);
-  border-radius:15px;padding:10px 12px;
+  background:linear-gradient(135deg,#fff1f2 0%,#ecfdf5 100%);
+  border:1px solid #fecdd3;border-radius:13px;padding:10px 11px;
   font-size:11.5px;color:#881337;line-height:1.45;margin-bottom:10px;
   overflow-wrap:anywhere;word-break:break-word;width:100%;
 }
 
 .bottom-dock-wrap{
   position:fixed;bottom:10px;left:50%;transform:translateX(-50%);
-  z-index:999;width:calc(100vw - 18px);max-width:468px;
-  background:rgba(255,255,255,0.68);
-  backdrop-filter:blur(28px) saturate(210%);
-  -webkit-backdrop-filter:blur(28px) saturate(210%);
-  border:1.5px solid rgba(255,255,255,0.92);
-  border-radius:999px;padding:5.5px 7px;
-  box-shadow:0 20px 44px -8px rgba(15,23,42,0.20),0 4px 14px -2px rgba(225,29,72,0.12),inset 0 1.5px 2px rgba(255,255,255,0.98);
+  z-index:999;width:calc(100vw - 16px);max-width:470px;
+  background:rgba(255,255,255,0.94);backdrop-filter:blur(16px);
+  border:1.5px solid #cbd5e1;border-radius:18px;padding:4px;
+  box-shadow:0 14px 32px -6px rgba(15,23,42,0.18),0 4px 10px -2px rgba(190,18,60,0.10);
 }
 .bottom-dock{
-  display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px;width:100%;
+  display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:3px;width:100%;
 }
 .tab-btn{
   position:relative;overflow:hidden;
-  padding:6.5px 2px;border-radius:999px;border:none;background:transparent;
-  color:var(--text-muted);font-weight:800;font-size:10px;cursor:pointer;
+  padding:5px 2px;border-radius:13px;border:none;background:transparent;
+  color:var(--text-muted);font-weight:700;font-size:10.5px;cursor:pointer;
   display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;
-  transition:all .22s cubic-bezier(0.22,1,0.36,1);line-height:1.1;text-align:center;min-width:0;
+  transition:all .18s;line-height:1.15;text-align:center;min-width:0;
 }
 .tab-btn svg.tab-ico{
   width:17px;height:17px;flex-shrink:0;transition:transform .18s;
@@ -5754,21 +4840,19 @@ input,select,textarea{font-size:16px !important;font-family:inherit;max-width:10
   display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   font-size:10px;letter-spacing:-0.1px;
 }
-.tab-btn:hover{color:var(--text-primary);background:rgba(255,255,255,0.65)}
+.tab-btn:hover{color:var(--text-primary);background:#f1f5f9}
 .tab-btn.active{
-  background:linear-gradient(135deg,rgba(225,29,72,0.92) 0%,rgba(5,150,105,0.92) 100%);
-  color:#ffffff;
-  box-shadow:0 6px 16px -3px rgba(225,29,72,0.42),inset 0 1px 1.5px rgba(255,255,255,0.65);
+  background:linear-gradient(135deg,#be123c 0%,#047857 100%);
+  color:#ffffff;box-shadow:0 4px 12px -2px rgba(190,18,60,0.40);
 }
 .tab-btn.active svg.tab-ico{transform:translateY(-1px)}
 .tab-count{
   position:absolute;top:2px;right:4px;
   padding:1px 4.5px;border-radius:999px;font-size:9px;font-weight:800;
-  background:rgba(255,255,255,0.88);color:#1e293b;line-height:1.2;
-  border:1px solid rgba(255,255,255,0.95);
+  background:#e2e8f0;color:#334155;line-height:1.2;
 }
 .tab-btn.active .tab-count{
-  background:#fde68a;color:#881337;border-color:#fef3c7;
+  background:#fde68a;color:#881337;
 }
 
 #toastBox{
@@ -5776,10 +4860,8 @@ input,select,textarea{font-size:16px !important;font-family:inherit;max-width:10
   display:flex;flex-direction:column;align-items:flex-end;gap:7px;pointer-events:none;
 }
 .toast-msg{
-  background:rgba(15,23,42,0.88);backdrop-filter:blur(16px);
-  border:1px solid rgba(255,255,255,0.22);
-  color:#fff;padding:10.5px 15px;border-radius:15px;
-  font-size:12px;font-weight:700;box-shadow:0 12px 28px rgba(15,23,42,0.25);
+  background:#0f172a;color:#fff;padding:10px 14px;border-radius:13px;
+  font-size:12px;font-weight:700;box-shadow:0 10px 24px rgba(15,23,42,0.22);
   display:flex;align-items:center;gap:8px;max-width:100%;
   overflow-wrap:anywhere;word-break:break-word;
 }
@@ -5897,7 +4979,7 @@ input,select,textarea{font-size:16px !important;font-family:inherit;max-width:10
             <span class="badge badge-green">Anti-Die-All 24/7</span>
           </div>
 
-          <form method="POST" action="/account/add" onsubmit="return handleAccountFormSubmit(event)">
+          <form method="POST" action="/account/add">
             <input type="hidden" name="platform" id="accPlatformInput" value="zalo">
 
             <div class="seg-bar">
@@ -5953,34 +5035,26 @@ input,select,textarea{font-size:16px !important;font-family:inherit;max-width:10
 
               <div id="discordLoginBox" style="display:none;margin-bottom:9px">
                 <div class="info-banner">
-                  <strong>Đăng nhập Gmail + Mật khẩu Discord (/api/v9/auth/login):</strong><br>
-                  • Nếu đăng nhập từ Server mới, Discord có thể gửi 1 email <strong>"Verify Login" (Xác nhận vị trí đăng nhập mới)</strong> về Gmail của bạn — hãy mở Gmail bấm xác nhận rồi bấm lại nút dưới đây là vào thẳng!<br>
-                  • Có thể dán thẳng <code>email:pass:token</code> vào ô Email.
+                  Khởi tạo <code>X-Fingerprint</code> chuẩn Chrome 131 để lấy Token sạch hạn chế checkpoint:
                 </div>
-                <div id="discordRegStatusBox" style="display:none;margin-bottom:9px;padding:10px 11px;border-radius:12px;font-size:12px;font-weight:700;line-height:1.45;overflow-wrap:anywhere"></div>
                 <div style="margin-bottom:8px">
-                  <label class="sub-label">Email (Gmail) hoặc SĐT Discord</label>
-                  <input class="form-input" name="reg_email" id="regDisEmail" placeholder="nhap_email@gmail.com hoặc email:pass:token">
+                  <label class="sub-label">Email hoặc SĐT Discord</label>
+                  <input class="form-input" id="regDisEmail" placeholder="nhap_email@gmail.com">
                 </div>
                 <div class="form-row">
                   <div>
                     <label class="sub-label">Mật khẩu</label>
-                    <input class="form-input" type="password" name="reg_password" id="regDisPass" placeholder="Mật khẩu Discord...">
+                    <input class="form-input" type="password" id="regDisPass" placeholder="Mật khẩu...">
                   </div>
                   <div>
-                    <label class="sub-label">Mã 2FA / SMS (Nếu có)</label>
-                    <input class="form-input" name="reg_2fa" id="regDis2FA" placeholder="6 số 2FA...">
+                    <label class="sub-label">Mã 2FA (Nếu có)</label>
+                    <input class="form-input" id="regDis2FA" placeholder="6 số 2FA...">
                   </div>
                 </div>
-                <div style="display:flex;flex-direction:column;gap:6px">
-                  <button type="button" class="btn btn-indigo" id="btnExtractDisReg" onclick="extractDiscordTokenByReg()">
-                    <svg class="btn-ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
-                    <span>ĐĂNG NHẬP GMAIL DISCORD & LƯU TÀI KHOẢN</span>
-                  </button>
-                  <button type="button" class="btn btn-soft btn-sm" style="width:100%" onclick="copyDiscordTokenScript()">
-                    <span>Sao Chép Lệnh Lấy Token Nhanh (Dự phòng khi IP Server vướng Captcha)</span>
-                  </button>
-                </div>
+                <button type="button" class="btn btn-indigo" onclick="extractDiscordTokenByReg()">
+                  <svg class="btn-ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+                  <span>LẤY TOKEN REG SẠCH & LƯU</span>
+                </button>
               </div>
             </div>
 
@@ -5990,8 +5064,8 @@ input,select,textarea{font-size:16px !important;font-family:inherit;max-width:10
                 <span>Bật nhận lệnh trong khung chat 24/7 ( .menu , .nhay , .ngon , .stop )</span>
               </label>
               <label class="check-pill">
-                <input type="checkbox" name="allow_all_cmd" value="1" checked>
-                <span>Cho phép mọi người trong phòng dùng lệnh (Khuyên bật để gõ .menu từ nick phụ)</span>
+                <input type="checkbox" name="allow_all_cmd" value="1">
+                <span>Cho phép mọi người trong phòng dùng lệnh</span>
               </label>
             </div>
 
@@ -6460,57 +5534,15 @@ function switchDiscordRegTab(mode) {
   document.getElementById('discordLoginBox').style.display = (mode === 'login') ? 'block' : 'none';
 }
 
-function setDiscordRegStatus(msg, isSuccess) {
-  const box = document.getElementById('discordRegStatusBox');
-  if (!box) return;
-  box.style.display = 'block';
-  if (isSuccess) {
-    box.style.background = '#d1fae5';
-    box.style.border = '1px solid #6ee7b7';
-    box.style.color = '#065f46';
-  } else {
-    box.style.background = '#fef2f2';
-    box.style.border = '1px solid #fecaca';
-    box.style.color = '#b91c1c';
-  }
-  box.innerHTML = msg;
-}
-
-function handleAccountFormSubmit(ev) {
-  const plat = document.getElementById('accPlatformInput').value;
-  if (plat === 'discord') {
-    const tkVal = (document.getElementById('discordTokenInput').value || '').trim();
-    const emVal = (document.getElementById('regDisEmail').value || '').trim();
-    const loginBoxVisible = document.getElementById('discordLoginBox').style.display !== 'none';
-    if (!tkVal && (loginBoxVisible || emVal)) {
-      ev.preventDefault();
-      extractDiscordTokenByReg();
-      return false;
-    }
-  }
-  return true;
-}
-
-function copyDiscordTokenScript() {
-  const snippet = `javascript:(function(){let m=[];webpackChunkdiscord_app.push([[Symbol()],{},e=>{for(let c of Object.values(e.c)){try{if(c?.exports?.default?.getToken){let t=c.exports.default.getToken();if(typeof t==='string')m.push(t)}}catch{}}}]);prompt('Copy Token Discord cua ban:',m[0]||'Mo tab discord.com/app roi chay lai');})();`;
-  if (navigator.clipboard) {
-    navigator.clipboard.writeText(snippet);
-  }
-  setDiscordRegStatus('Đã sao chép lệnh lấy Token! Nếu IP máy chủ bị Discord chặn Captcha khi đăng nhập bằng mật khẩu, bạn chỉ cần mở <code>discord.com/app</code> trên trình duyệt, dán lệnh vừa copy vào thanh địa chỉ để lấy Token rồi dán sang ô "Dán Token / Chuỗi Reg" là vào thẳng 100%!', true);
-  showToast('Đã sao chép lệnh lấy Token nhanh!');
-}
-
 async function extractDiscordTokenByReg() {
   const email = document.getElementById('regDisEmail').value.trim();
   const password = document.getElementById('regDisPass').value.trim();
   const two_fa = document.getElementById('regDis2FA').value.trim();
-  if (!email && !password) {
-    setDiscordRegStatus('Vui lòng nhập đầy đủ Gmail và Mật khẩu Discord (hoặc chuỗi email:pass:token)!', false);
+  if (!email || !password) {
     showToast('Vui lòng nhập đầy đủ Email và Mật khẩu Discord!');
     return;
   }
-  setDiscordRegStatus('Đang kết nối tới máy chủ xác thực Discord (/api/v9/auth/login)...', true);
-  showToast('Đang xác thực tài khoản Discord...');
+  showToast('Đang tạo phiên Reg Stealth Chrome 131...');
   try {
     const r = await fetch('/api/discord/reg_login', {
       method: 'POST',
@@ -6520,15 +5552,12 @@ async function extractDiscordTokenByReg() {
     const d = await r.json();
     if (d.ok) {
       document.getElementById('discordTokenInput').value = d.token || '';
-      setDiscordRegStatus(d.message || 'Đăng nhập thành công! Đang lưu tài khoản...', true);
       showToast(d.message || 'Đã lấy Token sạch & lưu thành công!');
-      setTimeout(() => location.reload(), 800);
+      setTimeout(() => location.reload(), 900);
     } else {
-      setDiscordRegStatus(d.error || 'Không thể đăng nhập bằng mật khẩu', false);
       showToast(d.error || 'Không thể lấy Token');
     }
   } catch (e) {
-    setDiscordRegStatus('Lỗi kết nối tới máy chủ. Vui lòng thử lại.', false);
     showToast('Lỗi kết nối máy chủ');
   }
 }
@@ -6622,53 +5651,41 @@ async function loadGroupsAndRooms(forceRefresh) {
   }
 }
 
-function escapeHtmlSafe(s) {
-  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
 function renderTargetList() {
   const box = document.getElementById('targetListContainer');
   const q = (document.getElementById('roomSearchInput').value || '').toLowerCase().trim();
-  const indexed = ALL_TARGETS.map((t, idx) => ({t, idx})).filter(item => !q || (item.t.name || '').toLowerCase().includes(q) || String(item.t.id).includes(q));
-  if (!indexed.length) {
+  const filtered = ALL_TARGETS.filter(t => !q || t.name.toLowerCase().includes(q) || t.id.includes(q));
+  if (!filtered.length) {
     box.innerHTML = '<div style="text-align:center;padding:22px;color:var(--text-muted)">Không tìm thấy phòng phù hợp.</div>';
     return;
   }
-  box.innerHTML = indexed.map(({t, idx}) => {
-    const checked = SELECTED_TARGETS.has(String(t.id)) ? 'checked' : '';
+  box.innerHTML = filtered.map(t => {
+    const checked = SELECTED_TARGETS.has(t.id) ? 'checked' : '';
     const badgeClass = t.type === 'discord_channel' ? 'badge-purple' : (t.type === 'group' ? 'badge-blue' : 'badge-green');
     const badgeTxt = t.type === 'discord_channel' ? 'DISCORD' : (t.type === 'group' ? 'NHÓM ZALO' : 'BẠN BÈ');
+    const safeName = t.name.replace(/'/g, "\\'");
     return `
       <div class="list-item">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;flex:1;min-width:0">
-          <input type="checkbox" ${checked} data-idx="${idx}" onchange="toggleTargetByIdx(this.dataset.idx, this.checked)" style="width:16px;height:16px;accent-color:var(--noel-red);flex-shrink:0">
+          <input type="checkbox" ${checked} onchange="toggleTargetItem('${t.id}', '${safeName}', '${t.type}', this.checked)" style="width:16px;height:16px;accent-color:var(--noel-red);flex-shrink:0">
           <div style="min-width:0;flex:1">
             <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap">
               <span class="badge ${badgeClass}">${badgeTxt}</span>
-              <span class="item-title">${escapeHtmlSafe(t.name)}</span>
+              <span class="item-title">${t.name}</span>
             </div>
-            <div class="item-sub">ID: <code>${escapeHtmlSafe(String(t.id).slice(-6))}</code> • Thành viên: ${escapeHtmlSafe(t.members)}</div>
+            <div class="item-sub">ID: <code>${t.id.slice(-6)}</code> • Thành viên: ${t.members}</div>
           </div>
         </label>
-        ${(t.type === 'group' || t.type === 'discord_channel') ? `<button class="btn btn-soft btn-sm" type="button" data-idx="${idx}" onclick="fetchRoomMembersByIdx(this.dataset.idx)">Lấy Thành Viên</button>` : ''}
+        ${(t.type === 'group' || t.type === 'discord_channel') ? `<button class="btn btn-soft btn-sm" type="button" onclick="fetchRoomMembers('${t.id}', '${t.type}')">Lấy Thành Viên</button>` : ''}
       </div>
     `;
   }).join('');
 }
 
-function toggleTargetByIdx(idx, isChecked) {
-  const item = ALL_TARGETS[Number(idx)];
-  if (!item) return;
-  const idStr = String(item.id);
-  if (isChecked) SELECTED_TARGETS.set(idStr, {id: idStr, name: item.name, type: item.type});
-  else SELECTED_TARGETS.delete(idStr);
+function toggleTargetItem(id, name, type, isChecked) {
+  if (isChecked) SELECTED_TARGETS.set(String(id), {id: String(id), name, type});
+  else SELECTED_TARGETS.delete(String(id));
   updateTargetBadges();
-}
-
-function fetchRoomMembersByIdx(idx) {
-  const item = ALL_TARGETS[Number(idx)];
-  if (!item) return;
-  fetchRoomMembers(String(item.id), item.type);
 }
 
 function selectAllTargets() {
@@ -6721,21 +5738,22 @@ async function fetchRoomMembers(roomId, roomType) {
 function renderMemberList() {
   const box = document.getElementById('memberListContainer');
   const q = (document.getElementById('memberSearchInput').value || '').toLowerCase().trim();
-  const indexed = CURRENT_MEMBERS.map((m, idx) => ({m, idx})).filter(({m}) => !q || (m.name || '').toLowerCase().includes(q) || String(m.uid || m.id).includes(q));
-  if (!indexed.length) {
+  const list = CURRENT_MEMBERS.filter(m => !q || (m.name || '').toLowerCase().includes(q) || String(m.uid || m.id).includes(q));
+  if (!list.length) {
     box.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted)">Không có thành viên khớp bộ lọc.</div>';
     return;
   }
-  box.innerHTML = indexed.map(({m, idx}) => {
+  box.innerHTML = list.map(m => {
     const uid = String(m.uid || m.id);
     const checked = SELECTED_MENTIONS.has(uid) ? 'checked' : '';
+    const safeName = (m.name || '').replace(/'/g, "\\'");
     return `
       <div class="list-item">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;flex:1;min-width:0">
-          <input type="checkbox" ${checked} data-idx="${idx}" onchange="toggleMentionByIdx(this.dataset.idx, this.checked)" style="width:16px;height:16px;accent-color:var(--noel-red);flex-shrink:0">
+          <input type="checkbox" ${checked} onchange="toggleMentionUser('${uid}', '${safeName}', this.checked)" style="width:16px;height:16px;accent-color:var(--noel-red);flex-shrink:0">
           <div style="min-width:0;flex:1">
-            <div class="item-title">@${escapeHtmlSafe(m.name)}</div>
-            <div class="item-sub">UID: <code>${escapeHtmlSafe(uid.slice(-6))}</code></div>
+            <div class="item-title">@${m.name}</div>
+            <div class="item-sub">UID: <code>${uid.slice(-6)}</code></div>
           </div>
         </label>
       </div>
@@ -6743,12 +5761,9 @@ function renderMemberList() {
   }).join('');
 }
 
-function toggleMentionByIdx(idx, isChecked) {
-  const m = CURRENT_MEMBERS[Number(idx)];
-  if (!m) return;
-  const uid = String(m.uid || m.id);
-  if (isChecked) SELECTED_MENTIONS.set(uid, {uid, id: uid, name: m.name});
-  else SELECTED_MENTIONS.delete(uid);
+function toggleMentionUser(uid, name, isChecked) {
+  if (isChecked) SELECTED_MENTIONS.set(String(uid), {uid: String(uid), id: String(uid), name});
+  else SELECTED_MENTIONS.delete(String(uid));
   updateTagSummary();
 }
 
@@ -6841,18 +5856,7 @@ async function stopSingleTask(tid) {
   pollSystemStatus();
 }
 
-let _isPollingStatus = false;
-const _domCache = {tasks: '', health: '', logs: ''};
-
-function updateDomIfChanged(el, cacheKey, newHtml) {
-  if (!el || _domCache[cacheKey] === newHtml) return;
-  _domCache[cacheKey] = newHtml;
-  el.innerHTML = newHtml;
-}
-
 async function pollSystemStatus() {
-  if (_isPollingStatus) return;
-  _isPollingStatus = true;
   try {
     const r = await fetch('/api/status');
     const d = await r.json();
@@ -6866,9 +5870,10 @@ async function pollSystemStatus() {
     document.getElementById('kpiTotalSent').textContent = totalSent;
 
     const tBox = document.getElementById('activeTasksContainer');
-    const nextTasksHtml = !tasks.length
-      ? '<div style="text-align:center;padding:22px;color:var(--text-muted);font-size:12.5px">Chưa có chiến dịch nào đang chạy.</div>'
-      : tasks.map(t => `
+    if (!tasks.length) {
+      tBox.innerHTML = '<div style="text-align:center;padding:22px;color:var(--text-muted);font-size:12.5px">Chưa có chiến dịch nào đang chạy.</div>';
+    } else {
+      tBox.innerHTML = tasks.map(t => `
         <div class="list-item">
           <div style="min-width:0;flex:1">
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
@@ -6880,11 +5885,11 @@ async function pollSystemStatus() {
           ${t.status.includes('Đang chạy') ? `<button class="btn btn-danger btn-sm" onclick="stopSingleTask('${t.id}')">Dừng</button>` : ''}
         </div>
       `).join('');
-    updateDomIfChanged(tBox, 'tasks', nextTasksHtml);
+    }
 
     const hBox = document.getElementById('healthShieldBox');
     const healthList = d.accounts_health || [];
-    const nextHealthHtml = healthList.map(h => `
+    hBox.innerHTML = healthList.map(h => `
       <div class="list-item">
         <div style="min-width:0;flex:1">
           <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
@@ -6896,11 +5901,10 @@ async function pollSystemStatus() {
         </div>
       </div>
     `).join('') || '<div style="text-align:center;padding:18px;color:var(--text-muted)">Chưa có tài khoản kết nối</div>';
-    updateDomIfChanged(hBox, 'health', nextHealthHtml);
 
     const cBox = document.getElementById('cmdLogBox');
     const logs = d.cmd_logs || [];
-    const nextLogsHtml = logs.map(l => `
+    cBox.innerHTML = logs.map(l => `
       <div class="list-item">
         <div style="min-width:0;flex:1">
           <div class="item-title"><code>${l.cmd_text}</code></div>
@@ -6908,25 +5912,11 @@ async function pollSystemStatus() {
         </div>
       </div>
     `).join('') || '<div style="text-align:center;padding:18px;color:var(--text-muted)">Chưa có nhật ký lệnh</div>';
-    updateDomIfChanged(cBox, 'logs', nextLogsHtml);
-  } catch (e) {
-  } finally {
-    _isPollingStatus = false;
-  }
+  } catch (e) {}
 }
 
-function scheduleAdaptivePoll() {
-  const waitMs = document.hidden ? 6500 : 2200;
-  setTimeout(async () => {
-    await pollSystemStatus();
-    scheduleAdaptivePoll();
-  }, waitMs);
-}
-document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) pollSystemStatus();
-});
+setInterval(pollSystemStatus, 2600);
 pollSystemStatus();
-scheduleAdaptivePoll();
 </script>
 </body>
 </html>"""
@@ -7081,7 +6071,7 @@ def api_discord_reg_login():
         conn = db()
         conn.execute(
             """INSERT INTO accounts (name, platform, imei, cookies, token, is_bot, uid, chat_cmd_enabled, cmd_prefix, allow_all_cmd, enabled, created_at)
-               VALUES (?, 'discord', '', '{}', ?, 0, ?, 1, '.', 1, 1, ?)""",
+               VALUES (?, 'discord', '', '{}', ?, 0, ?, 1, '.', 0, 1, ?)""",
             (uname, token, uid, time.time()),
         )
         conn.commit()
@@ -7103,25 +6093,21 @@ def account_add():
 
     if platform == "discord":
         raw_token_input = (request.form.get("token") or "").strip()
-        reg_email = (request.form.get("reg_email") or "").strip()
-        reg_password = (request.form.get("reg_password") or "").strip()
-        reg_2fa = (request.form.get("reg_2fa") or "").strip()
         is_bot = 1 if request.form.get("is_bot") else 0
         tokens = extract_discord_tokens_from_reg_or_raw(raw_token_input)
-        if not tokens and (reg_email or reg_password):
-            res_login = login_discord_reg_session(reg_email, reg_password, reg_2fa)
-            if res_login.get("ok") and res_login.get("token"):
-                tokens = [res_login["token"]]
         if not tokens:
             return redirect("/")
 
         conn = db()
         for idx, tk in enumerate(tokens):
-            w_res = warmup_discord_stealth_token(tk)
-            uid = str(w_res.get("uid") or "")
-            acc_name = custom_name or w_res.get("username") or f"Discord Stealth #{idx + 1}"
-            if uid:
-                OWNER_UIDS_CACHE.add(uid)
+            warmup_discord_stealth_token(tk)
+            bot = DiscordBot(tk, is_bot=bool(is_bot))
+            uid = ""
+            acc_name = custom_name or f"Discord Stealth #{idx + 1}"
+            if bot.check():
+                uid = str(bot.user_id or "")
+                if not custom_name and bot.username:
+                    acc_name = bot.username
             conn.execute(
                 """INSERT INTO accounts (name, platform, imei, cookies, token, is_bot, uid, chat_cmd_enabled, cmd_prefix, allow_all_cmd, enabled, created_at)
                    VALUES (?, 'discord', '', '{}', ?, ?, ?, ?, '.', ?, 1, ?)""",
@@ -7132,17 +6118,30 @@ def account_add():
         sync_all_zalo_listeners()
         return redirect("/")
 
-    raw_imei = (request.form.get("imei") or "").strip()
+    imei = (request.form.get("imei") or "").strip()
     raw_cookies = (request.form.get("cookies") or "").strip()
-    imei = extract_imei_from_raw_input(raw_imei, raw_cookies)
-    cookies_dict = normalize_zalo_cookies(raw_cookies or raw_imei)
-    if not imei or not cookies_dict:
+    if not imei or not raw_cookies:
         return redirect("/")
+
+    cookies_dict = {}
+    try:
+        parsed = json.loads(raw_cookies)
+        if isinstance(parsed, dict):
+            cookies_dict = parsed
+        elif isinstance(parsed, list):
+            for c in parsed:
+                if isinstance(c, dict) and c.get("name") and c.get("value") is not None:
+                    cookies_dict[c["name"]] = str(c["value"])
+    except Exception:
+        for part in raw_cookies.split(";"):
+            if "=" in part:
+                k, v = part.strip().split("=", 1)
+                cookies_dict[k.strip()] = v.strip()
 
     uid = ""
     acc_name = custom_name or f"Zalo_{imei[-4:]}"
     try:
-        z = Zalo.get_pooled_client(imei, cookies_dict)
+        z = Zalo(imei, cookies_dict)
         uid = z.uid or ""
         if not custom_name and z.display_name:
             acc_name = z.display_name
@@ -7201,7 +6200,6 @@ def api_toggle_allow_all():
 
 @app.route("/api/all_groups")
 def api_all_groups():
-    force = request.args.get("refresh") == "1"
     conn = db()
     rows = [dict(r) for r in conn.execute("SELECT * FROM accounts WHERE platform='zalo'").fetchall()]
     conn.close()
@@ -7209,10 +6207,10 @@ def api_all_groups():
     friends_map = {}
     for r in rows:
         try:
-            z = Zalo.get_pooled_client(r["imei"], r["cookies"])
-            for g in z.groups(use_cache=not force):
+            z = Zalo(r["imei"], r["cookies"])
+            for g in z.groups():
                 groups_map[str(g["id"])] = g
-            for f in z.friends(use_cache=not force):
+            for f in z.friends():
                 friends_map[str(f["id"])] = f
         except Exception:
             continue
@@ -7230,7 +6228,7 @@ def api_group_members():
     conn.close()
     for r in rows:
         try:
-            z = Zalo.get_pooled_client(r["imei"], r["cookies"])
+            z = Zalo(r["imei"], r["cookies"])
             mems = z.get_members_full(gid, use_cache=not force)
             if mems:
                 return jsonify({"members": mems})
@@ -7363,7 +6361,7 @@ def route_task_start():
         z_client = None
         if z_row:
             try:
-                z_client = Zalo.get_pooled_client(z_row["imei"], z_row["cookies"])
+                z_client = Zalo(z_row["imei"], z_row["cookies"])
             except Exception:
                 pass
         first_gid = next((t["id"] for t in targets if t.get("type") == "group"), None)
@@ -7394,14 +6392,6 @@ def route_task_start():
 
     if not blocks:
         return jsonify({"ok": False, "error": "Vui lòng chọn File kịch bản hoặc nhập nội dung!"}), 400
-
-    for t in targets:
-        if t.get("type") == "discord_channel" and t.get("id"):
-            for aid_k in list(ACTIVE_LISTENERS.keys()):
-                DiscordStealthAntiBanEngine.ACTIVE_DISCORD_POLL_CHANNELS[aid_k].add(str(t["id"]))
-        elif t.get("id"):
-            HOT_ACTIVE_ZALO_GROUPS.add(str(t["id"]))
-            ALL_KNOWN_ZALO_GROUP_IDS.add(str(t["id"]))
 
     tid = start_task_programmatic(
         targets=targets,
@@ -7451,17 +6441,8 @@ def route_task_stop_all():
     return jsonify({"ok": True, "stopped": cnt})
 
 
-_STATUS_SNAPSHOT_CACHE = {"ts": 0.0, "payload": None}
-_STATUS_CACHE_LOCK = threading.RLock()
-
-
 @app.route("/api/status")
 def api_status():
-    now = time.time()
-    with _STATUS_CACHE_LOCK:
-        if _STATUS_SNAPSHOT_CACHE["payload"] is not None and (now - _STATUS_SNAPSHOT_CACHE["ts"] < 0.75):
-            return jsonify(_STATUS_SNAPSHOT_CACHE["payload"])
-
     task_list = []
     try:
         conn = db()
@@ -7520,15 +6501,11 @@ def api_status():
             "created_at": l.get("created_at") or "",
         })
 
-    payload = {
+    return jsonify({
         "tasks": task_list,
         "accounts_health": health_out,
         "cmd_logs": masked_logs,
-    }
-    with _STATUS_CACHE_LOCK:
-        _STATUS_SNAPSHOT_CACHE["ts"] = time.time()
-        _STATUS_SNAPSHOT_CACHE["payload"] = payload
-    return jsonify(payload)
+    })
 
 
 if __name__ == "__main__":
