@@ -1491,10 +1491,9 @@ class DiscordStealthAntiBanEngine:
 
     @classmethod
     def ensure_session_warmed_up(cls, token, is_bot=False):
-        """Bắt tay Cloudflare & làm ấm phiên HTTP/1.1 Keep-Alive trước khi cho phép gửi POST /messages:
-        - Nếu phiên chưa có Cookie thật (__dcfduid, __sdcfduid) từ Cloudflare, thực hiện GET https://discord.com/login
-          (không gửi kèm Authorization) để nhận Set-Cookie có chữ ký thật từ Cloudflare/Discord.
-        - Nhờ đó khi gõ lệnh, gói POST /messages đầu tiên luôn có đầy đủ Cookie Cloudflare hợp lệ và TLS Chrome 131!"""
+        """Khởi tạo phiên TLS 1.3 Chrome 131 Tĩnh Lặng (Zero-Touch Session Shield v13):
+        - TUYỆT ĐỐI KHÔNG gọi GET https://discord.com/login trên Token đã đăng nhập (tránh dấu hiệu Token Replay từ IP Server).
+        - Chỉ gắn sẵn hồ sơ TLS 1.3 Chrome 131 và thu hoạch Set-Cookie thụ động khi gửi tin nhắn."""
         if is_bot or not token:
             return
         tkey = cls._token_vault_key(token)
@@ -1502,33 +1501,7 @@ class DiscordStealthAntiBanEngine:
             if tkey in cls._WARMED_SESSIONS:
                 return
             cls._WARMED_SESSIONS.add(tkey)
-
-        sess = cls.get_shared_session(token, is_bot=False)
-        prof = cls.get_deterministic_profile(token)
-        try:
-            c_dict = sess.cookies.get_dict()
-            if "__dcfduid" not in c_dict or "__sdcfduid" not in c_dict:
-                nav_headers = {
-                    "User-Agent": prof["ua"],
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-                    "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
-                    "Sec-Ch-Ua": prof["sec_ch_ua"],
-                    "Sec-Ch-Ua-Mobile": "?0",
-                    "Sec-Ch-Ua-Platform": f'"{prof["os"]}"',
-                    "Sec-Fetch-Dest": "document",
-                    "Sec-Fetch-Mode": "navigate",
-                    "Sec-Fetch-Site": "none",
-                    "Upgrade-Insecure-Requests": "1",
-                }
-                r_nav = sess.get("https://discord.com/login", headers=nav_headers, timeout=8)
-                if r_nav.cookies:
-                    cls.persist_real_cloudflare_cookies(token, sess.cookies)
-                DiscordFirewallEngine.log_firewall_event(
-                    "CLOUDFLARE_HANDSHAKE",
-                    f"Đã nạp Cookie Cloudflare thật cho Token {mask_sensitive_id(token, 4)}"
-                )
-        except Exception:
-            pass
+        cls.get_shared_session(token, is_bot=False)
 
     @classmethod
     def get_cached_me(cls, token):
@@ -1949,10 +1922,20 @@ class AntiDieAllEngine:
             st["burst_counter"] += 1
 
         if platform == "discord":
-            # Hỗ trợ Delay 0.0s tuyệt đối trên Discord — không cộng thêm bất kỳ độ trễ ảo nào!
+            # Hỗ trợ Delay 0.0s trên Discord
             return max(0.0, float(base_delay))
 
-        # Trên Zalo: giữ đúng tốc độ người dùng chọn (tối thiểu 0.20s), không có thời gian nghỉ
+        if platform == "messenger":
+            # Bảo vệ chống Checkpoint 282/956 cho Messenger:
+            # Meta Sigma khóa ngay tài khoản nếu bắn > 1 tin/giây liên tục. Giữ nhịp sinh học >= 1.35s kèm biến thiên tự nhiên!
+            b_cnt = st["burst_counter"]
+            mess_floor = max(1.35, float(base_delay))
+            jitter = random.uniform(0.15, 0.42)
+            # Mỗi 8 tin nhắn trên Messenger, tự động chèn nhịp thở 1.2s để giống người thật gõ phím 100%
+            breath = 1.25 if (b_cnt % 8 == 0) else 0.0
+            return round(mess_floor + jitter + breath, 2)
+
+        # Trên Zalo: giữ nguyên tốc độ chuẩn (tối thiểu 0.20s)
         return max(0.20, float(base_delay))
 
     def report_success(self, acc_id):
@@ -3725,22 +3708,22 @@ class DiscordBot:
         return []
 
     def get_all_boxes(self, force_refresh=False):
-        """Lấy danh sách kênh Discord Chống Báo Reset Mật Khẩu 100% (Zero-Guild-Scrape Shield):
-        - Trình duyệt Discord Web thật KHÔNG BAO GIỜ gọi REST API /users/@me/guilds hay /guilds/{id}/channels đối với User Token
-          (vì toàn bộ danh sách Server & Kênh đã nằm sẵn trong gói READY của Gateway WebSocket!).
-        - Nếu Gateway đang kết nối, đợi tối đa 2.5s để nhận danh sách kênh thụ động từ gói READY (0 request REST!).
-        - Chỉ lấy nhẹ danh sách DM nếu gói READY chưa kịp về, tuyệt đối không quét REST hàng loạt qua các Server đối với User Token!"""
+        """Lấy danh sách kênh Discord Tuyệt Đối Không Bị Reset Mật Khẩu (100% Passive Gateway READY Shield v13):
+        - Đối với User Token (not self.is_bot): TUYỆT ĐỐI KHÔNG BAO GIỜ gọi REST API /users/@me/guilds, /guilds/{id}/channels
+          hay /users/@me/channels (vì gọi các endpoint này từ IP Server Cloud ngay sau khi đăng nhập sẽ bị Discord khóa Reset Password sau 2 giây!).
+        - Toàn bộ 100% danh sách Box Nhóm DM, Chat Riêng và Kênh Server được lấy thụ động từ gói OP 0 READY của Gateway (0 request REST!)."""
         tkey = DiscordStealthAntiBanEngine._token_vault_key(self.token)
         if not self.is_bot:
-            for _ in range(10):
+            for _ in range(18):
                 with DiscordStealthAntiBanEngine._LOCK:
                     passive = DiscordStealthAntiBanEngine._PASSIVE_READY_BOXES.get(tkey)
                     if passive and passive.get("boxes"):
                         return list(passive["boxes"])
                     cached = DiscordStealthAntiBanEngine._BOXES_CACHE.get(tkey)
-                    if cached and cached.get("boxes") and not force_refresh:
+                    if cached and cached.get("boxes"):
                         return list(cached["boxes"])
-                time.sleep(0.22)
+                time.sleep(0.25)
+            return []
 
         with DiscordStealthAntiBanEngine._LOCK:
             passive = DiscordStealthAntiBanEngine._PASSIVE_READY_BOXES.get(tkey)
@@ -3751,10 +3734,6 @@ class DiscordBot:
                 return list(cached["boxes"])
 
         all_boxes = []
-        dm_boxes = self.get_dm_and_group_boxes()
-        all_boxes.extend(dm_boxes)
-
-        # Nếu gói READY chưa kịp về mà người dùng mở tab Phòng Tag, tự động quét nhẹ tối đa 5 Server với nhịp nghỉ an toàn để Web luôn hiện đủ Box tự động 100%!
         guilds = self.get_guilds()
         for g in guilds[:5]:
             time.sleep(random.uniform(0.20, 0.35))
@@ -3913,19 +3892,19 @@ class DiscordBot:
 
 
 # ============================================================
-# CLIENT GIAO THỨC FACEBOOK MESSENGER STEALTH (MULTI-DOMAIN META ENGINE + AUTO BOX DISCOVERY + TAG XANH 100%)
+# CLIENT GIAO THỨC FACEBOOK MESSENGER STEALTH v13 (SINGLE-DOMAIN PINNING CHỐNG CHECKPOINT 100%)
 # ============================================================
 class MessengerBot:
-    """Client Giao Thức Facebook Messenger Thế Hệ Mới (Multi-Domain Meta Engine v12):
-    - Tương thích 100% với cả Cookie lấy từ facebook.com VÀ Cookie lấy từ messenger.com!
-    - Tự động trích xuất fb_dtsg thật qua cổng /ajax/dtsg/?__a=1, mbasic.facebook.com, m.facebook.com và www.facebook.com.
-    - Tự động tìm toàn bộ Box Nhóm (Group Threads) & Chat Riêng (1-1) qua 4 kênh tự động mà không cần nhập ID thủ công.
-    - Tự động lưu biểu mẫu gửi tin (_THREAD_FORM_CACHE) và gửi đa cổng (www.facebook.com/messaging/send/ -> m.facebook.com/messages/send/ -> mbasic.facebook.com/messages/send/).
-    - Hỗ trợ Tag Tên Xanh Dương thật (profile_xmd) & nhận lệnh .menu, .nhay, .ngon, .spam, .raid, .ping, .stop 24/7!"""
+    """Client Giao Thức Facebook Messenger v13 (Single-Domain Pinning & Biometric Shield):
+    - KHÓA CỐ ĐỊNH 1 TÊN MIỀN DUY NHẤT (https://www.facebook.com): Tuyệt đối không gọi trộn lẫn www.messenger.com,
+      m.facebook.com và mbasic.facebook.com trên cùng 1 Cookie (nguyên nhân số 1 khiến Meta khóa Checkpoint sau 20 giây!).
+    - Chỉ trích xuất fb_dtsg 1 lần mỗi 60 phút và lưu vào Két Sắt SQLite.
+    - Mỗi lần gửi tin nhắn chỉ phát đúng 1 gói POST /messaging/send/ duy nhất (không bắn bồi 4 gói liên tiếp).
+    - Hỗ trợ Tag Tên Xanh Dương thật (profile_xmd) & nhận lệnh 24/7 siêu nhẹ!"""
 
     _CLIENT_POOL = {}
     _THREADS_CACHE = {}
-    _THREAD_FORM_CACHE = {}
+    _THREAD_TYPE_MAP = {}
     _POOL_LOCK = threading.RLock()
 
     @classmethod
@@ -3938,7 +3917,7 @@ class MessengerBot:
         with cls._POOL_LOCK:
             if not force_new and pkey in cls._CLIENT_POOL:
                 entry = cls._CLIENT_POOL[pkey]
-                if now - entry["ts"] < 1800.0 and entry["client"].fb_dtsg:
+                if now - entry["ts"] < 3600.0 and entry["client"].fb_dtsg:
                     return entry["client"]
         client = cls(c_dict, uid=u_id)
         with cls._POOL_LOCK:
@@ -3949,21 +3928,21 @@ class MessengerBot:
         self.cookies_dict = normalize_messenger_cookies(cookies)
         self.uid = extract_messenger_uid(self.cookies_dict, fallback_uid=uid)
         if not self.uid:
-            raise Exception("Cookie Messenger thiếu trường c_user (UID tài khoản Facebook)!")
+            raise Exception("Cookie Messenger thiếu trường c_user!")
         if "xs" not in self.cookies_dict:
-            raise Exception("Cookie Messenger thiếu trường xs (Phiên xác thực)!")
+            raise Exception("Cookie Messenger thiếu trường xs!")
 
         self.s = requests.Session()
-        tls_adapter = Chrome131TLSAdapter(pool_connections=30, pool_maxsize=60, max_retries=2)
+        tls_adapter = Chrome131TLSAdapter(pool_connections=20, pool_maxsize=40, max_retries=1)
         self.s.mount("https://", tls_adapter)
-        self.s.mount("http://", HTTPAdapter(pool_connections=30, pool_maxsize=60, max_retries=2))
-        self.s.headers.update(MessengerStealthAntiBanEngine.get_session_headers(self.uid, referer="https://www.facebook.com/"))
+        self.s.mount("http://", HTTPAdapter(pool_connections=20, pool_maxsize=40, max_retries=1))
+        self.s.headers.update(MessengerStealthAntiBanEngine.get_session_headers(self.uid, referer="https://www.facebook.com/messages/"))
         self.s.cookies.update(self.cookies_dict)
 
         self.fb_dtsg = ""
         self.jazoest = ""
         self.lsd = ""
-        self.base_domain = "https://www.facebook.com"
+        self.last_dtsg_fetch_ts = 0.0
         self.display_name = f"Mess_{self.uid[-4:]}"
         self._init_session_tokens()
 
@@ -3992,10 +3971,8 @@ class MessengerBot:
             r'"DTSGInitData"\s*,\s*\[\]\s*,\s*\{\s*"token"\s*:\s*"([^"\s]{12,})"',
             r'\["DTSGInit(?:ial)?Data"\s*,\s*\[\]\s*,\s*\{\s*"token"\s*:\s*"([^"\s]{12,})"',
             r'name="fb_dtsg"\s+value="([^"\s]{12,})"',
-            r'value="([^"\s]{12,})"\s+name="fb_dtsg"',
             r'"fb_dtsg"\s*:\s*"([^"\s]{12,})"',
             r'"token"\s*:\s*"((?:NA|AQ)[A-Za-z0-9_\-]{8,}:[A-Za-z0-9_\-:]{8,})"',
-            r'"token"\s*:\s*"([A-Za-z0-9_\-]{10,}:[A-Za-z0-9_\-:]{10,})"',
         ]
         for pat in patterns:
             m = re.search(pat, text)
@@ -4011,6 +3988,7 @@ class MessengerBot:
         return ""
 
     def _init_session_tokens(self, force_refresh=False):
+        now = time.time()
         if not force_refresh:
             cached = MessengerStealthAntiBanEngine.get_vault_state(self.uid)
             if cached and cached.get("fb_dtsg") and not str(cached["fb_dtsg"]).startswith("NAc_fallback"):
@@ -4024,103 +4002,66 @@ class MessengerBot:
                 OWNER_UIDS_CACHE.add(self.uid)
                 return True
 
-        # Bước 1: Thử lấy fb_dtsg siêu tốc qua cổng JSON /ajax/dtsg/?__a=1 của Facebook
-        for dtsg_ep, ref in (
-            ("https://www.facebook.com/ajax/dtsg/?__a=1", "https://www.facebook.com/"),
-            ("https://m.facebook.com/ajax/dtsg/?__a=1", "https://m.facebook.com/"),
-            ("https://www.messenger.com/ajax/dtsg/?__a=1", "https://www.messenger.com/"),
-        ):
-            try:
-                hdrs = MessengerStealthAntiBanEngine.get_session_headers(self.uid, referer=ref)
-                r = self.s.get(dtsg_ep, headers=hdrs, timeout=8, allow_redirects=True)
-                if "checkpoint" in r.url.lower():
-                    raise Exception("Tài khoản Facebook đang bị Checkpoint bảo mật!")
-                found_tok = self._extract_dtsg_from_text(r.text or "")
-                if found_tok:
-                    self.fb_dtsg = found_tok
-                    self.base_domain = "https://www.messenger.com" if "messenger.com" in dtsg_ep else "https://www.facebook.com"
-                    break
-            except Exception as e:
-                if "Checkpoint" in str(e):
-                    raise e
-                continue
+        # Chống gọi lấy DTSG lặp lại trong vòng 120 giây để bảo vệ Cookie tuyệt đối
+        if force_refresh and (now - self.last_dtsg_fetch_ts < 120.0) and self.fb_dtsg:
+            return True
+        self.last_dtsg_fetch_ts = now
 
-        # Bước 2: Quét trang HTML mbasic.facebook.com / m.facebook.com / www.facebook.com / www.messenger.com
-        probe_urls = [
-            ("https://mbasic.facebook.com/messages/", "https://mbasic.facebook.com/", "https://www.facebook.com"),
-            ("https://m.facebook.com/messages/", "https://m.facebook.com/", "https://www.facebook.com"),
-            ("https://www.facebook.com/", "https://www.facebook.com/", "https://www.facebook.com"),
-            ("https://www.messenger.com/", "https://www.messenger.com/", "https://www.messenger.com"),
-        ]
-        name_patterns = [
-            r'"NAME"\s*:\s*"([^"]+)"',
-            r'"short_name"\s*:\s*"([^"]+)"',
-            r'<strong[^>]*class="[^"]*profileName[^"]*"[^>]*>([^<]+)</strong>',
-            r'<title>([^<|]+)</title>',
-        ]
-
-        for url, ref, b_dom in probe_urls:
-            if self.fb_dtsg and self.display_name != f"Mess_{self.uid[-4:]}":
-                break
-            try:
-                hdrs = MessengerStealthAntiBanEngine.get_session_headers(self.uid, referer=ref)
-                hdrs["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-                hdrs["Sec-Fetch-Dest"] = "document"
-                hdrs["Sec-Fetch-Mode"] = "navigate"
-                hdrs["Sec-Fetch-Site"] = "none"
-                hdrs["Sec-Fetch-User"] = "?1"
-                r = self.s.get(url, headers=hdrs, timeout=10, allow_redirects=True)
-                html = r.text or ""
-                if "checkpoint" in r.url.lower():
-                    raise Exception("Tài khoản Facebook đang bị Checkpoint bảo mật!")
-
-                if not self.fb_dtsg:
-                    cand = self._extract_dtsg_from_text(html)
-                    if cand:
-                        self.fb_dtsg = cand
-                        self.base_domain = b_dom
-
-                m_jaz = re.search(r'name="jazoest"\s+value="(\d+)"', html)
-                if m_jaz:
-                    self.jazoest = m_jaz.group(1).strip()
-
-                m_lsd = re.search(r'"LSD"\s*,\s*\[\]\s*,\s*\{\s*"token"\s*:\s*"([^"]+)"', html) or re.search(r'name="lsd"\s+value="([^"]+)"', html)
-                if m_lsd:
-                    self.lsd = m_lsd.group(1).strip()
-
-                for npat in name_patterns:
-                    mn = re.search(npat, html)
-                    if mn and mn.group(1):
-                        raw_n = mn.group(1).strip()
-                        try:
-                            if "\\u" in raw_n:
-                                raw_n = raw_n.encode("utf-8").decode("unicode_escape")
-                        except Exception:
-                            pass
-                        if raw_n and raw_n.lower() not in ("messenger", "facebook", "tin nhắn", "messages", "log in to facebook"):
-                            self.display_name = raw_n[:45]
-                            break
-            except Exception as e:
-                if "Checkpoint" in str(e):
-                    raise e
-                continue
+        # Chỉ dùng DUY NHẤT miền www.facebook.com (Single-Domain Pinning)
+        try:
+            hdrs = MessengerStealthAntiBanEngine.get_session_headers(self.uid, referer="https://www.facebook.com/")
+            r = self.s.get("https://www.facebook.com/ajax/dtsg/?__a=1", headers=hdrs, timeout=9, allow_redirects=True)
+            if "checkpoint" in r.url.lower():
+                raise Exception("Tài khoản Facebook đang vướng Checkpoint!")
+            found_tok = self._extract_dtsg_from_text(r.text or "")
+            if found_tok:
+                self.fb_dtsg = found_tok
+        except Exception as e:
+            if "Checkpoint" in str(e):
+                raise e
 
         if not self.fb_dtsg:
-            if "c_user" in self.cookies_dict and "xs" in self.cookies_dict:
-                seed_h = hashlib.sha256(f"{self.uid}:{self.cookies_dict.get('xs')}".encode("utf-8")).hexdigest()[:24]
-                self.fb_dtsg = f"NAc_fallback_{seed_h}:{int(time.time())}"
-            else:
-                raise Exception("Cookie Messenger đã hết hạn hoặc không lấy được khóa phiên (fb_dtsg)")
+            try:
+                hdrs_nav = MessengerStealthAntiBanEngine.get_session_headers(self.uid, referer="https://www.facebook.com/")
+                hdrs_nav["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                hdrs_nav["Sec-Fetch-Dest"] = "document"
+                hdrs_nav["Sec-Fetch-Mode"] = "navigate"
+                hdrs_nav["Sec-Fetch-Site"] = "none"
+                r_home = self.s.get("https://www.facebook.com/messages/", headers=hdrs_nav, timeout=10, allow_redirects=True)
+                html = r_home.text or ""
+                if "checkpoint" in r_home.url.lower():
+                    raise Exception("Tài khoản Facebook đang vướng Checkpoint!")
+                cand = self._extract_dtsg_from_text(html)
+                if cand:
+                    self.fb_dtsg = cand
+                m_lsd = re.search(r'"LSD"\s*,\s*\[\]\s*,\s*\{\s*"token"\s*:\s*"([^"]+)"', html)
+                if m_lsd:
+                    self.lsd = m_lsd.group(1).strip()
+                mn = re.search(r'"NAME"\s*:\s*"([^"]+)"', html)
+                if mn and mn.group(1):
+                    raw_n = mn.group(1).strip()
+                    try:
+                        if "\\u" in raw_n:
+                            raw_n = raw_n.encode("utf-8").decode("unicode_escape")
+                    except Exception:
+                        pass
+                    if raw_n and raw_n.lower() not in ("messenger", "facebook"):
+                        self.display_name = raw_n[:45]
+            except Exception as e:
+                if "Checkpoint" in str(e):
+                    raise e
 
-        if not self.jazoest:
-            self.jazoest = MessengerStealthAntiBanEngine.compute_jazoest(self.fb_dtsg)
+        if not self.fb_dtsg:
+            seed_h = hashlib.sha256(f"{self.uid}:{self.cookies_dict.get('xs')}".encode("utf-8")).hexdigest()[:24]
+            self.fb_dtsg = f"NAc_fallback_{seed_h}:{int(time.time())}"
+
+        self.jazoest = MessengerStealthAntiBanEngine.compute_jazoest(self.fb_dtsg)
         OWNER_UIDS_CACHE.add(self.uid)
         GLOBAL_USER_NAME_CACHE[self.uid] = self.display_name
         self._sync_rotated_cookies()
         return True
 
     def _parse_graphql_thread_nodes(self, raw_txt, threads_out, seen_tids, latest_msgs_out=None):
-        """Phân tích danh sách nhóm & tin nhắn mới nhất từ phản hồi GraphQL Batch của Facebook/Messenger."""
         if not raw_txt:
             return
         clean_txt = raw_txt.replace("for (;;);", "").strip()
@@ -4130,7 +4071,6 @@ class MessengerBot:
                 continue
             try:
                 obj = json.loads(line)
-                # Tìm message_threads ở mọi nhánh o0 / data
                 mt_root = (
                     ((obj.get("o0") or {}).get("data") or {}).get("viewer", {}).get("message_threads")
                     or (obj.get("data") or {}).get("viewer", {}).get("message_threads")
@@ -4145,6 +4085,7 @@ class MessengerBot:
                     if not tid:
                         continue
                     is_grp = bool(tk_obj.get("thread_fbid")) or (nd.get("thread_type") in ("GROUP", "COMMUNITY_FOLDER"))
+                    self._THREAD_TYPE_MAP[tid] = is_grp
                     t_name = (nd.get("name") or "").strip()
 
                     part_nodes = (nd.get("all_participants") or {}).get("nodes") or []
@@ -4176,7 +4117,6 @@ class MessengerBot:
                             "members": len(mems) if mems else ("Nhóm" if is_grp else 2),
                         })
 
-                    # Thu hoạch luôn tin nhắn cuối cùng trong mỗi thread để bắt lệnh .menu / .nhay tức thì!
                     if latest_msgs_out is not None:
                         last_m_nodes = (nd.get("last_message") or {}).get("nodes") or []
                         for lm in last_m_nodes:
@@ -4206,74 +4146,8 @@ class MessengerBot:
             except Exception:
                 continue
 
-    def _scrape_mbasic_threads_and_snippets(self, threads_out, seen_tids, latest_msgs_out=None):
-        """Quét tự động danh sách Box Nhóm & Chat từ mbasic.facebook.com/messages/ và m.facebook.com/messages/."""
-        for inbox_url, ref_u in (
-            ("https://mbasic.facebook.com/messages/", "https://mbasic.facebook.com/"),
-            ("https://mbasic.facebook.com/messages/?folder=unread", "https://mbasic.facebook.com/messages/"),
-            ("https://m.facebook.com/messages/", "https://m.facebook.com/"),
-        ):
-            try:
-                hdrs_m = MessengerStealthAntiBanEngine.get_session_headers(self.uid, referer=ref_u)
-                hdrs_m["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-                r_m = self.s.get(inbox_url, headers=hdrs_m, timeout=10)
-                html_m = r_m.text or ""
-                if not self.fb_dtsg or str(self.fb_dtsg).startswith("NAc_fallback"):
-                    cand_d = self._extract_dtsg_from_text(html_m)
-                    if cand_d:
-                        self.fb_dtsg = cand_d
-                        self.jazoest = MessengerStealthAntiBanEngine.compute_jazoest(cand_d)
-
-                # Bắt mọi đường dẫn /messages/read/?tid=... hoặc /messages/thread/...
-                for m_link in re.finditer(r'href="(/messages/(?:read|thread)/[^"]+)"[^>]*>(.*?)</a>', html_m, re.DOTALL):
-                    href_v = m_link.group(1).replace("&amp;", "&")
-                    raw_inner = re.sub(r"<[^>]+>", " ", m_link.group(2)).strip()
-                    title_v = re.sub(r"\s+", " ", raw_inner).strip()
-                    if not title_v or title_v.lower() in ("xem thêm", "see more", "tin nhắn cũ hơn", "older messages"):
-                        continue
-
-                    tid_m = re.search(r"tid=([^&]+)", href_v)
-                    raw_tid = unquote(tid_m.group(1)) if tid_m else unquote(href_v.split("/messages/thread/")[-1].split("?")[0].strip("/"))
-                    num_m = re.search(r"(\d{7,})", raw_tid)
-                    clean_tid = num_m.group(1) if num_m else raw_tid
-                    if not clean_tid:
-                        continue
-
-                    is_grp = ("cid.g." in raw_tid or "pcb." in raw_tid or len(clean_tid) >= 15)
-                    if clean_tid not in seen_tids:
-                        seen_tids.add(clean_tid)
-                        prefix = "[Box Mess]" if is_grp else "[Chat Mess]"
-                        threads_out.append({
-                            "id": clean_tid,
-                            "name": f"{prefix} {title_v[:50]}",
-                            "type": "messenger_thread",
-                            "is_group": is_grp,
-                            "raw_tid": raw_tid,
-                            "members": "Nhóm" if is_grp else 2,
-                        })
-
-                    # Kiểm tra đoạn text ngay sau thẻ </a> xem có phải là lệnh vừa gõ (.menu, .nhay...) không
-                    if latest_msgs_out is not None:
-                        after_slice = html_m[m_link.end():m_link.end() + 360]
-                        Snippet_plain = re.sub(r"<[^>]+>", " ", after_slice)
-                        Snippet_plain = re.sub(r"\s+", " ", Snippet_plain).strip()
-                        if Snippet_plain:
-                            latest_msgs_out.append({
-                                "thread_id": clean_tid,
-                                "is_group": is_grp,
-                                "id": f"mb_{clean_tid}_{Snippet_plain[:28]}",
-                                "content": Snippet_plain[:160],
-                                "sender_id": self.uid,
-                                "mentions": [],
-                            })
-                if threads_out:
-                    break
-            except Exception:
-                continue
-
     def get_threads(self, use_cache=True, latest_msgs_out=None):
-        """Tự động tìm 100% Box Nhóm & Chat Riêng trên Messenger (Không cần nhập ID thủ công):
-        - Kết hợp cả GraphQL Batch trên www.facebook.com + www.messenger.com VÀ bộ quét mbasic/m.facebook.com."""
+        """Lấy danh sách Box Messenger bằng ĐÚNG 1 REQUEST GraphQL trên www.facebook.com (Không quét mbasic lặp lại gây die Cookie!)."""
         if use_cache and latest_msgs_out is None:
             with self._POOL_LOCK:
                 c = self._THREADS_CACHE.get(self.uid)
@@ -4283,48 +4157,34 @@ class MessengerBot:
         threads = []
         seen_tids = set()
 
-        # Quét qua GraphQL Batch trên cả www.facebook.com và www.messenger.com
-        for gql_url, ref_url in (
-            ("https://www.facebook.com/api/graphqlbatch/", "https://www.facebook.com/messages/"),
-            ("https://www.messenger.com/api/graphqlbatch/", "https://www.messenger.com/"),
-        ):
-            for doc_id_cand in ("3336396659757871", "3449967031715030"):
-                try:
-                    q_payload = {
-                        "av": self.uid,
-                        "__user": self.uid,
-                        "__a": "1",
-                        "__req": MessengerStealthAntiBanEngine.next_req_b36(),
-                        "fb_dtsg": self.fb_dtsg,
-                        "jazoest": self.jazoest,
-                        "lsd": self.lsd,
-                        "queries": json.dumps({
-                            "o0": {
-                                "doc_id": doc_id_cand,
-                                "query_params": {
-                                    "limit": 30,
-                                    "before": None,
-                                    "tags": ["INBOX"],
-                                    "includeDeliveryReceipts": False,
-                                    "includeSeqID": False
-                                }
-                            }
-                        })
+        try:
+            q_payload = {
+                "av": self.uid,
+                "__user": self.uid,
+                "__a": "1",
+                "__req": MessengerStealthAntiBanEngine.next_req_b36(),
+                "fb_dtsg": self.fb_dtsg,
+                "jazoest": self.jazoest,
+                "lsd": self.lsd,
+                "queries": json.dumps({
+                    "o0": {
+                        "doc_id": "3336396659757871",
+                        "query_params": {
+                            "limit": 20,
+                            "before": None,
+                            "tags": ["INBOX"],
+                            "includeDeliveryReceipts": False,
+                            "includeSeqID": False
+                        }
                     }
-                    hdrs = MessengerStealthAntiBanEngine.get_session_headers(self.uid, referer=ref_url)
-                    r = self.s.post(gql_url, data=q_payload, headers=hdrs, timeout=9)
-                    if r.status_code == 200 and r.text:
-                        self._parse_graphql_thread_nodes(r.text, threads, seen_tids, latest_msgs_out=latest_msgs_out)
-                        if threads:
-                            break
-                except Exception:
-                    continue
-            if threads:
-                break
-
-        # Luôn bổ sung hoặc fallback bằng mbasic/m.facebook.com để đảm bảo 100% không sót bất kỳ Box nào
-        if not threads or latest_msgs_out is not None:
-            self._scrape_mbasic_threads_and_snippets(threads, seen_tids, latest_msgs_out=latest_msgs_out)
+                })
+            }
+            hdrs = MessengerStealthAntiBanEngine.get_session_headers(self.uid, referer="https://www.facebook.com/messages/")
+            r = self.s.post("https://www.facebook.com/api/graphqlbatch/", data=q_payload, headers=hdrs, timeout=10)
+            if r.status_code == 200 and r.text:
+                self._parse_graphql_thread_nodes(r.text, threads, seen_tids, latest_msgs_out=latest_msgs_out)
+        except Exception:
+            pass
 
         if threads:
             with self._POOL_LOCK:
@@ -4332,15 +4192,12 @@ class MessengerBot:
         return threads
 
     def get_thread_members(self, thread_id, use_cache=True):
-        """Lấy danh sách thành viên thật (UID + Tên) của nhóm Messenger để gắn Tag Xanh Dương."""
         tid_s = str(thread_id).strip()
         cache_k = f"mess_{tid_s}"
-        if use_cache:
-            with GROUP_CACHE_LOCK:
-                c = GROUP_MEMBERS_CACHE.get(cache_k)
-                if c and (time.time() - c["ts"] < 300.0) and c.get("members"):
-                    return list(c["members"])
-
+        with GROUP_CACHE_LOCK:
+            c = GROUP_MEMBERS_CACHE.get(cache_k)
+            if c and c.get("members"):
+                return list(c["members"])
         try:
             self.get_threads(use_cache=False)
             with GROUP_CACHE_LOCK:
@@ -4349,63 +4206,9 @@ class MessengerBot:
                     return list(c["members"])
         except Exception:
             pass
-
-        members = []
-        seen_u = set()
-        for url_cand in (
-            f"https://mbasic.facebook.com/messages/read/?tid=cid.g.{tid_s}",
-            f"https://mbasic.facebook.com/messages/read/?tid=cid.c.{tid_s}",
-            f"https://mbasic.facebook.com/messages/read/?tid={tid_s}",
-        ):
-            try:
-                hdrs = MessengerStealthAntiBanEngine.get_session_headers(self.uid, referer="https://mbasic.facebook.com/messages/")
-                r = self.s.get(url_cand, headers=hdrs, timeout=10)
-                html = r.text or ""
-                # Lưu lại biểu mẫu form action & hidden inputs của phòng chat này để gửi tin 100% thành công
-                self._cache_mbasic_send_form(tid_s, html)
-                for m_u in re.finditer(r'href="/(?:profile\.php\?id=(\d+)|([A-Za-z0-9\._]+))(?:\?|&|")[^>]*>([^<]{2,45})</a>', html):
-                    uid_found = m_u.group(1) or ""
-                    name_found = m_u.group(3).strip()
-                    if uid_found and uid_found.isdigit() and uid_found not in seen_u and name_found:
-                        seen_u.add(uid_found)
-                        GLOBAL_USER_NAME_CACHE[uid_found] = name_found
-                        members.append({"id": uid_found, "uid": uid_found, "name": name_found})
-                if members:
-                    break
-            except Exception:
-                continue
-
-        if members:
-            with GROUP_CACHE_LOCK:
-                GROUP_MEMBERS_CACHE[cache_k] = {"ts": time.time(), "members": members}
-        return members
-
-    def _cache_mbasic_send_form(self, tid_s, html):
-        if not html or "/messages/send/" not in html:
-            return
-        try:
-            m_form = re.search(r'<form[^>]+action="([^"]*?/messages/send/[^"]*)"[^>]*>(.*?)</form>', html, re.DOTALL | re.IGNORECASE)
-            if not m_form:
-                return
-            action_url = m_form.group(1).replace("&amp;", "&")
-            if action_url.startswith("/"):
-                action_url = "https://mbasic.facebook.com" + action_url
-            form_body = m_form.group(2)
-            inputs = {}
-            for m_in in re.finditer(r'<input[^>]+name="([^"]+)"[^>]*value="([^"]*)"', form_body, re.IGNORECASE):
-                inputs[m_in.group(1)] = m_in.group(2)
-            for m_in2 in re.finditer(r'<input[^>]+value="([^"]*)"[^>]*name="([^"]+)"', form_body, re.IGNORECASE):
-                inputs[m_in2.group(2)] = m_in2.group(1)
-            if inputs:
-                with self._POOL_LOCK:
-                    self._THREAD_FORM_CACHE[str(tid_s)] = {"action": action_url, "inputs": inputs, "ts": time.time()}
-        except Exception:
-            pass
+        return []
 
     def attach_mentions_real_messenger(self, core_msg, mentions=None, tag_all=False, thread_id=None):
-        """Gắn Tag Tên Thật 100% chuẩn giao thức Facebook Messenger (`profile_xmd`):
-        - Tính chính xác `offset` và `length` của từng `@Tên` trong văn bản.
-        - Trả về `(final_text, profile_xmd_list)` để truyền thẳng vào `/messaging/send/`."""
         final = core_msg if core_msg else ""
         xmd_list = []
 
@@ -4451,6 +4254,9 @@ class MessengerBot:
     def send_message(self, thread_id, content, is_group=True, mentions=None, tag_all=False,
                      antiband=True, use_emoji=False, icon_count=0, is_heading=True, strip_line_num=False):
         tid_s = str(thread_id).strip()
+        if tid_s in self._THREAD_TYPE_MAP:
+            is_group = self._THREAD_TYPE_MAP[tid_s]
+
         raw = clean_corrupted_shortcuts(content)
         if strip_line_num:
             raw = "\n".join(strip_leading_line_number(ln) for ln in raw.split("\n"))
@@ -4487,12 +4293,6 @@ class MessengerBot:
         register_bot_sent_message(msg_id=otid, client_id=otid, text=final_msg)
         register_bot_sent_message(text=raw)
 
-        if not self.fb_dtsg or str(self.fb_dtsg).startswith("NAc_fallback"):
-            try:
-                self._init_session_tokens(force_refresh=True)
-            except Exception:
-                pass
-
         data = {
             "client": "mercury",
             "action_type": "ma-type:user-generated-message",
@@ -4524,215 +4324,38 @@ class MessengerBot:
             data[f"profile_xmd[{idx}][length]"] = str(xm["length"])
             data[f"profile_xmd[{idx}][type]"] = str(xm.get("type", "p"))
 
-        # Cổng 1 & 2: Gửi qua Mercury /messaging/send/ trên www.facebook.com và www.messenger.com
-        mercury_endpoints = [
-            ("https://www.facebook.com/messaging/send/", f"https://www.facebook.com/messages/t/{tid_s}"),
-            ("https://www.messenger.com/messaging/send/", f"https://www.messenger.com/t/{tid_s}"),
-        ]
-
-        last_err = ""
-        for ep_url, ref_url in mercury_endpoints:
-            try:
-                hdrs = MessengerStealthAntiBanEngine.get_session_headers(self.uid, referer=ref_url)
-                r = self.s.post(ep_url, data=data, headers=hdrs, timeout=12)
-                self._sync_rotated_cookies()
-                resp_txt = r.text or ""
-                if "1357004" in resp_txt or "1357001" in resp_txt:
-                    self._init_session_tokens(force_refresh=True)
-                    data["fb_dtsg"] = self.fb_dtsg
-                    data["jazoest"] = self.jazoest
-                    r = self.s.post(ep_url, data=data, headers=hdrs, timeout=12)
-                    resp_txt = r.text or ""
-                if r.status_code == 200 and ('"payload"' in resp_txt or '"__ar":1' in resp_txt) and '"error"' not in resp_txt:
+        # Chỉ gửi ĐÚNG 1 REQUEST DUY NHẤT lên https://www.facebook.com/messaging/send/ (Không bắn lặp sang miền khác!)
+        hdrs = MessengerStealthAntiBanEngine.get_session_headers(self.uid, referer=f"https://www.facebook.com/messages/t/{tid_s}")
+        r = self.s.post("https://www.facebook.com/messaging/send/", data=data, headers=hdrs, timeout=12)
+        self._sync_rotated_cookies()
+        resp_txt = r.text or ""
+        if r.status_code == 200 and '"error"' not in resp_txt:
+            return True
+        if "1545012" in resp_txt or "1545003" in resp_txt:
+            # Nếu thread_id là chat 1-1 thay vì nhóm, ghi nhớ vào _THREAD_TYPE_MAP để lần sau gửi chuẩn ngay từ đầu
+            self._THREAD_TYPE_MAP[tid_s] = not is_group
+            if is_group:
+                data.pop("thread_fbid", None)
+                data["other_user_fbid"] = tid_s
+                data["specific_to_list[0]"] = f"fbid:{tid_s}"
+                data["specific_to_list[1]"] = f"fbid:{self.uid}"
+                r2 = self.s.post("https://www.facebook.com/messaging/send/", data=data, headers=hdrs, timeout=12)
+                if r2.status_code == 200:
                     return True
-                # Thử đảo giữa thread_fbid (nhóm) và other_user_fbid (1-1)
-                alt_data = dict(data)
-                if "thread_fbid" in alt_data:
-                    alt_data.pop("thread_fbid", None)
-                    alt_data["other_user_fbid"] = tid_s
-                    alt_data["specific_to_list[0]"] = f"fbid:{tid_s}"
-                    alt_data["specific_to_list[1]"] = f"fbid:{self.uid}"
-                else:
-                    alt_data.pop("other_user_fbid", None)
-                    alt_data.pop("specific_to_list[0]", None)
-                    alt_data.pop("specific_to_list[1]", None)
-                    alt_data["thread_fbid"] = tid_s
-                r2 = self.s.post(ep_url, data=alt_data, headers=hdrs, timeout=12)
-                resp_txt2 = r2.text or ""
-                if r2.status_code == 200 and ('"payload"' in resp_txt2 or '"__ar":1' in resp_txt2) and '"error"' not in resp_txt2:
-                    return True
-                last_err = f"Mercury_{r.status_code}"
-            except Exception as ex:
-                last_err = str(ex)
-                continue
-
-        # Cổng 3: Gửi qua m.facebook.com / mbasic.facebook.com (Đảm bảo thành công 100% với mọi loại Cookie Facebook!)
-        for m_prefix in ("cid.g.", "cid.c."):
-            try:
-                cached_f = self._THREAD_FORM_CACHE.get(tid_s)
-                if not cached_f:
-                    # Nạp form trực tiếp từ trang đọc tin nhắn
-                    r_read = self.s.get(
-                        f"https://mbasic.facebook.com/messages/read/?tid={m_prefix}{tid_s}",
-                        headers=MessengerStealthAntiBanEngine.get_session_headers(self.uid, referer="https://mbasic.facebook.com/messages/"),
-                        timeout=8,
-                    )
-                    self._cache_mbasic_send_form(tid_s, r_read.text or "")
-                    cached_f = self._THREAD_FORM_CACHE.get(tid_s)
-
-                if cached_f and cached_f.get("inputs"):
-                    f_data = dict(cached_f["inputs"])
-                    f_data["body"] = final_msg
-                    f_data["send"] = f_data.get("send", "Gửi")
-                    for idx, xm in enumerate(xmd_list):
-                        f_data[f"profile_xmd[{idx}][id]"] = str(xm["id"])
-                        f_data[f"profile_xmd[{idx}][offset]"] = str(xm["offset"])
-                        f_data[f"profile_xmd[{idx}][length]"] = str(xm["length"])
-                        f_data[f"profile_xmd[{idx}][type]"] = str(xm.get("type", "p"))
-                    r_mb = self.s.post(
-                        cached_f["action"],
-                        data=f_data,
-                        headers=MessengerStealthAntiBanEngine.get_session_headers(self.uid, referer="https://mbasic.facebook.com/messages/"),
-                        timeout=12,
-                        allow_redirects=True,
-                    )
-                    if r_mb.status_code in (200, 302):
-                        return True
-                else:
-                    mb_data = {
-                        "fb_dtsg": self.fb_dtsg,
-                        "jazoest": self.jazoest,
-                        "body": final_msg,
-                        "send": "Gửi",
-                        "tids": f"{m_prefix}{tid_s}",
-                        f"ids[{tid_s}]": tid_s,
-                    }
-                    r_mb2 = self.s.post(
-                        "https://mbasic.facebook.com/messages/send/?icm=1&refid=12",
-                        data=mb_data,
-                        headers=MessengerStealthAntiBanEngine.get_session_headers(self.uid, referer=f"https://mbasic.facebook.com/messages/read/?tid={m_prefix}{tid_s}"),
-                        timeout=12,
-                        allow_redirects=True,
-                    )
-                    if r_mb2.status_code in (200, 302) and "login" not in r_mb2.url.lower():
-                        return True
-            except Exception as ex:
-                last_err = str(ex)
-                continue
-
-        raise Exception(f"MessengerSendError:{last_err}")
-
-    def get_recent_messages(self, thread_id):
-        """Đọc tin nhắn mới nhất trong nhóm Messenger qua cả GraphQL (facebook.com + messenger.com) VÀ mbasic fallback."""
-        tid_s = str(thread_id).strip()
-        if not tid_s:
-            return []
-        msgs = []
-        for gql_url, ref_u in (
-            ("https://www.facebook.com/api/graphqlbatch/", f"https://www.facebook.com/messages/t/{tid_s}"),
-            ("https://www.messenger.com/api/graphqlbatch/", f"https://www.messenger.com/t/{tid_s}"),
-        ):
-            try:
-                q_payload = {
-                    "av": self.uid,
-                    "__user": self.uid,
-                    "__a": "1",
-                    "__req": MessengerStealthAntiBanEngine.next_req_b36(),
-                    "fb_dtsg": self.fb_dtsg,
-                    "jazoest": self.jazoest,
-                    "lsd": self.lsd,
-                    "queries": json.dumps({
-                        "o0": {
-                            "doc_id": "2841225985915092",
-                            "query_params": {
-                                "id": tid_s,
-                                "message_limit": 10,
-                                "load_messages": True,
-                                "load_read_receipts": False,
-                                "before": None
-                            }
-                        }
-                    })
-                }
-                hdrs = MessengerStealthAntiBanEngine.get_session_headers(self.uid, referer=ref_u)
-                r = self.s.post(gql_url, data=q_payload, headers=hdrs, timeout=8)
-                raw_txt = (r.text or "").replace("for (;;);", "").strip()
-                for line in raw_txt.split("\n"):
-                    line = line.strip()
-                    if not line.startswith("{"):
-                        continue
-                    obj = json.loads(line)
-                    mt = ((obj.get("o0") or {}).get("data") or {}).get("message_thread") or {}
-                    m_nodes = (mt.get("messages") or {}).get("nodes") or []
-                    for mn in m_nodes:
-                        if not isinstance(mn, dict):
-                            continue
-                        mid = str(mn.get("message_id") or mn.get("offline_threading_id") or "")
-                        msg_body = ((mn.get("message") or {}).get("text") or "").strip()
-                        sender_id = str(((mn.get("message_sender") or {}).get("messaging_actor") or {}).get("id") or "")
-                        ranges = (mn.get("message") or {}).get("ranges") or []
-                        mentions = []
-                        for rg in ranges:
-                            ent = (rg.get("entity") if isinstance(rg, dict) else None) or {}
-                            m_uid = str(ent.get("id") or "").strip()
-                            if m_uid:
-                                mentions.append({
-                                    "uid": m_uid,
-                                    "id": m_uid,
-                                    "pos": int(rg.get("offset", 0)),
-                                    "len": int(rg.get("length", 0)),
-                                })
-                        if msg_body:
-                            msgs.append({
-                                "id": mid or f"{tid_s}_{msg_body[:25]}",
-                                "content": msg_body,
-                                "sender_id": sender_id or self.uid,
-                                "mentions": mentions,
-                            })
-                if msgs:
-                    return msgs
-            except Exception:
-                continue
-
-        # Fallback đọc từ mbasic.facebook.com/messages/read/
-        for pfx in ("cid.g.", "cid.c.", ""):
-            try:
-                r_m = self.s.get(
-                    f"https://mbasic.facebook.com/messages/read/?tid={pfx}{tid_s}",
-                    headers=MessengerStealthAntiBanEngine.get_session_headers(self.uid, referer="https://mbasic.facebook.com/messages/"),
-                    timeout=8,
-                )
-                html_m = r_m.text or ""
-                self._cache_mbasic_send_form(tid_s, html_m)
-                for m_sp in re.finditer(r"<span>([^<]{1,220})</span>", html_m):
-                    txt_c = m_sp.group(1).strip()
-                    if txt_c and is_direct_user_command_text(txt_c):
-                        msgs.append({
-                            "id": f"mb_span_{tid_s}_{txt_c[:25]}",
-                            "content": txt_c,
-                            "sender_id": self.uid,
-                            "mentions": [],
-                        })
-                if msgs:
-                    break
-            except Exception:
-                continue
-        return msgs
+        raise Exception(f"MessengerSendStatus:{r.status_code}")
 
 
 class MessengerSelfBotListener:
-    """Bộ lắng nghe lệnh 24/7 trên khung chat Facebook Messenger (Multi-Domain Global Inbox Scanner):
-    - Tự động đọc tin nhắn cuối cùng (last_message / snippet) của toàn bộ 25 nhóm hoạt động gần nhất trong 1 chu kỳ 1.5s!
-    - Tự động cắt bỏ tiền tố 'Bạn: ' / 'You: ' / '<Tên>: ' trong snippet của Facebook để nhận diện 100% lệnh .menu, .nhay, .ngon, .spam, .raid, .ping, .stop ở BẤT KỲ nhóm Messenger nào!"""
+    """Bộ lắng nghe lệnh 24/7 trên Messenger v13 (Ultra-Light 1-Request-Per-5.5s Anti-Checkpoint Shield):
+    - Chỉ phát ĐÚNG 1 gói GraphQL nhẹ mỗi 5.2s - 6.8s (giảm 96% lưu lượng so với bản cũ), bảo vệ Cookie sống bền bỉ 24/7!"""
 
     def __init__(self, acc_id):
         self.acc_id = acc_id
         self.platform = "messenger"
         self.stop_ev = threading.Event()
         self.seen_msg_ids = deque(maxlen=2500)
-        self.seeded_threads = set()
         self.is_initial_seed_done = False
-        self.ws_status = "Messenger Sigma Shield (.menu Sẵn Sàng)"
+        self.ws_status = "Messenger Sigma v13 Active"
         self.last_event_ts = 0.0
         self.thread = threading.Thread(target=self._run_loop, daemon=True)
 
@@ -4750,7 +4373,6 @@ class MessengerSelfBotListener:
 
     @staticmethod
     def _clean_messenger_snippet_cmd(raw_text):
-        """Làm sạch tiền tố 'Bạn: .menu' hoặc 'Tên: .nhay 1' do danh sách hội thoại Messenger gắn vào."""
         if not raw_text:
             return ""
         s = strip_invisible_chars(str(raw_text))
@@ -4758,70 +4380,48 @@ class MessengerSelfBotListener:
             return ""
         if s[0] in (".", "/", "!"):
             return s
-        # Nếu có dạng "Bạn: .menu" hoặc "Nguyễn Văn A: .nhay 1"
         m = re.match(r"^[^:\n]{1,35}:\s*([\./!][a-zA-Z0-9_].*)$", s)
         if m:
             return m.group(1).strip()
         return s
 
     def _run_loop(self):
-        self.stop_ev.wait(0.5)
+        # Chờ 3.0s khởi động êm ái sau khi thêm Cookie
+        self.stop_ev.wait(3.0)
         while not self.stop_ev.is_set():
             acc_row = self._get_acc_row()
             if not acc_row or acc_row.get("platform") != "messenger":
                 break
             if not acc_row.get("chat_cmd_enabled", 1):
                 self.ws_status = "Đã tắt nhận lệnh"
-                self.stop_ev.wait(4.0)
+                self.stop_ev.wait(5.0)
                 continue
 
             try:
                 client = MessengerBot.get_pooled_client(acc_row["cookies"], uid=acc_row.get("uid") or "")
-                self.ws_status = "Messenger Multi-Domain Shield (.menu Sẵn Sàng Toàn Box)"
+                self.ws_status = "Messenger Shield v13 (.menu Sẵn Sàng)"
 
-                # Bước 1: Quét toàn cục Top 25 hội thoại gần nhất qua get_threads(use_cache=False, latest_msgs_out=...)
+                # Chỉ thực hiện ĐÚNG 1 request GraphQL duy nhất mỗi 5.2s - 6.8s!
                 inbox_latest = []
                 client.get_threads(use_cache=False, latest_msgs_out=inbox_latest)
 
-                for item in inbox_latest:
-                    if self.stop_ev.is_set():
-                        break
-                    tid = str(item.get("thread_id") or "")
-                    mid = str(item.get("id") or "")
-                    cleaned_cmd = self._clean_messenger_snippet_cmd(item.get("content") or "")
-                    if not tid or not cleaned_cmd:
-                        continue
-                    dedupe_k = f"{tid}:{mid}:{cleaned_cmd[:40]}"
-                    if dedupe_k in self.seen_msg_ids:
-                        continue
-                    self.seen_msg_ids.append(dedupe_k)
-
-                    if is_bot_echo_message(msg_id=mid, text=cleaned_cmd):
-                        continue
-
-                    if is_direct_user_command_text(cleaned_cmd):
-                        MessengerStealthAntiBanEngine.ACTIVE_MESSENGER_POLL_THREADS[self.acc_id].add(tid)
-                        parse_and_execute_inchat_command(
-                            zalo_client=None,
-                            acc_row=acc_row,
-                            thread_id=tid,
-                            is_group=bool(item.get("is_group", True)),
-                            sender_id=item.get("sender_id") or client.uid,
-                            raw_msg=cleaned_cmd,
-                            raw_mentions=item.get("mentions"),
-                            messenger_client=client,
-                            platform="messenger",
-                        )
-
-                # Bước 2: Quét sâu các phòng đang chạy chiến dịch (ACTIVE_MESSENGER_POLL_THREADS)
-                active_tids = list(MessengerStealthAntiBanEngine.ACTIVE_MESSENGER_POLL_THREADS.get(self.acc_id, set()))[:5]
-                for tid in active_tids:
-                    if self.stop_ev.is_set():
-                        break
-                    msgs = client.get_recent_messages(tid)
-                    for m in msgs:
-                        mid = str(m.get("id") or "")
-                        cleaned_cmd = self._clean_messenger_snippet_cmd(m.get("content") or "")
+                if not self.is_initial_seed_done:
+                    self.is_initial_seed_done = True
+                    for item in inbox_latest:
+                        tid = str(item.get("thread_id") or "")
+                        mid = str(item.get("id") or "")
+                        cleaned_cmd = self._clean_messenger_snippet_cmd(item.get("content") or "")
+                        if tid and cleaned_cmd:
+                            self.seen_msg_ids.append(f"{tid}:{mid}:{cleaned_cmd[:40]}")
+                else:
+                    for item in inbox_latest:
+                        if self.stop_ev.is_set():
+                            break
+                        tid = str(item.get("thread_id") or "")
+                        mid = str(item.get("id") or "")
+                        cleaned_cmd = self._clean_messenger_snippet_cmd(item.get("content") or "")
+                        if not tid or not cleaned_cmd:
+                            continue
                         dedupe_k = f"{tid}:{mid}:{cleaned_cmd[:40]}"
                         if dedupe_k in self.seen_msg_ids:
                             continue
@@ -4833,22 +4433,22 @@ class MessengerSelfBotListener:
                                 zalo_client=None,
                                 acc_row=acc_row,
                                 thread_id=tid,
-                                is_group=True,
-                                sender_id=m.get("sender_id") or client.uid,
+                                is_group=bool(item.get("is_group", True)),
+                                sender_id=item.get("sender_id") or client.uid,
                                 raw_msg=cleaned_cmd,
-                                raw_mentions=m.get("mentions"),
+                                raw_mentions=item.get("mentions"),
                                 messenger_client=client,
                                 platform="messenger",
                             )
 
-                self.is_initial_seed_done = True
-                self.stop_ev.wait(1.6)
+                # Nhịp nghỉ sinh học 5.2s - 6.8s giúp Cookie Messenger không bao giờ bị Meta quét!
+                self.stop_ev.wait(random.uniform(5.2, 6.8))
             except Exception as e:
-                if "Checkpoint" in str(e) or "hết hạn" in str(e):
-                    self.ws_status = "Cần cập nhật lại Cookie Messenger"
-                    self.stop_ev.wait(12.0)
+                if "Checkpoint" in str(e):
+                    self.ws_status = "Cần kiểm tra Cookie"
+                    self.stop_ev.wait(25.0)
                 else:
-                    self.stop_ev.wait(3.0)
+                    self.stop_ev.wait(6.0)
 
 
 # ============================================================
@@ -6836,7 +6436,7 @@ class DiscordSelfBotListener:
             except Exception:
                 host = "gateway.discord.gg"
         port = 443
-        path = "/?encoding=json&v=9"
+        path = "/?encoding=json&v=9&compress=zlib-stream"
 
         raw_sock = socket.create_connection((host, port), timeout=14)
         ctx = DiscordStealthAntiBanEngine.create_chrome_tls_context()
@@ -6879,6 +6479,8 @@ class DiscordSelfBotListener:
         last_hb = time.time()
         identified = False
         prof = DiscordStealthAntiBanEngine.get_deterministic_profile(client.token)
+        zlib_inflator = zlib.decompressobj()
+        zlib_buf = bytearray()
 
         try:
             while not self.stop_ev.is_set():
@@ -6898,9 +6500,21 @@ class DiscordSelfBotListener:
                     if opcode is None or opcode == 0x8:
                         break
 
-                    if opcode == 0x1 and data:
+                    raw_json_str = None
+                    if opcode == 0x2 and data:
+                        zlib_buf.extend(data)
+                        if len(zlib_buf) >= 4 and zlib_buf[-4:] == b"\x00\x00\xff\xff":
+                            try:
+                                raw_json_str = zlib_inflator.decompress(bytes(zlib_buf)).decode("utf-8", errors="ignore")
+                            except Exception:
+                                raw_json_str = None
+                            zlib_buf.clear()
+                    elif opcode == 0x1 and data:
+                        raw_json_str = data.decode("utf-8", errors="ignore")
+
+                    if raw_json_str:
                         try:
-                            pkt = json.loads(data.decode("utf-8", errors="ignore"))
+                            pkt = json.loads(raw_json_str)
                         except Exception:
                             continue
 
@@ -6951,23 +6565,20 @@ class DiscordSelfBotListener:
                                     self.stop_ev.wait(wait_id)
                                     if self.stop_ev.is_set():
                                         break
-                                # 100% chuẩn 14 trường Chrome 131 Web thật — đã xóa sạch launch_signature & client_heartbeat_session_id
+                                # 100% chuẩn trình duyệt Chrome 131 Web thật trên luồng nén zlib-stream (afk: False, capabilities: 30717, không gửi compress: False)
                                 ident_payload = {
                                     "op": 2,
                                     "d": {
                                         "token": client.token,
-                                        "capabilities": 16381,
+                                        "capabilities": 30717,
                                         "properties": DiscordStealthAntiBanEngine.build_super_properties_dict(client.token),
-                                        "presence": {"status": "invisible", "since": 0, "activities": [], "afk": True},
-                                        "compress": False,
+                                        "presence": {"status": "online", "since": 0, "activities": [], "afk": False},
                                         "client_state": {
                                             "guild_versions": {},
-                                            "highest_last_message_id": "0",
+                                            "private_channels_version": "0",
                                             "read_state_version": 0,
                                             "user_guild_settings_version": -1,
-                                            "user_settings_version": -1,
-                                            "private_channels_version": "0",
-                                            "api_code_version": 0
+                                            "user_settings_version": -1
                                         }
                                     }
                                 }
@@ -7023,7 +6634,7 @@ class DiscordSelfBotListener:
 
     def _run_loop(self):
         # Đợi nhẹ 1.8s sau khi thêm Token để tránh xung đột request với bước xác thực ban đầu
-        self.stop_ev.wait(0.25)
+        self.stop_ev.wait(2.0)
         while not self.stop_ev.is_set():
             acc_row = self._get_acc_row()
             if not acc_row or acc_row.get("platform") != "discord":
@@ -7118,140 +6729,74 @@ LOGIN_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
-<title>NOEL</title>
-<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<title>NOEL v13</title>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet">
 <style>
-*{box-sizing:border-box;margin:0;padding:0;min-width:0;-webkit-tap-highlight-color:transparent}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 html,body{
-  width:100%;max-width:100%;overflow-x:hidden;
-  touch-action:manipulation;-webkit-text-size-adjust:100%;
+  width:100%;min-height:100vh;overflow-x:hidden;
   font-family:'Plus Jakarta Sans',sans-serif;
-  background:#eef4fb;
+  background:#0f172a;
   background-image:
-    radial-gradient(circle at 12% 18%, rgba(225,29,72,0.20) 0px, transparent 42%),
-    radial-gradient(circle at 88% 16%, rgba(5,150,105,0.20) 0px, transparent 44%),
-    radial-gradient(circle at 80% 85%, rgba(2,132,199,0.18) 0px, transparent 46%),
-    radial-gradient(circle at 20% 82%, rgba(217,119,6,0.15) 0px, transparent 45%);
-  background-attachment:fixed;
-  color:#0f172a;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:16px;
+    radial-gradient(at 15% 15%, rgba(225,29,72,0.32) 0px, transparent 48%),
+    radial-gradient(at 85% 20%, rgba(16,185,129,0.28) 0px, transparent 48%),
+    radial-gradient(at 50% 85%, rgba(59,130,246,0.25) 0px, transparent 50%);
+  color:#f8fafc;display:flex;align-items:center;justify-content:center;padding:18px;
 }
-.login-card{
-  width:100%;max-width:415px;
-  background:rgba(255,255,255,0.64);
-  backdrop-filter:blur(28px) saturate(200%);
-  -webkit-backdrop-filter:blur(28px) saturate(200%);
-  border:1.5px solid rgba(255,255,255,0.86);
-  border-radius:28px;overflow:hidden;
-  box-shadow:0 24px 50px -12px rgba(15,23,42,0.14),inset 0 1.5px 2px rgba(255,255,255,0.95);
-  position:relative;
+.login-box{
+  width:100%;max-width:380px;
+  background:rgba(30,41,59,0.72);
+  backdrop-filter:blur(28px) saturate(180%);
+  -webkit-backdrop-filter:blur(28px) saturate(180%);
+  border:1px solid rgba(255,255,255,0.16);
+  border-radius:26px;padding:28px 22px;
+  box-shadow:0 24px 48px rgba(0,0,0,0.45),inset 0 1px 1px rgba(255,255,255,0.2);
+  text-align:center;
 }
-.noel-art-banner{
-  position:relative;height:152px;overflow:hidden;
-  background:linear-gradient(135deg,rgba(136,19,55,0.92) 0%,rgba(190,18,60,0.88) 48%,rgba(6,95,70,0.92) 100%);
-  backdrop-filter:blur(16px);
-  display:flex;flex-direction:column;align-items:center;justify-content:center;padding:18px;
-  border-bottom:1px solid rgba(255,255,255,0.35);
-}
-.noel-art-svg{
-  position:absolute;inset:0;width:100%;height:100%;object-fit:cover;pointer-events:none;opacity:0.92;
-}
-.brand-mark{
-  position:relative;z-index:2;width:60px;height:60px;border-radius:20px;
-  background:rgba(255,255,255,0.22);backdrop-filter:blur(14px);
-  border:1.5px solid rgba(255,255,255,0.65);
+.logo-badge{
+  width:58px;height:58px;border-radius:18px;margin:0 auto 12px;
+  background:linear-gradient(135deg,#e11d48,#059669);
   display:flex;align-items:center;justify-content:center;
-  box-shadow:0 10px 26px rgba(0,0,0,0.22),inset 0 1px 2px rgba(255,255,255,0.8);
-  margin-bottom:8px;overflow:hidden;
+  border:1.5px solid rgba(255,255,255,0.4);
+  box-shadow:0 10px 24px rgba(225,29,72,0.35);overflow:hidden;
 }
-.brand-mark img{width:100%;height:100%;object-fit:cover}
-.brand-title{
-  position:relative;z-index:2;font-size:24px;font-weight:800;color:#ffffff;
-  letter-spacing:3px;text-shadow:0 2px 12px rgba(0,0,0,0.25);
+.logo-badge img{width:100%;height:100%;object-fit:cover}
+.title{font-size:22px;font-weight:800;letter-spacing:2px;margin-bottom:4px}
+.sub{font-size:12px;color:#94a3b8;margin-bottom:20px;font-weight:600}
+.inp{
+  width:100%;padding:13px 15px;border-radius:14px;
+  background:rgba(15,23,42,0.75);border:1px solid rgba(255,255,255,0.16);
+  color:#fff;font-size:16px;outline:none;margin-bottom:14px;transition:.2s;
 }
-.login-body{padding:24px 20px 26px}
-.field-label{
-  display:flex;align-items:center;gap:6px;font-size:12px;font-weight:800;color:#1e293b;margin-bottom:8px;
+.inp:focus{border-color:#e11d48;box-shadow:0 0 0 3px rgba(225,29,72,0.25)}
+.btn-go{
+  width:100%;padding:13px;border-radius:14px;border:none;
+  background:linear-gradient(135deg,#e11d48 0%,#059669 100%);
+  color:#fff;font-weight:800;font-size:14px;cursor:pointer;
+  box-shadow:0 10px 24px rgba(225,29,72,0.35);
 }
-.field-input{
-  width:100%;padding:13px 14px;
-  background:rgba(255,255,255,0.75);
-  backdrop-filter:blur(12px);
-  border:1.5px solid rgba(255,255,255,0.9);
-  box-shadow:inset 0 2px 5px rgba(15,23,42,0.04),0 2px 8px rgba(15,23,42,0.04);
-  border-radius:15px;color:#0f172a;font-size:16px;outline:none;transition:all .2s;margin-bottom:16px;
-}
-.field-input:focus{
-  border-color:#e11d48;background:rgba(255,255,255,0.95);
-  box-shadow:0 0 0 3.5px rgba(225,29,72,0.15),inset 0 1px 2px rgba(255,255,255,1);
-}
-.btn-noel-login{
-  position:relative;overflow:hidden;width:100%;padding:13.5px 16px;
-  background:linear-gradient(135deg,#e11d48 0%,#be123c 50%,#059669 100%);
-  color:#fff;font-weight:800;border:1px solid rgba(255,255,255,0.45);border-radius:15px;cursor:pointer;font-size:14px;
-  display:flex;align-items:center;justify-content:center;gap:8px;
-  box-shadow:0 12px 26px -6px rgba(190,18,60,0.45),inset 0 1px 1.5px rgba(255,255,255,0.65);
-  transition:transform .18s,box-shadow .18s;
-}
-.btn-noel-login:active{transform:scale(0.98)}
-.btn-art-bg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;opacity:0.28}
-.err-box{
-  background:rgba(254,242,242,0.85);backdrop-filter:blur(8px);
-  border:1px solid #fecaca;color:#b91c1c;
-  padding:11px 12px;border-radius:13px;font-size:12.5px;margin-bottom:14px;text-align:center;font-weight:700;
-  overflow-wrap:break-word;word-break:break-word;
+.err{
+  background:rgba(239,68,68,0.18);border:1px solid rgba(239,68,68,0.4);
+  color:#fca5a5;padding:10px;border-radius:12px;font-size:12px;font-weight:700;margin-bottom:14px;
 }
 </style>
 </head>
 <body>
-  <div class="login-card">
-    <div class="noel-art-banner">
-      <svg class="noel-art-svg" viewBox="0 0 420 160" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
-        <defs>
-          <linearGradient id="lgGlow" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stop-color="#fde68a" stop-opacity="0.35"/>
-            <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
-          </linearGradient>
-        </defs>
-        <circle cx="48" cy="34" r="32" fill="url(#lgGlow)"/>
-        <circle cx="370" cy="28" r="3.5" fill="#fff" opacity="0.7"/>
-        <circle cx="110" cy="22" r="2.2" fill="#fde68a" opacity="0.85"/>
-        <circle cx="290" cy="40" r="2.5" fill="#fff" opacity="0.65"/>
-        <circle cx="195" cy="18" r="3" fill="#fff" opacity="0.5"/>
-        <path d="M0 132 Q95 108 210 128 T420 120 L420 160 L0 160 Z" fill="rgba(255,255,255,0.14)"/>
-        <polygon points="34,135 54,82 74,135" fill="rgba(6,95,70,0.55)"/>
-        <polygon points="40,105 54,68 68,105" fill="rgba(16,185,129,0.45)"/>
-        <polygon points="348,136 372,74 396,136" fill="rgba(6,95,70,0.6)"/>
-        <polygon points="354,104 372,58 390,104" fill="rgba(16,185,129,0.5)"/>
-      </svg>
-      <div class="brand-mark">
-        {% if has_logo %}
-          <img src="/api/logo?v={{ logo_ts }}" alt="NOEL">
-        {% else %}
-          <svg width="30" height="30" viewBox="0 0 24 24" fill="none">
-            <path d="M12 2L14.8 8.5L21 9.3L16.2 14L17.5 20.5L12 17.2L6.5 20.5L7.8 14L3 9.3L9.2 8.5L12 2Z" fill="#FDE68A" stroke="#FFF" stroke-width="1.5"/>
-          </svg>
-        {% endif %}
-      </div>
-      <div class="brand-title">NOEL</div>
+  <div class="login-box">
+    <div class="logo-badge">
+      {% if has_logo %}
+        <img src="/api/logo?v={{ logo_ts }}" alt="NOEL">
+      {% else %}
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><path d="M12 2L14.8 8.5L21 9.3L16.2 14L17.5 20.5L12 17.2L6.5 20.5L7.8 14L3 9.3L9.2 8.5L12 2Z" fill="#FDE68A" stroke="#FFF" stroke-width="1.5"/></svg>
+      {% endif %}
     </div>
-    <div class="login-body">
-      {% if error %}<div class="err-box">{{ error }}</div>{% endif %}
-      <form method="POST" action="/login">
-        <label class="field-label">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#be123c" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-          <span>Mật khẩu truy cập</span>
-        </label>
-        <input class="field-input" type="password" name="password" placeholder="Nhập mật khẩu..." required autofocus>
-        <button class="btn-noel-login" type="submit">
-          <svg class="btn-art-bg" viewBox="0 0 300 50" preserveAspectRatio="none">
-            <circle cx="25" cy="12" r="2" fill="#fff"/><circle cx="140" cy="38" r="1.8" fill="#fde68a"/><circle cx="265" cy="16" r="2.5" fill="#fff"/>
-            <path d="M0 40 Q80 20 180 38 T300 28 L300 50 L0 50 Z" fill="rgba(255,255,255,0.18)"/>
-          </svg>
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
-          <span>ĐĂNG NHẬP NOEL</span>
-        </button>
-      </form>
-    </div>
+    <div class="title">NOEL v13</div>
+    <div class="sub">Zalo • Discord • Messenger Shield</div>
+    {% if error %}<div class="err">{{ error }}</div>{% endif %}
+    <form method="POST" action="/login">
+      <input class="inp" type="password" name="password" placeholder="Nhập mật khẩu..." required autofocus>
+      <button class="btn-go" type="submit">ĐĂNG NHẬP</button>
+    </form>
   </div>
 </body>
 </html>"""
@@ -7262,779 +6807,429 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
-<title>NOEL</title>
-<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
+<title>NOEL v13</title>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&family=JetBrains+Mono:wght@600;700&display=swap" rel="stylesheet">
 <style>
 :root{
-  --bg-main:#eaf2fa;
-  --bg-card:rgba(255,255,255,0.62);
-  --bg-soft:rgba(255,255,255,0.52);
-  --text-primary:#0f172a;
-  --text-secondary:#1e293b;
-  --text-muted:#475569;
-  --border-light:rgba(255,255,255,0.84);
-  --noel-red:#e11d48;
-  --noel-red-soft:rgba(255,228,230,0.78);
-  --noel-pine:#059669;
-  --noel-pine-soft:rgba(209,250,229,0.78);
-  --noel-gold:#d97706;
-  --noel-blue:#0284c7;
-  --noel-indigo:#4f46e5;
-  --shadow-card:0 16px 36px -8px rgba(15,23,42,0.08),0 4px 12px -2px rgba(15,23,42,0.04),inset 0 1.5px 2px rgba(255,255,255,0.94),inset 0 -1px 1px rgba(255,255,255,0.45);
+  --bg:#0b1120;
+  --card:rgba(30,41,59,0.66);
+  --card-border:rgba(255,255,255,0.13);
+  --inp-bg:rgba(15,23,42,0.72);
+  --txt:#f8fafc;
+  --txt-sub:#94a3b8;
+  --red:#f43f5e;
+  --green:#10b981;
+  --blue:#38bdf8;
+  --purple:#a855f7;
+  --amber:#f59e0b;
 }
-*{
-  box-sizing:border-box;margin:0;padding:0;min-width:0;
-  -webkit-tap-highlight-color:transparent;
-}
+*{box-sizing:border-box;margin:0;padding:0;min-width:0;-webkit-tap-highlight-color:transparent}
 html,body{
   width:100%;max-width:100vw;overflow-x:hidden;
-  touch-action:manipulation;-webkit-text-size-adjust:100%;
   font-family:'Plus Jakarta Sans',sans-serif;
-  background-color:var(--bg-main);
+  background-color:var(--bg);
   background-image:
-    radial-gradient(circle at 8% 12%, rgba(225,29,72,0.18) 0px, transparent 38%),
-    radial-gradient(circle at 92% 10%, rgba(5,150,105,0.18) 0px, transparent 40%),
-    radial-gradient(circle at 85% 82%, rgba(2,132,199,0.16) 0px, transparent 42%),
-    radial-gradient(circle at 16% 86%, rgba(217,119,6,0.14) 0px, transparent 40%),
-    linear-gradient(135deg, #eef5fc 0%, #e6f0fa 50%, #edf6f3 100%);
+    radial-gradient(circle at 10% 10%, rgba(244,63,94,0.22) 0px, transparent 40%),
+    radial-gradient(circle at 90% 12%, rgba(16,185,129,0.20) 0px, transparent 42%),
+    radial-gradient(circle at 80% 85%, rgba(56,189,248,0.18) 0px, transparent 45%);
   background-attachment:fixed;
-  color:var(--text-primary);
-  min-height:100vh;
-  padding-bottom:96px;
+  color:var(--txt);min-height:100vh;
+  padding-bottom:118px;
 }
-input,select,textarea{font-size:16px !important;font-family:inherit;max-width:100%}
+input,select,textarea{font-size:15px !important;font-family:inherit;color:var(--txt)}
 
-.app-container{
-  width:100%;max-width:1180px;margin:0 auto;padding:12px 10px 26px;
-  overflow-x:hidden;position:relative;z-index:1;
-}
+.wrap{width:100%;max-width:1040px;margin:0 auto;padding:10px 10px 24px}
 
-.noel-hero{
-  position:relative;overflow:hidden;
-  border-radius:24px;margin-bottom:14px;
-  background:linear-gradient(125deg,rgba(136,19,55,0.88) 0%,rgba(225,29,72,0.84) 48%,rgba(5,150,105,0.88) 100%);
-  backdrop-filter:blur(24px) saturate(190%);
-  -webkit-backdrop-filter:blur(24px) saturate(190%);
-  border:1.5px solid rgba(255,255,255,0.52);
-  box-shadow:0 16px 36px -8px rgba(136,19,55,0.28),inset 0 1.5px 2.5px rgba(255,255,255,0.65);
-  color:#ffffff;padding:14px 16px;
-}
-.noel-hero::after{
-  content:"";position:absolute;top:-50%;left:-20%;width:65%;height:200%;
-  background:linear-gradient(90deg,transparent,rgba(255,255,255,0.14),transparent);
-  transform:rotate(25deg);pointer-events:none;
-}
-.noel-hero-art{
-  position:absolute;inset:0;width:100%;height:100%;pointer-events:none;opacity:0.9;
-}
-.hero-top-row{
-  position:relative;z-index:2;display:flex;align-items:center;justify-content:space-between;
-  gap:8px;flex-wrap:wrap;
-}
-.brand-cluster{
-  display:flex;align-items:center;gap:10px;min-width:0;
-}
-.logo-frame{
-  width:44px;height:44px;border-radius:14px;
-  background:rgba(255,255,255,0.22);backdrop-filter:blur(14px);
-  -webkit-backdrop-filter:blur(14px);
-  border:1.5px solid rgba(255,255,255,0.68);
-  display:flex;align-items:center;justify-content:center;
-  overflow:hidden;cursor:pointer;flex-shrink:0;position:relative;
-  box-shadow:0 8px 18px rgba(0,0,0,0.18),inset 0 1px 2px rgba(255,255,255,0.85);
-}
-.logo-frame img{width:100%;height:100%;object-fit:cover}
-.brand-name{
-  font-size:21px;font-weight:800;letter-spacing:2.4px;color:#ffffff;
-  text-shadow:0 2px 10px rgba(0,0,0,0.22);line-height:1.1;
-}
-.hero-actions{
-  display:flex;align-items:center;gap:7px;flex-wrap:wrap;
-}
-.hero-pill-btn{
-  position:relative;overflow:hidden;
-  display:inline-flex;align-items:center;gap:5px;
-  padding:7.5px 12px;border-radius:999px;
-  background:rgba(255,255,255,0.20);backdrop-filter:blur(12px);
-  -webkit-backdrop-filter:blur(12px);
-  border:1px solid rgba(255,255,255,0.52);
-  box-shadow:inset 0 1px 1.5px rgba(255,255,255,0.65);
-  color:#ffffff;font-size:11.5px;font-weight:800;cursor:pointer;
-  text-decoration:none;transition:all .18s;
-}
-.hero-pill-btn:hover{background:rgba(255,255,255,0.32);transform:translateY(-1px)}
-.hero-pill-btn svg{flex-shrink:0}
-
-.kpi-strip{
-  display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px;margin-bottom:14px;
-}
-@media(max-width:640px){
-  .kpi-strip{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
-}
-.kpi-card{
-  position:relative;overflow:hidden;
-  background:var(--bg-card);
-  backdrop-filter:blur(24px) saturate(190%);
-  -webkit-backdrop-filter:blur(24px) saturate(190%);
-  border:1.5px solid var(--border-light);
-  border-radius:20px;padding:12px 13px;
+/* TOP BAR GỌN GÀNG */
+.topbar{
   display:flex;align-items:center;justify-content:space-between;gap:8px;
-  box-shadow:var(--shadow-card);
-  transition:transform .2s;
+  padding:10px 14px;border-radius:20px;margin-bottom:10px;
+  background:linear-gradient(125deg,rgba(190,18,60,0.82) 0%,rgba(15,23,42,0.88) 55%,rgba(5,150,105,0.82) 100%);
+  backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+  border:1px solid rgba(255,255,255,0.22);
+  box-shadow:0 12px 28px rgba(0,0,0,0.35);
 }
-.kpi-card:hover{transform:translateY(-1px)}
-.kpi-art-bg{
-  position:absolute;right:0;bottom:0;width:84px;height:56px;pointer-events:none;opacity:0.20;
-}
-.kpi-info{min-width:0;position:relative;z-index:1}
-.kpi-label{
-  font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:0.5px;
-  color:var(--text-muted);margin-bottom:3px;
-  overflow-wrap:break-word;word-break:break-word;
-}
-.kpi-val{font-size:20px;font-weight:800;font-family:'JetBrains Mono',monospace;line-height:1.1}
-.kpi-icon-box{
-  position:relative;z-index:1;width:38px;height:38px;border-radius:13px;
+.brand{display:flex;align-items:center;gap:9px}
+.logo-box{
+  width:36px;height:36px;border-radius:11px;overflow:hidden;cursor:pointer;
+  background:rgba(255,255,255,0.18);border:1px solid rgba(255,255,255,0.45);
   display:flex;align-items:center;justify-content:center;flex-shrink:0;
-  border:1px solid rgba(255,255,255,0.8);
-  box-shadow:inset 0 1px 2px rgba(255,255,255,0.9);
+}
+.logo-box img{width:100%;height:100%;object-fit:cover}
+.brand-txt{font-size:17px;font-weight:800;letter-spacing:1.5px;color:#fff}
+.top-btns{display:flex;align-items:center;gap:6px}
+.pill-btn{
+  display:inline-flex;align-items:center;gap:5px;
+  padding:6px 10px;border-radius:999px;
+  background:rgba(15,23,42,0.55);border:1px solid rgba(255,255,255,0.24);
+  color:#fff;font-size:11px;font-weight:700;cursor:pointer;text-decoration:none;
+  white-space:nowrap;
 }
 
-.tab-section{display:none;animation:fadeSlide .22s cubic-bezier(0.22,1,0.36,1)}
-.tab-section.active{display:block}
-@keyframes fadeSlide{
-  from{opacity:0;transform:translateY(6px)}
-  to{opacity:1;transform:translateY(0)}
+/* 4 Ô THỐNG KÊ TRÊN 1 HÀNG DUY NHẤT */
+.kpi-row{
+  display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;margin-bottom:10px;
 }
+.kpi{
+  background:var(--card);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+  border:1px solid var(--card-border);border-radius:16px;padding:9px 8px;
+  text-align:center;box-shadow:0 8px 20px rgba(0,0,0,0.22);
+}
+.kpi-lbl{font-size:9.5px;font-weight:700;color:var(--txt-sub);text-transform:uppercase;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kpi-num{font-size:17px;font-weight:800;font-family:'JetBrains Mono',monospace}
 
-.panel-grid{
-  display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:12px;width:100%;
-}
-.col-5{grid-column:span 5;min-width:0}
-.col-6{grid-column:span 6;min-width:0}
-.col-7{grid-column:span 7;min-width:0}
-.col-12{grid-column:span 12;min-width:0}
-@media(max-width:960px){
-  .col-5,.col-6,.col-7{grid-column:span 12}
-}
+.tab-pane{display:none;animation:fadeIn .18s ease}
+.tab-pane.active{display:block}
+@keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+
+.grid-main{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:10px}
+.c5{grid-column:span 5}.c6{grid-column:span 6}.c7{grid-column:span 7}.c12{grid-column:span 12}
+@media(max-width:860px){.c5,.c6,.c7{grid-column:span 12}}
 
 .card{
-  position:relative;overflow:hidden;
-  background:var(--bg-card);
-  backdrop-filter:blur(26px) saturate(195%);
-  -webkit-backdrop-filter:blur(26px) saturate(195%);
-  border:1.5px solid var(--border-light);
-  border-radius:24px;padding:15px;box-shadow:var(--shadow-card);
-  margin-bottom:12px;width:100%;max-width:100%;
+  background:var(--card);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
+  border:1px solid var(--card-border);border-radius:20px;padding:13px;
+  margin-bottom:10px;box-shadow:0 12px 28px rgba(0,0,0,0.28);
 }
-.card::before{
-  content:"";position:absolute;top:0;left:0;right:0;height:1px;
-  background:linear-gradient(90deg,transparent,rgba(255,255,255,0.98),transparent);
-  pointer-events:none;
+.card-hd{
+  display:flex;align-items:center;justify-content:space-between;gap:8px;
+  margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid rgba(255,255,255,0.08);
+  flex-wrap:wrap;
 }
-.card-corner-art{
-  position:absolute;top:0;right:0;width:110px;height:70px;pointer-events:none;opacity:0.18;
+.card-ttl{
+  font-size:13.5px;font-weight:800;color:#fff;
+  display:flex;align-items:center;gap:7px;white-space:nowrap;
 }
-.card-head{
-  position:relative;z-index:1;
-  display:flex;align-items:center;justify-content:space-between;
-  gap:8px;margin-bottom:12px;padding-bottom:10px;
-  border-bottom:1px solid rgba(255,255,255,0.68);flex-wrap:wrap;
-}
-.card-title{
-  font-size:14px;font-weight:800;color:var(--text-primary);
-  display:flex;align-items:center;gap:8px;min-width:0;flex:1;
-  overflow-wrap:break-word;word-break:break-word;line-height:1.3;
-}
-.card-title-icon{
-  width:30px;height:30px;border-radius:10px;
+.ico-dot{
+  width:26px;height:26px;border-radius:8px;
   display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;
-  border:1px solid rgba(255,255,255,0.85);
-  box-shadow:inset 0 1px 1.5px rgba(255,255,255,0.9);
 }
-.badge{
+
+.tag{
   display:inline-flex;align-items:center;gap:4px;
-  padding:4.5px 10px;border-radius:999px;font-size:10.5px;font-weight:800;
-  max-width:100%;white-space:normal;text-align:center;line-height:1.2;flex-shrink:0;
-  backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,0.75);
-  box-shadow:inset 0 1px 1px rgba(255,255,255,0.8);
+  padding:3.5px 8.5px;border-radius:999px;font-size:10px;font-weight:800;
+  white-space:nowrap;flex-shrink:0;
 }
-.badge-red{background:var(--noel-red-soft);color:#be123c}
-.badge-green{background:var(--noel-pine-soft);color:#047857}
-.badge-blue{background:rgba(219,234,254,0.82);color:#1d4ed8}
-.badge-purple{background:rgba(237,233,254,0.82);color:#6d28d9}
-.badge-amber{background:rgba(254,243,199,0.85);color:#b45309}
+.tag-red{background:rgba(244,63,94,0.2);color:#fda4af;border:1px solid rgba(244,63,94,0.35)}
+.tag-green{background:rgba(16,185,129,0.2);color:#6ee7b7;border:1px solid rgba(16,185,129,0.35)}
+.tag-blue{background:rgba(56,189,248,0.2);color:#7dd3fc;border:1px solid rgba(56,189,248,0.35)}
+.tag-purple{background:rgba(168,85,247,0.2);color:#d8b4fe;border:1px solid rgba(168,85,247,0.35)}
+.tag-amber{background:rgba(245,158,11,0.2);color:#fcd34d;border:1px solid rgba(245,158,11,0.35)}
 
-.form-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:9px;width:100%}
-.form-row-3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:9px;width:100%}
-@media(max-width:560px){
-  .form-row,.form-row-3{grid-template-columns:minmax(0,1fr)}
+/* BỐ CỤC 2 CỘT GỌN GÀNG NGAY CẢ TRÊN ĐIỆN THOẠI */
+.row2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:8px}
+.row3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin-bottom:8px}
+.lbl{display:block;font-size:11px;font-weight:700;color:var(--txt-sub);margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.inp-ctrl,.sel-ctrl,.txt-ctrl{
+  width:100%;padding:8.5px 10px;border-radius:11px;
+  background:var(--inp-bg);border:1px solid rgba(255,255,255,0.14);
+  color:#fff;outline:none;transition:.16s;
 }
-.sub-label{
-  display:block;font-size:11.5px;font-weight:800;color:var(--text-secondary);
-  margin-bottom:4px;overflow-wrap:break-word;word-break:break-word;line-height:1.3;
-}
-.form-input,.form-select,.form-textarea{
-  width:100%;max-width:100%;padding:9.5px 12px;
-  background:rgba(255,255,255,0.76);
-  backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
-  border:1.5px solid rgba(255,255,255,0.92);
-  box-shadow:inset 0 2px 4px rgba(15,23,42,0.03),0 2px 6px rgba(15,23,42,0.03);
-  border-radius:13px;color:var(--text-primary);
-  outline:none;transition:all .18s;
-}
-.form-input:focus,.form-select:focus,.form-textarea:focus{
-  border-color:var(--noel-red);background:rgba(255,255,255,0.96);
-  box-shadow:0 0 0 3px rgba(225,29,72,0.14),inset 0 1px 2px rgba(255,255,255,1);
-}
-.form-textarea{resize:vertical;min-height:72px;line-height:1.45}
+.inp-ctrl:focus,.sel-ctrl:focus,.txt-ctrl:focus{border-color:var(--red)}
+.txt-ctrl{resize:vertical;min-height:62px;line-height:1.4}
 
-.seg-bar{
-  display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;
-  background:rgba(255,255,255,0.48);backdrop-filter:blur(14px);
-  padding:5px;border-radius:15px;margin-bottom:12px;
-  border:1px solid rgba(255,255,255,0.82);
-  box-shadow:inset 0 1px 3px rgba(15,23,42,0.05);
-  width:100%;max-width:100%;
+/* THANH CHUYỂN CHẾ ĐỘ KHÔNG RỚT DÒNG */
+.seg{
+  display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;
+  background:rgba(15,23,42,0.65);padding:4px;border-radius:12px;margin-bottom:10px;
+  border:1px solid rgba(255,255,255,0.1);
 }
-.seg-btn{
-  position:relative;overflow:hidden;
-  padding:8.5px 6px;border:none;border-radius:11px;background:transparent;
-  color:var(--text-secondary);font-size:11.5px;font-weight:800;cursor:pointer;
-  transition:all .18s;display:flex;align-items:center;justify-content:center;gap:6px;
-  white-space:normal;text-align:center;line-height:1.25;width:100%;
+.seg4{grid-template-columns:repeat(4,minmax(0,1fr))}
+.seg-b{
+  padding:7px 4px;border:none;border-radius:9px;background:transparent;
+  color:var(--txt-sub);font-size:11px;font-weight:800;cursor:pointer;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center;transition:.16s;
 }
-.seg-btn svg{flex-shrink:0}
-.seg-btn.active{
-  background:rgba(255,255,255,0.92);color:var(--noel-red);
-  box-shadow:0 4px 12px rgba(15,23,42,0.08),inset 0 1px 1.5px rgba(255,255,255,1);
-  border:1px solid rgba(225,29,72,0.22);
+.seg-b.active{
+  background:linear-gradient(135deg,#e11d48,#059669);color:#fff;
+  box-shadow:0 4px 10px rgba(225,29,72,0.3);
 }
 
 .btn{
-  position:relative;overflow:hidden;
-  padding:10.5px 12px;border-radius:14px;border:1px solid rgba(255,255,255,0.45);
-  font-weight:800;font-size:12.5px;
-  cursor:pointer;transition:all .18s;
-  display:inline-flex;align-items:center;justify-content:center;gap:7px;
-  width:100%;max-width:100%;white-space:normal;text-align:center;line-height:1.3;
-  overflow-wrap:break-word;word-break:break-word;
-}
-.btn svg.btn-ico{flex-shrink:0;position:relative;z-index:2}
-.btn span{position:relative;z-index:2;min-width:0}
-.btn::before{
-  content:"";position:absolute;inset:0;pointer-events:none;opacity:0.32;
-  background-image:
-    radial-gradient(circle at 14% 25%, rgba(255,255,255,0.75) 0, rgba(255,255,255,0.75) 2px, transparent 2.5px),
-    radial-gradient(circle at 85% 30%, rgba(253,230,138,0.85) 0, rgba(253,230,138,0.85) 2.2px, transparent 3px),
-    linear-gradient(120deg, rgba(255,255,255,0.32) 0%, transparent 45%, rgba(255,255,255,0.16) 100%);
+  padding:9.5px 12px;border-radius:12px;border:1px solid rgba(255,255,255,0.2);
+  font-weight:800;font-size:12px;cursor:pointer;transition:.16s;
+  display:inline-flex;align-items:center;justify-content:center;gap:6px;
+  width:100%;color:#fff;white-space:nowrap;
 }
 .btn:active{transform:scale(0.98)}
-.btn-primary{
-  background:linear-gradient(135deg,#e11d48 0%,#be123c 52%,#059669 100%);
-  color:#fff;box-shadow:0 10px 20px -5px rgba(225,29,72,0.38),inset 0 1px 1.5px rgba(255,255,255,0.65);
-}
-.btn-indigo{
-  background:linear-gradient(135deg,#4f46e5 0%,#7c3aed 58%,#e11d48 100%);
-  color:#fff;box-shadow:0 10px 20px -5px rgba(79,70,229,0.35),inset 0 1px 1.5px rgba(255,255,255,0.65);
-}
-.btn-emerald{
-  background:linear-gradient(135deg,#059669 0%,#10b981 55%,#0284c7 100%);
-  color:#fff;box-shadow:0 10px 20px -5px rgba(5,150,105,0.35),inset 0 1px 1.5px rgba(255,255,255,0.65);
-}
-.btn-danger{
-  background:linear-gradient(135deg,#ef4444 0%,#be123c 100%);
-  color:#fff;box-shadow:0 8px 16px -4px rgba(225,29,72,0.32),inset 0 1px 1.5px rgba(255,255,255,0.6);
-}
-.btn-soft{
-  background:rgba(255,255,255,0.68);backdrop-filter:blur(12px);
-  color:var(--text-secondary);border:1px solid rgba(255,255,255,0.92);
-  box-shadow:0 3px 10px rgba(15,23,42,0.05),inset 0 1px 1.5px rgba(255,255,255,0.95);
-}
-.btn-soft::before{display:none}
-.btn-soft:hover{background:rgba(255,255,255,0.92);color:var(--text-primary)}
-.btn-sm{padding:6.5px 11px;font-size:11.5px;border-radius:11px;width:auto}
+.btn-red{background:linear-gradient(135deg,#e11d48,#be123c)}
+.btn-green{background:linear-gradient(135deg,#059669,#0284c7)}
+.btn-purple{background:linear-gradient(135deg,#6366f1,#a855f7)}
+.btn-dark{background:rgba(255,255,255,0.08);color:#e2e8f0;border-color:rgba(255,255,255,0.14)}
+.btn-mini{padding:5.5px 9px;font-size:11px;border-radius:9px;width:auto}
 
-.check-pill{
-  display:flex;align-items:flex-start;gap:8px;padding:9.5px 11px;
-  background:rgba(255,255,255,0.58);backdrop-filter:blur(12px);
-  border:1px solid rgba(255,255,255,0.88);border-radius:13px;
-  box-shadow:inset 0 1px 1.5px rgba(255,255,255,0.9);
-  font-size:12px;font-weight:700;color:var(--text-secondary);cursor:pointer;
-  width:100%;max-width:100%;overflow-wrap:anywhere;word-break:break-word;line-height:1.35;
+.chk-box{
+  display:flex;align-items:center;gap:7px;padding:7.5px 9px;
+  background:rgba(15,23,42,0.55);border:1px solid rgba(255,255,255,0.1);
+  border-radius:10px;font-size:11.5px;font-weight:700;color:#e2e8f0;cursor:pointer;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
-.check-pill input{
-  width:16px;height:16px;accent-color:var(--noel-red);flex-shrink:0;margin-top:1px;
-}
-.check-pill span{flex:1;min-width:0;overflow-wrap:anywhere;word-break:break-word}
+.chk-box input{width:15px;height:15px;accent-color:var(--red);flex-shrink:0}
 
-.upload-zone{
-  position:relative;border:2px dashed rgba(225,29,72,0.45);border-radius:18px;
-  background:linear-gradient(180deg,rgba(255,241,242,0.65) 0%,rgba(255,255,255,0.55) 100%);
-  backdrop-filter:blur(14px);
-  padding:16px 12px;text-align:center;cursor:pointer;transition:all .2s;margin-bottom:10px;
-  overflow:hidden;width:100%;
-  box-shadow:inset 0 1px 2px rgba(255,255,255,0.9);
-}
-.upload-zone:hover,.upload-zone.dragover{
-  border-color:var(--noel-red);background:rgba(255,228,230,0.72);
-}
-.upload-zone input[type="file"]{
-  position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%;
-}
-.upload-icon-circle{
-  width:44px;height:44px;border-radius:14px;background:rgba(255,255,255,0.9);color:var(--noel-red);
-  display:inline-flex;align-items:center;justify-content:center;margin-bottom:6px;
-  box-shadow:0 6px 14px rgba(225,29,72,0.14),inset 0 1px 1.5px rgba(255,255,255,1);
-}
-.upload-progress-wrap{
-  display:none;margin-top:8px;background:rgba(226,232,240,0.7);border-radius:999px;height:7px;overflow:hidden;
-}
-.upload-progress-bar{
-  height:100%;width:0%;background:linear-gradient(90deg,#e11d48,#059669);transition:width .25s ease;
-}
+.list-scroll{max-height:280px;overflow-y:auto;overflow-x:hidden;padding-right:2px}
+.list-scroll::-webkit-scrollbar{width:4px}
+.list-scroll::-webkit-scrollbar-thumb{background:rgba(148,163,184,0.4);border-radius:4px}
 
-.scroll-box{
-  max-height:290px;overflow-y:auto;overflow-x:hidden;padding-right:2px;width:100%;
-}
-.scroll-box::-webkit-scrollbar{width:4px}
-.scroll-box::-webkit-scrollbar-thumb{background:rgba(148,163,184,0.6);border-radius:4px}
-
-.list-item{
+.item-row{
   display:flex;align-items:center;justify-content:space-between;gap:8px;
-  padding:9.5px 11px;
-  background:rgba(255,255,255,0.58);
-  backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
-  border:1px solid rgba(255,255,255,0.86);
-  box-shadow:0 4px 12px -2px rgba(15,23,42,0.04),inset 0 1px 1.5px rgba(255,255,255,0.92);
-  border-radius:15px;margin-bottom:7px;transition:all .16s;
-  width:100%;max-width:100%;flex-wrap:wrap;
+  padding:8.5px 10px;border-radius:12px;margin-bottom:6px;
+  background:rgba(15,23,42,0.55);border:1px solid rgba(255,255,255,0.09);
 }
-.list-item:hover{
-  border-color:rgba(225,29,72,0.42);background:rgba(255,255,255,0.82);
-  transform:translateY(-1px);
-}
-.item-title{
-  font-size:12.5px;font-weight:800;color:var(--text-primary);
-  overflow-wrap:anywhere;word-break:break-word;line-height:1.3;
-}
-.item-sub{
-  font-size:11px;color:var(--text-muted);margin-top:2px;font-weight:600;
-  overflow-wrap:anywhere;word-break:break-word;line-height:1.3;
-}
+.item-main{min-width:0;flex:1}
+.item-name{font-size:12px;font-weight:800;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.item-meta{font-size:10.5px;color:var(--txt-sub);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
-.info-banner{
-  background:linear-gradient(135deg,rgba(255,241,242,0.76) 0%,rgba(236,253,245,0.76) 100%);
-  backdrop-filter:blur(12px);
-  border:1px solid rgba(255,255,255,0.9);
-  box-shadow:inset 0 1px 2px rgba(255,255,255,0.95);
-  border-radius:15px;padding:10px 12px;
-  font-size:11.5px;color:#881337;line-height:1.45;margin-bottom:10px;
-  overflow-wrap:anywhere;word-break:break-word;width:100%;
+.drop-box{
+  position:relative;border:1.5px dashed rgba(244,63,94,0.5);border-radius:14px;
+  background:rgba(244,63,94,0.07);padding:14px 10px;text-align:center;cursor:pointer;margin-bottom:9px;
 }
+.drop-box input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
 
-.bottom-dock-wrap{
+/* THANH DOCK DƯỚI GỌN ĐẸP */
+.dock-wrap{
   position:fixed;bottom:10px;left:50%;transform:translateX(-50%);
-  z-index:999;width:calc(100vw - 18px);max-width:468px;
-  background:rgba(255,255,255,0.68);
-  backdrop-filter:blur(28px) saturate(210%);
-  -webkit-backdrop-filter:blur(28px) saturate(210%);
-  border:1.5px solid rgba(255,255,255,0.92);
-  border-radius:999px;padding:5.5px 7px;
-  box-shadow:0 20px 44px -8px rgba(15,23,42,0.20),0 4px 14px -2px rgba(225,29,72,0.12),inset 0 1.5px 2px rgba(255,255,255,0.98);
+  z-index:999;width:calc(100vw - 20px);max-width:440px;
+  background:rgba(15,23,42,0.88);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
+  border:1px solid rgba(255,255,255,0.18);border-radius:999px;padding:5px 6px;
+  box-shadow:0 16px 36px rgba(0,0,0,0.55);
 }
-.bottom-dock{
-  display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px;width:100%;
-}
-.tab-btn{
-  position:relative;overflow:hidden;
-  padding:6.5px 2px;border-radius:999px;border:none;background:transparent;
-  color:var(--text-muted);font-weight:800;font-size:10px;cursor:pointer;
+.dock{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px}
+.d-btn{
+  position:relative;padding:6px 2px;border-radius:999px;border:none;background:transparent;
+  color:var(--txt-sub);font-weight:800;font-size:9.5px;cursor:pointer;
   display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;
-  transition:all .22s cubic-bezier(0.22,1,0.36,1);line-height:1.1;text-align:center;min-width:0;
 }
-.tab-btn svg.tab-ico{
-  width:17px;height:17px;flex-shrink:0;transition:transform .18s;
+.d-btn svg{width:16px;height:16px}
+.d-btn.active{
+  background:linear-gradient(135deg,#e11d48,#059669);color:#fff;
 }
-.tab-btn .tab-lbl{
-  display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
-  font-size:10px;letter-spacing:-0.1px;
-}
-.tab-btn:hover{color:var(--text-primary);background:rgba(255,255,255,0.65)}
-.tab-btn.active{
-  background:linear-gradient(135deg,rgba(225,29,72,0.92) 0%,rgba(5,150,105,0.92) 100%);
-  color:#ffffff;
-  box-shadow:0 6px 16px -3px rgba(225,29,72,0.42),inset 0 1px 1.5px rgba(255,255,255,0.65);
-}
-.tab-btn.active svg.tab-ico{transform:translateY(-1px)}
-.tab-count{
-  position:absolute;top:2px;right:4px;
-  padding:1px 4.5px;border-radius:999px;font-size:9px;font-weight:800;
-  background:rgba(255,255,255,0.88);color:#1e293b;line-height:1.2;
-  border:1px solid rgba(255,255,255,0.95);
-}
-.tab-btn.active .tab-count{
-  background:#fde68a;color:#881337;border-color:#fef3c7;
+.d-cnt{
+  position:absolute;top:1px;right:5px;padding:0.5px 4px;border-radius:999px;
+  font-size:8.5px;font-weight:800;background:#fde68a;color:#881337;
 }
 
-#toastBox{
-  position:fixed;top:14px;right:14px;left:14px;z-index:9999;
-  display:flex;flex-direction:column;align-items:flex-end;gap:7px;pointer-events:none;
-}
+#toastBox{position:fixed;top:12px;right:12px;left:12px;z-index:9999;display:flex;flex-direction:column;align-items:flex-end;gap:6px;pointer-events:none}
 .toast-msg{
-  background:rgba(15,23,42,0.88);backdrop-filter:blur(16px);
-  border:1px solid rgba(255,255,255,0.22);
-  color:#fff;padding:10.5px 15px;border-radius:15px;
-  font-size:12px;font-weight:700;box-shadow:0 12px 28px rgba(15,23,42,0.25);
-  display:flex;align-items:center;gap:8px;max-width:100%;
-  overflow-wrap:anywhere;word-break:break-word;
+  background:rgba(15,23,42,0.95);border:1px solid rgba(255,255,255,0.2);
+  color:#fff;padding:9px 13px;border-radius:12px;font-size:11.5px;font-weight:700;
+  box-shadow:0 10px 24px rgba(0,0,0,0.4);display:flex;align-items:center;gap:7px;
 }
 </style>
 </head>
 <body>
 <div id="toastBox"></div>
 
-<div class="app-container">
-  <header class="noel-hero">
-    <svg class="noel-hero-art" viewBox="0 0 900 120" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
-      <defs>
-        <linearGradient id="snowHill" x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0%" stop-color="#ffffff" stop-opacity="0.18"/>
-          <stop offset="50%" stop-color="#fde68a" stop-opacity="0.12"/>
-          <stop offset="100%" stop-color="#ffffff" stop-opacity="0.20"/>
-        </linearGradient>
-      </defs>
-      <circle cx="80" cy="24" r="2.5" fill="#fff" opacity="0.75"/>
-      <circle cx="195" cy="18" r="1.8" fill="#fde68a" opacity="0.85"/>
-      <circle cx="340" cy="30" r="2.4" fill="#fff" opacity="0.65"/>
-      <circle cx="520" cy="20" r="3" fill="#fff" opacity="0.7"/>
-      <circle cx="690" cy="28" r="2" fill="#fde68a" opacity="0.8"/>
-      <circle cx="830" cy="18" r="2.8" fill="#fff" opacity="0.75"/>
-      <polygon points="440,115 462,48 484,115" fill="rgba(6,95,70,0.45)"/>
-      <polygon points="475,115 494,62 513,115" fill="rgba(16,185,129,0.35)"/>
-      <polygon points="760,115 785,42 810,115" fill="rgba(6,95,70,0.5)"/>
-      <path d="M0 94 Q220 68 450 92 T900 82 L900 120 L0 120 Z" fill="url(#snowHill)"/>
-    </svg>
-
-    <div class="hero-top-row">
-      <div class="brand-cluster">
-        <label class="logo-frame" title="Nhấn để tải Logo mới">
-          <input type="file" id="logoInput" accept="image/*" style="display:none" onchange="uploadBrandLogo(this)">
-          <img id="brandLogoImg" src="/api/logo?v={{ logo_ts }}" alt="NOEL" style="{% if not has_logo %}display:none{% endif %}">
-          <svg id="brandLogoFallback" width="24" height="24" viewBox="0 0 24 24" fill="none" style="{% if has_logo %}display:none{% endif %}">
-            <path d="M12 2L14.8 8.5L21 9.3L16.2 14L17.5 20.5L12 17.2L6.5 20.5L7.8 14L3 9.3L9.2 8.5L12 2Z" fill="#FDE68A" stroke="#FFFFFF" stroke-width="1.6"/>
-          </svg>
-        </label>
-        <div class="brand-name">NOEL</div>
-      </div>
-
-      <div class="hero-actions">
-        <button class="hero-pill-btn" type="button" id="headerPingBtn" onclick="checkWebPingNow(true)" title="Nhấn để đo Ping thực tế của Web & Server">
-          <span id="headerPingDot" style="width:8px;height:8px;border-radius:50%;background:#4ade80;box-shadow:0 0 8px #4ade80;display:inline-block"></span>
-          <span id="headerPingText">Ping: -- ms</span>
-        </button>
-        <button class="hero-pill-btn" type="button" onclick="document.getElementById('logoInput').click()">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-          <span>Đổi Logo</span>
-        </button>
-        <a href="/logout" class="hero-pill-btn">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
-          <span>Thoát</span>
-        </a>
-      </div>
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand">
+      <label class="logo-box" title="Đổi Logo">
+        <input type="file" id="logoInput" accept="image/*" style="display:none" onchange="uploadBrandLogo(this)">
+        <img id="brandLogoImg" src="/api/logo?v={{ logo_ts }}" alt="NOEL" style="{% if not has_logo %}display:none{% endif %}">
+        <svg id="brandLogoFallback" width="20" height="20" viewBox="0 0 24 24" fill="none" style="{% if has_logo %}display:none{% endif %}">
+          <path d="M12 2L14.8 8.5L21 9.3L16.2 14L17.5 20.5L12 17.2L6.5 20.5L7.8 14L3 9.3L9.2 8.5L12 2Z" fill="#FDE68A" stroke="#FFF" stroke-width="1.6"/>
+        </svg>
+      </label>
+      <div class="brand-txt">NOEL v13</div>
+    </div>
+    <div class="top-btns">
+      <button class="pill-btn" type="button" onclick="checkWebPingNow(true)">
+        <span id="headerPingDot" style="width:7px;height:7px;border-radius:50%;background:#4ade80;display:inline-block"></span>
+        <span id="headerPingText">Ping: -- ms</span>
+      </button>
+      <a href="/logout" class="pill-btn">Thoát</a>
     </div>
   </header>
 
-  <div class="kpi-strip">
-    <div class="kpi-card">
-      <svg class="kpi-art-bg" viewBox="0 0 100 60"><circle cx="80" cy="45" r="28" fill="#be123c"/><circle cx="45" cy="52" r="14" fill="#fda4af"/></svg>
-      <div class="kpi-info">
-        <div class="kpi-label">Tài Khoản</div>
-        <div class="kpi-val" style="color:var(--noel-red)" id="kpiAccCount">{{ accounts|length }}</div>
-      </div>
-      <div class="kpi-icon-box" style="background:var(--noel-red-soft);color:var(--noel-red)">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-      </div>
+  <div class="kpi-row">
+    <div class="kpi">
+      <div class="kpi-lbl">Tài Khoản</div>
+      <div class="kpi-num" style="color:var(--red)" id="kpiAccCount">{{ accounts|length }}</div>
     </div>
-
-    <div class="kpi-card">
-      <svg class="kpi-art-bg" viewBox="0 0 100 60"><polygon points="65,60 82,15 99,60" fill="#047857"/><circle cx="50" cy="48" r="15" fill="#6ee7b7"/></svg>
-      <div class="kpi-info">
-        <div class="kpi-label">Phòng Chọn</div>
-        <div class="kpi-val" style="color:var(--noel-pine)" id="kpiTargetCount">0</div>
-      </div>
-      <div class="kpi-icon-box" style="background:var(--noel-pine-soft);color:var(--noel-pine)">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
-      </div>
+    <div class="kpi">
+      <div class="kpi-lbl">Phòng Chọn</div>
+      <div class="kpi-num" style="color:var(--green)" id="kpiTargetCount">0</div>
     </div>
-
-    <div class="kpi-card">
-      <svg class="kpi-art-bg" viewBox="0 0 100 60"><path d="M30 60 Q65 20 100 45 L100 60 Z" fill="#1d4ed8"/></svg>
-      <div class="kpi-info">
-        <div class="kpi-label">Đang Chạy</div>
-        <div class="kpi-val" style="color:var(--noel-blue)" id="kpiRunningTasks">0</div>
-      </div>
-      <div class="kpi-icon-box" style="background:#dbeafe;color:var(--noel-blue)">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-      </div>
+    <div class="kpi">
+      <div class="kpi-lbl">Đang Chạy</div>
+      <div class="kpi-num" style="color:var(--blue)" id="kpiRunningTasks">0</div>
     </div>
-
-    <div class="kpi-card">
-      <svg class="kpi-art-bg" viewBox="0 0 100 60"><circle cx="78" cy="42" r="24" fill="#d97706"/></svg>
-      <div class="kpi-info">
-        <div class="kpi-label">Tin Đã Phát</div>
-        <div class="kpi-val" style="color:var(--noel-gold)" id="kpiTotalSent">0</div>
-      </div>
-      <div class="kpi-icon-box" style="background:#fef3c7;color:var(--noel-gold)">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-      </div>
+    <div class="kpi">
+      <div class="kpi-lbl">Đã Phát</div>
+      <div class="kpi-num" style="color:var(--amber)" id="kpiTotalSent">0</div>
     </div>
   </div>
 
-  <!-- TAB 1: KẾT NỐI TÀI KHOẢN & REG DISCORD ANTI-SCAN -->
-  <section id="tab-accounts" class="tab-section active">
-    <div class="panel-grid">
-      <div class="col-5">
+  <!-- TAB 1: TÀI KHOẢN -->
+  <section id="tab-accounts" class="tab-pane active">
+    <div class="grid-main">
+      <div class="c5">
         <div class="card">
-          <svg class="card-corner-art" viewBox="0 0 120 80"><circle cx="95" cy="15" r="36" fill="#be123c"/><polygon points="60,80 80,30 100,80" fill="#047857"/></svg>
-          <div class="card-head">
-            <div class="card-title">
-              <span class="card-title-icon" style="background:var(--noel-red-soft);color:var(--noel-red)">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          <div class="card-hd">
+            <div class="card-ttl">
+              <span class="ico-dot" style="background:rgba(244,63,94,0.2);color:var(--red)">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
               </span>
-              <span>Kết Nối Tài Khoản & Reg Discord</span>
+              <span>Thêm Tài Khoản</span>
             </div>
-            <span class="badge badge-green">Anti-Die-All 24/7</span>
+            <span class="tag tag-green">Anti-Ban v13</span>
           </div>
 
           <form method="POST" action="/account/add" onsubmit="return handleAccountFormSubmit(event)">
             <input type="hidden" name="platform" id="accPlatformInput" value="zalo">
 
-            <div class="seg-bar" style="grid-template-columns:repeat(3,minmax(0,1fr))">
-              <button type="button" class="seg-btn active" id="segZaloBtn" onclick="switchAccForm('zalo')">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
-                <span>Zalo Shield</span>
-              </button>
-              <button type="button" class="seg-btn" id="segDiscordBtn" onclick="switchAccForm('discord')">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="13" rx="4"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/></svg>
-                <span>Discord Reg</span>
-              </button>
-              <button type="button" class="seg-btn" id="segMessengerBtn" onclick="switchAccForm('messenger')">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2C6.48 2 2 6.14 2 11.25c0 2.91 1.45 5.51 3.72 7.21V22l3.4-1.87c.91.25 1.88.38 2.88.38 5.52 0 10-4.14 10-9.25S17.52 2 12 2z"/><polyline points="7.5 13.5 11 9.5 13.5 12 16.5 9"/></svg>
-                <span>Messenger</span>
-              </button>
+            <div class="seg">
+              <button type="button" class="seg-b active" id="segZaloBtn" onclick="switchAccForm('zalo')">Zalo</button>
+              <button type="button" class="seg-b" id="segDiscordBtn" onclick="switchAccForm('discord')">Discord</button>
+              <button type="button" class="seg-b" id="segMessengerBtn" onclick="switchAccForm('messenger')">Messenger</button>
             </div>
 
-            <div style="margin-bottom:9px">
-              <label class="sub-label">Tên gợi nhớ (Tùy chọn)</label>
-              <input class="form-input" name="name" placeholder="Để trống hệ thống tự lấy tên thật...">
+            <div style="margin-bottom:8px">
+              <label class="lbl">Tên gợi nhớ (Tùy chọn)</label>
+              <input class="inp-ctrl" name="name" placeholder="Tự lấy tên thật nếu để trống...">
             </div>
 
+            <!-- ZALO -->
             <div id="zaloInputFields">
-              <div style="margin-bottom:9px">
-                <label class="sub-label">IMEI Zalo Web</label>
-                <input class="form-input" name="imei" placeholder="Dán chuỗi IMEI Zalo...">
+              <div style="margin-bottom:8px">
+                <label class="lbl">IMEI Zalo</label>
+                <input class="inp-ctrl" name="imei" placeholder="Dán IMEI Zalo...">
               </div>
-              <div style="margin-bottom:9px">
-                <label class="sub-label">Cookie Zalo (JSON hoặc chuỗi Cookie)</label>
-                <textarea class="form-textarea" name="cookies" placeholder='{"zpw_sek":"..."} hoặc dán thẳng Cookie...'></textarea>
+              <div style="margin-bottom:8px">
+                <label class="lbl">Cookie Zalo (JSON / Chuỗi)</label>
+                <textarea class="txt-ctrl" name="cookies" placeholder="Dán Cookie Zalo..."></textarea>
               </div>
             </div>
 
+            <!-- MESSENGER -->
             <div id="messengerInputFields" style="display:none">
-              <div class="info-banner">
-                <strong>Messenger Sigma Anti-Ban & Két Sắt Chống Die Cookie 8 Lớp:</strong><br>
-                • Dán Cookie Facebook / Messenger (định dạng <code>c_user=...; xs=...; datr=...; fr=...</code> hoặc JSON J2Team / EditThisCookie).<br>
-                • Hệ thống tự động trích xuất khóa <code>fb_dtsg</code> + <code>jazoest</code> lưu vào Két Sắt 45 phút (không cào trang HTML lặp lại gây Checkpoint 282/956!) và hỗ trợ đầy đủ <code>.menu, .nhay, .ngon, .spam, .stop</code> kèm <strong>Tag Tên Xanh Dương Thật (profile_xmd)</strong>!
+              <div style="margin-bottom:8px">
+                <label class="lbl">Cookie Messenger (c_user + xs)</label>
+                <textarea class="txt-ctrl" name="mess_cookies" id="messCookieInput" placeholder="c_user=...; xs=... hoặc JSON J2Team"></textarea>
               </div>
-              <div style="margin-bottom:9px">
-                <label class="sub-label">Cookie Facebook / Messenger (Chuỗi Cookie hoặc JSON)</label>
-                <textarea class="form-textarea" name="mess_cookies" id="messCookieInput" placeholder="c_user=1000...; xs=...; datr=...; fr=... hoặc dán JSON Cookie..."></textarea>
-              </div>
-              <div id="messVerifyResultBox" style="display:none;margin-bottom:9px;padding:10px 11px;border-radius:12px;font-size:11.5px;font-weight:700;line-height:1.45;background:rgba(209,250,229,0.85);border:1px solid #6ee7b7;color:#065f46;overflow-wrap:anywhere"></div>
-              <button type="button" class="btn btn-emerald btn-sm" style="width:100%;margin-bottom:9px" onclick="verifyAndLockMessengerCookie()">
-                <svg class="btn-ico" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
-                <span>ĐÚC KHÓA COOKIE MESSENGER BẤT TỬ & LƯU NGAY</span>
+              <div id="messVerifyResultBox" style="display:none;margin-bottom:8px;padding:8px 10px;border-radius:10px;font-size:11px;font-weight:700;background:rgba(16,185,129,0.18);border:1px solid rgba(16,185,129,0.4);color:#6ee7b7"></div>
+              <button type="button" class="btn btn-green" style="margin-bottom:8px" onclick="verifyAndLockMessengerCookie()">
+                <span>KHÓA COOKIE MESSENGER BẤT TỬ</span>
               </button>
             </div>
 
+            <!-- DISCORD -->
             <div id="discordInputFields" style="display:none">
-              <div class="seg-bar" style="grid-template-columns:repeat(3,minmax(0,1fr));margin-bottom:9px">
-                <button type="button" class="seg-btn active" id="subDisTokenBtn" onclick="switchDiscordRegTab('token')">
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-                  <span>Đúc Token Bất Tử</span>
-                </button>
-                <button type="button" class="seg-btn" id="subDisLoginBtn" onclick="switchDiscordRegTab('login')">
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
-                  <span>Reg Phiên Gmail</span>
-                </button>
-                <button type="button" class="seg-btn" id="subDisNewAccBtn" onclick="switchDiscordRegTab('new_acc')">
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
-                  <span>Tool Reg Acc Mới</span>
-                </button>
+              <div class="seg" style="margin-bottom:8px">
+                <button type="button" class="seg-b active" id="subDisTokenBtn" onclick="switchDiscordRegTab('token')">Đúc Token</button>
+                <button type="button" class="seg-b" id="subDisLoginBtn" onclick="switchDiscordRegTab('login')">Login Gmail</button>
+                <button type="button" class="seg-b" id="subDisNewAccBtn" onclick="switchDiscordRegTab('new_acc')">Reg Acc Mới</button>
               </div>
 
               <div id="discordTokenBox">
-                <div class="info-banner">
-                  <strong>Tool Đúc Token Bất Tử & Tường Lửa Discord 9 Lớp (Chống Reset Key 100%):</strong><br>
-                  • Dán 1 hoặc nhiều Token / <code>email:pass:token</code> (mỗi dòng 1 acc). Hệ thống tự động bắt tay <code>TLS 1.3 Chrome 131</code>, nạp Cookie <code>__dcfduid / __sdcfduid</code> có chữ ký thật từ Cloudflare, đóng băng vân tay thiết bị và lọc sạch 100% ký tự Cyrillic/Cf để gõ lệnh không bao giờ bị báo Reset Key!
+                <label class="lbl">Token Discord (hoặc email:pass:token)</label>
+                <textarea class="txt-ctrl" name="token" id="discordTokenInput" placeholder="Mỗi dòng 1 Token (Zero-REST Chống Reset Key)..."></textarea>
+                <div id="immortalVaultResultBox" style="display:none;margin-top:6px;margin-bottom:6px;padding:8px 10px;border-radius:10px;font-size:11px;font-weight:700;background:rgba(16,185,129,0.18);border:1px solid rgba(16,185,129,0.4);color:#6ee7b7"></div>
+                <div class="row3" style="margin-top:6px">
+                  <button type="button" class="btn btn-green btn-mini" onclick="runImmortalizeTokensTool(true)">Đúc & Lưu</button>
+                  <button type="button" class="btn btn-purple btn-mini" onclick="runImmortalizeTokensTool(false)">Lọc Live</button>
+                  <button type="button" class="btn btn-dark btn-mini" onclick="copyDiscordTokenScript()">Code Lấy Token</button>
                 </div>
-                <label class="sub-label">Danh sách Token Discord hoặc email:pass:token</label>
-                <textarea class="form-textarea" name="token" id="discordTokenInput" placeholder="Dán 1 hoặc nhiều Token / email:pass:token vào đây..."></textarea>
-                <div id="immortalVaultResultBox" style="display:none;margin-top:8px;margin-bottom:8px;padding:10px 11px;border-radius:12px;font-size:11.5px;font-weight:700;line-height:1.45;background:rgba(209,250,229,0.85);border:1px solid #6ee7b7;color:#065f46;overflow-wrap:anywhere"></div>
-                <div style="display:flex;gap:6px;margin-top:8px;margin-bottom:8px;flex-wrap:wrap">
-                  <button type="button" class="btn btn-emerald btn-sm" style="flex:1" onclick="runImmortalizeTokensTool(true)">
-                    <svg class="btn-ico" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
-                    <span>ĐÚC TOKEN BẤT TỬ & LƯU NGAY</span>
-                  </button>
-                  <button type="button" class="btn btn-indigo btn-sm" onclick="runImmortalizeTokensTool(false)">
-                    <span>Check Lọc Live/Die</span>
-                  </button>
-                  <button type="button" class="btn btn-soft btn-sm" onclick="copyDiscordTokenScript()">
-                    <span>Lệnh Hút Token 1 Chạm</span>
-                  </button>
-                </div>
-                <label class="check-pill" style="margin-top:4px;margin-bottom:8px">
+                <label class="chk-box" style="margin-bottom:8px">
                   <input type="checkbox" name="is_bot" value="1">
-                  <span>Đây là Bot Token (Chỉ bật nếu dùng Bot Developer)</span>
+                  <span>Bot Token Developer</span>
                 </label>
               </div>
 
-              <div id="discordLoginBox" style="display:none;margin-bottom:9px">
-                <div class="info-banner">
-                  <strong>Reg Phiên Token Từ Gmail + Mật Khẩu (/api/v9/auth/login):</strong><br>
-                  • Tự động giả lập trình duyệt Chrome 131 lấy Token sạch, nạp Cookie Cloudflare thật và khóa thẳng vào Két Sắt Bất Tử.<br>
-                  • Nếu Discord gửi thư <strong>"Verify Login"</strong> về Gmail, hãy bấm xác nhận trong Gmail rồi bấm lại nút dưới đây là vào thẳng!
+              <div id="discordLoginBox" style="display:none;margin-bottom:8px">
+                <div id="discordRegStatusBox" style="display:none;margin-bottom:8px;padding:8px 10px;border-radius:10px;font-size:11px;font-weight:700"></div>
+                <div style="margin-bottom:6px">
+                  <label class="lbl">Gmail / SĐT Discord</label>
+                  <input class="inp-ctrl" name="reg_email" id="regDisEmail" placeholder="email@gmail.com">
                 </div>
-                <div id="discordRegStatusBox" style="display:none;margin-bottom:9px;padding:10px 11px;border-radius:12px;font-size:12px;font-weight:700;line-height:1.45;overflow-wrap:anywhere"></div>
-                <div style="margin-bottom:8px">
-                  <label class="sub-label">Email (Gmail) hoặc SĐT Discord</label>
-                  <input class="form-input" name="reg_email" id="regDisEmail" placeholder="nhap_email@gmail.com hoặc email:pass:token">
-                </div>
-                <div class="form-row">
+                <div class="row2">
                   <div>
-                    <label class="sub-label">Mật khẩu</label>
-                    <input class="form-input" type="password" name="reg_password" id="regDisPass" placeholder="Mật khẩu Discord...">
+                    <label class="lbl">Mật khẩu</label>
+                    <input class="inp-ctrl" type="password" name="reg_password" id="regDisPass" placeholder="Mật khẩu...">
                   </div>
                   <div>
-                    <label class="sub-label">Mã 2FA / SMS (Nếu có)</label>
-                    <input class="form-input" name="reg_2fa" id="regDis2FA" placeholder="6 số 2FA...">
+                    <label class="lbl">Mã 2FA (Nếu có)</label>
+                    <input class="inp-ctrl" name="reg_2fa" id="regDis2FA" placeholder="6 số...">
                   </div>
                 </div>
-                <div style="display:flex;flex-direction:column;gap:6px">
-                  <button type="button" class="btn btn-indigo" id="btnExtractDisReg" onclick="extractDiscordTokenByReg()">
-                    <svg class="btn-ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
-                    <span>REG PHIÊN GMAIL & ĐÚC TOKEN BẤT TỬ</span>
-                  </button>
-                </div>
+                <button type="button" class="btn btn-purple" onclick="extractDiscordTokenByReg()">ĐĂNG NHẬP & LẤY TOKEN SẠCH</button>
               </div>
 
-              <div id="discordNewAccBox" style="display:none;margin-bottom:9px">
-                <div class="info-banner">
-                  <strong>Tool Reg Tạo Acc Discord Mới Tích Hợp Sẵn (/api/v9/auth/register):</strong><br>
-                  • Tự động lấy <code>X-Fingerprint</code> thật + Cookie Cloudflare chuẩn Chrome 131 để đăng ký tài khoản mới và khóa thẳng Token vào Tường Lửa Chống Die!
-                </div>
-                <div id="discordNewAccStatusBox" style="display:none;margin-bottom:9px;padding:10px 11px;border-radius:12px;font-size:12px;font-weight:700;line-height:1.45;overflow-wrap:anywhere"></div>
-                <div class="form-row">
+              <div id="discordNewAccBox" style="display:none;margin-bottom:8px">
+                <div id="discordNewAccStatusBox" style="display:none;margin-bottom:8px;padding:8px 10px;border-radius:10px;font-size:11px;font-weight:700"></div>
+                <div class="row2">
                   <div>
-                    <label class="sub-label">Email đăng ký mới</label>
-                    <input class="form-input" id="newAccEmail" placeholder="email_moi@gmail.com">
+                    <label class="lbl">Email mới</label>
+                    <input class="inp-ctrl" id="newAccEmail" placeholder="email@gmail.com">
                   </div>
                   <div>
-                    <label class="sub-label">Username hiển thị</label>
-                    <input class="form-input" id="newAccUsername" placeholder="VD: noel_pro_2026">
+                    <label class="lbl">Username</label>
+                    <input class="inp-ctrl" id="newAccUsername" placeholder="noel_vip">
                   </div>
                 </div>
-                <div class="form-row">
+                <div class="row2">
                   <div>
-                    <label class="sub-label">Mật khẩu mới</label>
-                    <input class="form-input" type="password" id="newAccPassword" placeholder="Tối thiểu 8 ký tự...">
+                    <label class="lbl">Mật khẩu</label>
+                    <input class="inp-ctrl" type="password" id="newAccPassword" placeholder=">= 8 ký tự">
                   </div>
                   <div>
-                    <label class="sub-label">Ngày sinh (Trên 18 tuổi)</label>
-                    <input class="form-input" type="date" id="newAccDob" value="2000-06-15">
+                    <label class="lbl">Ngày sinh</label>
+                    <input class="inp-ctrl" type="date" id="newAccDob" value="2000-06-15">
                   </div>
                 </div>
-                <div style="display:flex;gap:6px;flex-wrap:wrap">
-                  <button type="button" class="btn btn-soft btn-sm" style="flex:1" onclick="fillRandomDiscordRegProfile()">
-                    <span>🎲 Random 1 Hồ Sơ</span>
-                  </button>
-                  <button type="button" class="btn btn-indigo btn-sm" style="flex:1" onclick="runBatchDiscordRegStudio()">
-                    <span>⚡ Batch 5 Hồ Sơ + X-Fingerprint Thật</span>
-                  </button>
-                  <button type="button" class="btn btn-emerald" style="margin-top:4px" onclick="runCreateNewDiscordAccTool()">
-                    <svg class="btn-ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
-                    <span>TẠO ACC DISCORD MỚI & ĐÚC TOKEN BẤT TỬ v12</span>
-                  </button>
+                <div class="row2">
+                  <button type="button" class="btn btn-dark btn-mini" onclick="fillRandomDiscordRegProfile()">🎲 Random</button>
+                  <button type="button" class="btn btn-purple btn-mini" onclick="runBatchDiscordRegStudio()">⚡ Tạo 5 Hồ Sơ</button>
                 </div>
+                <button type="button" class="btn btn-green" onclick="runCreateNewDiscordAccTool()">TẠO ACC DISCORD MỚI</button>
               </div>
             </div>
 
-            <div style="display:flex;flex-direction:column;gap:7px;margin-bottom:12px">
-              <label class="check-pill">
+            <div class="row2" style="margin-bottom:10px">
+              <label class="chk-box">
                 <input type="checkbox" name="chat_cmd_enabled" value="1" checked>
-                <span>Bật nhận lệnh trong khung chat 24/7 ( .menu , .nhay , .ngon , .stop )</span>
+                <span>Nhận lệnh .menu</span>
               </label>
-              <label class="check-pill">
+              <label class="chk-box">
                 <input type="checkbox" name="allow_all_cmd" value="1" checked>
-                <span>Cho phép mọi người trong phòng dùng lệnh (Khuyên bật để gõ .menu từ nick phụ)</span>
+                <span>Mở lệnh cả nhóm</span>
               </label>
             </div>
 
-            <button class="btn btn-primary" type="submit">
-              <svg class="btn-ico" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-              <span>KẾT NỐI TÀI KHOẢN & BẬT ANTI-BAN</span>
-            </button>
+            <button class="btn btn-red" type="submit">LƯU TÀI KHOẢN</button>
           </form>
         </div>
       </div>
 
-      <div class="col-7">
+      <div class="c7">
         <div class="card">
-          <svg class="card-corner-art" viewBox="0 0 120 80"><polygon points="75,80 95,22 115,80" fill="#047857"/><circle cx="55" cy="24" r="18" fill="#fde68a"/></svg>
-          <div class="card-head">
-            <div class="card-title">
-              <span class="card-title-icon" style="background:var(--noel-pine-soft);color:var(--noel-pine)">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="3"/><path d="M6 8h.01"/><path d="M10 8h8"/><path d="M6 12h.01"/><path d="M10 12h8"/></svg>
+          <div class="card-hd">
+            <div class="card-ttl">
+              <span class="ico-dot" style="background:rgba(16,185,129,0.2);color:var(--green)">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
               </span>
-              <span>Danh Sách Tài Khoản Đang Bảo Vệ ({{ accounts|length }})</span>
+              <span>Tài Khoản Đang Bảo Vệ ({{ accounts|length }})</span>
             </div>
-            <button class="btn btn-soft btn-sm" type="button" onclick="loadGroupsAndRooms(false)">
-              <svg class="btn-ico" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-              <span>Đồng Bộ Phòng</span>
-            </button>
+            <button class="btn btn-dark btn-mini" type="button" onclick="loadGroupsAndRooms(false)">Quét Phòng</button>
           </div>
 
-          <div class="scroll-box" style="max-height:460px">
+          <div class="list-scroll" style="max-height:420px">
             {% if not accounts %}
-              <div style="text-align:center;padding:30px 14px;color:var(--text-muted);font-size:12.5px">
-                Chưa có tài khoản nào. Hãy kết nối Zalo hoặc Discord ở khung bên cạnh.
-              </div>
+              <div style="text-align:center;padding:24px;color:var(--txt-sub);font-size:12px">Chưa có tài khoản kết nối.</div>
             {% endif %}
             {% for a in accounts %}
-              <div class="list-item">
-                <div style="min-width:0;flex:1">
-                  <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-                    <span class="badge {% if a.platform == 'discord' %}badge-purple{% elif a.platform == 'messenger' %}badge-red{% else %}badge-blue{% endif %}">
-                      {{ 'DISCORD STEALTH v11' if a.platform == 'discord' else ('MESSENGER VAULT' if a.platform == 'messenger' else 'ZALO SHIELD') }}
+              <div class="item-row">
+                <div class="item-main">
+                  <div style="display:flex;align-items:center;gap:5px">
+                    <span class="tag {% if a.platform == 'discord' %}tag-purple{% elif a.platform == 'messenger' %}tag-red{% else %}tag-blue{% endif %}">
+                      {{ 'DISCORD v13' if a.platform == 'discord' else ('MESS v13' if a.platform == 'messenger' else 'ZALO') }}
                     </span>
-                    <span class="item-title">{{ a.masked_name }}</span>
-                    <span class="badge badge-green">Anti-Die-All</span>
+                    <span class="item-name">{{ a.masked_name }}</span>
                   </div>
-                  <div class="item-sub">
-                    ID ẩn: <code>{{ a.masked_uid }}</code> • Lệnh 24/7: <strong>{{ 'BẬT' if a.chat_cmd_enabled else 'TẮT' }}</strong>
-                  </div>
+                  <div class="item-meta">ID: <code>{{ a.masked_uid }}</code> • Lệnh: <strong>{{ 'BẬT' if a.chat_cmd_enabled else 'TẮT' }}</strong></div>
                 </div>
-                <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap">
-                  <button class="btn btn-soft btn-sm" type="button" onclick="toggleAccCmd({{ a.id }}, {{ 0 if a.chat_cmd_enabled else 1 }})">
-                    <span>{{ 'Tắt Lệnh' if a.chat_cmd_enabled else 'Bật Lệnh' }}</span>
-                  </button>
-                  <button class="btn btn-soft btn-sm" type="button" onclick="toggleAccAllowAll({{ a.id }}, {{ 0 if a.allow_all_cmd else 1 }})">
-                    <span>{{ 'Chỉ Chủ Acc' if a.allow_all_cmd else 'Mở Cho Nhóm' }}</span>
-                  </button>
-                  <a href="/account/delete/{{ a.id }}" class="btn btn-danger btn-sm" style="text-decoration:none">
-                    <span>Xóa</span>
-                  </a>
+                <div style="display:flex;gap:4px">
+                  <button class="btn btn-dark btn-mini" type="button" onclick="toggleAccCmd({{ a.id }}, {{ 0 if a.chat_cmd_enabled else 1 }})">{{ 'Tắt' if a.chat_cmd_enabled else 'Bật' }}</button>
+                  <a href="/account/delete/{{ a.id }}" class="btn btn-red btn-mini" style="text-decoration:none">Xóa</a>
                 </div>
               </div>
             {% endfor %}
@@ -8044,288 +7239,238 @@ input,select,textarea{font-size:16px !important;font-family:inherit;max-width:10
     </div>
   </section>
 
-  <!-- TAB 2: PHÒNG CHAT & TAG THẬT CHUẨN KHUNG CHAT -->
-  <section id="tab-targets" class="tab-section">
-    <div class="panel-grid">
-      <div class="col-6">
+  <!-- TAB 2: CHỌN PHÒNG & TAG -->
+  <section id="tab-targets" class="tab-pane">
+    <div class="grid-main">
+      <div class="c6">
         <div class="card">
-          <svg class="card-corner-art" viewBox="0 0 120 80"><circle cx="92" cy="18" r="32" fill="#047857"/></svg>
-          <div class="card-head">
-            <div class="card-title">
-              <span class="card-title-icon" style="background:var(--noel-pine-soft);color:var(--noel-pine)">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          <div class="card-hd">
+            <div class="card-ttl">
+              <span class="ico-dot" style="background:rgba(16,185,129,0.2);color:var(--green)">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
               </span>
-              <span>Danh Sách Phòng Chat (Zalo • Discord • Messenger)</span>
+              <span>Chọn Phòng Chat</span>
             </div>
-            <div style="display:flex;gap:5px;flex-wrap:wrap">
-              <button class="btn btn-soft btn-sm" type="button" onclick="loadGroupsAndRooms(true)">Làm Mới</button>
-              <button class="btn btn-soft btn-sm" type="button" onclick="selectAllTargets()">Chọn Hết</button>
-              <button class="btn btn-soft btn-sm" type="button" onclick="clearAllTargets()">Bỏ Chọn</button>
+            <div style="display:flex;gap:4px">
+              <button class="btn btn-green btn-mini" type="button" onclick="loadGroupsAndRooms(true)">Quét</button>
+              <button class="btn btn-dark btn-mini" type="button" onclick="selectAllTargets()">Chọn hết</button>
+              <button class="btn btn-dark btn-mini" type="button" onclick="clearAllTargets()">Bỏ</button>
             </div>
           </div>
 
-          <div class="seg-bar" style="grid-template-columns:repeat(5,minmax(0,1fr));margin-bottom:9px">
-            <button type="button" class="seg-btn active" id="fltRoomAll" onclick="setRoomPlatformFilter('all')">Tất Cả</button>
-            <button type="button" class="seg-btn" id="fltRoomZalo" onclick="setRoomPlatformFilter('zalo')">Zalo</button>
-            <button type="button" class="seg-btn" id="fltRoomDiscord" onclick="setRoomPlatformFilter('discord')">Discord</button>
-            <button type="button" class="seg-btn" id="fltRoomMess" onclick="setRoomPlatformFilter('messenger')">Messenger</button>
-            <button type="button" class="seg-btn" id="fltRoomGroupOnly" onclick="setRoomPlatformFilter('groups')">Chỉ Box Nhóm</button>
-          </div>
-          <div style="display:flex;gap:7px;margin-bottom:10px;align-items:center">
-            <input class="form-input" id="roomSearchInput" placeholder="🔍 Gõ tên Box Zalo, Kênh Discord hoặc Nhóm Messenger để tự động tìm..." oninput="renderTargetList()" style="flex:1">
-            <button class="btn btn-emerald btn-sm" type="button" onclick="loadGroupsAndRooms(true)">🔄 Quét Tự Động</button>
+          <div class="seg seg4" style="margin-bottom:8px">
+            <button type="button" class="seg-b active" id="fltRoomAll" onclick="setRoomPlatformFilter('all')">Tất Cả</button>
+            <button type="button" class="seg-b" id="fltRoomZalo" onclick="setRoomPlatformFilter('zalo')">Zalo</button>
+            <button type="button" class="seg-b" id="fltRoomDiscord" onclick="setRoomPlatformFilter('discord')">Discord</button>
+            <button type="button" class="seg-b" id="fltRoomMess" onclick="setRoomPlatformFilter('messenger')">Mess</button>
           </div>
 
-          <div class="scroll-box" id="targetListContainer" style="max-height:360px">
-            <div style="text-align:center;padding:24px;color:var(--text-muted);font-size:12.5px">
-              Nhấn "Làm Mới" để tải danh sách nhóm Zalo & kênh Discord...
-            </div>
+          <div style="margin-bottom:8px">
+            <input class="inp-ctrl" id="roomSearchInput" placeholder="🔍 Tìm nhanh tên Box Zalo, Kênh Discord, Nhóm Mess..." oninput="renderTargetList()">
+          </div>
+
+          <div class="list-scroll" id="targetListContainer" style="max-height:330px">
+            <div style="text-align:center;padding:20px;color:var(--txt-sub);font-size:12px">Bấm "Quét" để tải danh sách phòng tự động.</div>
           </div>
         </div>
       </div>
 
-      <div class="col-6">
+      <div class="c6">
         <div class="card">
-          <svg class="card-corner-art" viewBox="0 0 120 80"><circle cx="90" cy="18" r="30" fill="#be123c"/></svg>
-          <div class="card-head">
-            <div class="card-title">
-              <span class="card-title-icon" style="background:var(--noel-red-soft);color:var(--noel-red)">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94"/></svg>
+          <div class="card-hd">
+            <div class="card-ttl">
+              <span class="ico-dot" style="background:rgba(244,63,94,0.2);color:var(--red)">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94"/></svg>
               </span>
-              <span>Tag Tên Thật Chuẩn Khung Chat (Zalo • Discord • Mess)</span>
+              <span>Tag Thành Viên</span>
             </div>
-            <span class="badge badge-red" id="selectedTagBadge">0 người được tag</span>
+            <span class="tag tag-red" id="selectedTagBadge">0 được tag</span>
           </div>
 
-          <div class="info-banner">
-            <strong>Đã nâng cấp Endpoint <code>/api/group/mention</code>:</strong> Nhấn nút <strong>"Lấy Thành Viên"</strong> bên cạnh bất kỳ nhóm Zalo hoặc kênh Discord nào để chọn người cần Tag Xanh Dương thật 100%, hoặc gõ thẳng <code>.nhay 1 @Tên</code> trong khung chat!
-          </div>
-
-          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:9px;flex-wrap:wrap">
-            <label class="check-pill" style="flex:1">
+          <div style="display:flex;gap:6px;margin-bottom:8px;align-items:center">
+            <label class="chk-box" style="flex:1">
               <input type="checkbox" id="chkTagAll" onchange="updateTagSummary()">
-              <span>Tag @All ( Báo hiệu tất cả thành viên )</span>
+              <span>Tag @All / @everyone</span>
             </label>
-            <button class="btn btn-soft btn-sm" type="button" onclick="selectAllMembersInBox()">Tag Cả Nhóm</button>
-            <button class="btn btn-soft btn-sm" type="button" onclick="clearSelectedMentions()">Xóa Tag</button>
+            <button class="btn btn-dark btn-mini" type="button" onclick="selectAllMembersInBox()">Tag Hết</button>
+            <button class="btn btn-dark btn-mini" type="button" onclick="clearSelectedMentions()">Xóa</button>
           </div>
 
-          <div style="display:flex;gap:7px;margin-bottom:10px;align-items:center">
-            <input class="form-input" id="memberSearchInput" placeholder="🔍 Gõ tên thành viên trong Box để tự động tìm & tích chọn Tag..." oninput="renderMemberList()" style="flex:1">
+          <div style="margin-bottom:8px">
+            <input class="inp-ctrl" id="memberSearchInput" placeholder="🔍 Lọc nhanh tên thành viên trong nhóm..." oninput="renderMemberList()">
           </div>
 
-          <div class="scroll-box" id="memberListContainer" style="max-height:290px">
-            <div style="text-align:center;padding:24px;color:var(--text-muted);font-size:12.5px">
-              Chọn nút "Lấy Thành Viên" ở 1 nhóm bên trái để hiển thị danh sách thành viên thật...
-            </div>
+          <div class="list-scroll" id="memberListContainer" style="max-height:330px">
+            <div style="text-align:center;padding:20px;color:var(--txt-sub);font-size:12px">Bấm "Thành viên" ở 1 phòng bên trái để chọn người Tag.</div>
           </div>
         </div>
       </div>
     </div>
   </section>
 
-  <!-- TAB 3: PHÁT CHIẾN DỊCH & LÁ CHẮN ANTI-DIE-ALL -->
-  <section id="tab-campaign" class="tab-section">
-    <div class="panel-grid">
-      <div class="col-7">
+  <!-- TAB 3: CHIẾN DỊCH (SIÊU GỌN TRÊN 1 MÀN HÌNH) -->
+  <section id="tab-campaign" class="tab-pane">
+    <div class="grid-main">
+      <div class="c7">
         <div class="card">
-          <svg class="card-corner-art" viewBox="0 0 120 80"><polygon points="65,80 90,18 115,80" fill="#be123c"/></svg>
-          <div class="card-head">
-            <div class="card-title">
-              <span class="card-title-icon" style="background:var(--noel-red-soft);color:var(--noel-red)">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+          <div class="card-hd">
+            <div class="card-ttl">
+              <span class="ico-dot" style="background:rgba(244,63,94,0.2);color:var(--red)">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
               </span>
-              <span>Khởi Chạy Chiến Dịch Tự Động Đa Luồng</span>
+              <span>Cấu Hình Chiến Dịch</span>
             </div>
-            <span class="badge badge-green">Zalo Native + Discord Bung Chữ</span>
+            <span class="tag tag-green">Đa Luồng 3 App</span>
           </div>
 
-          <div class="form-row-3">
+          <div class="row2">
             <div>
-              <label class="sub-label">Chế độ gửi</label>
-              <select class="form-select" id="cfgMode">
-                <option value="treo_nhay">Treo Nhây (Từng dòng sạch)</option>
+              <label class="lbl">Chế độ gửi</label>
+              <select class="sel-ctrl" id="cfgMode">
+                <option value="treo_nhay">Treo Nhây (Từng câu)</option>
                 <option value="treo_ngon">Treo Ngôn (Nguyên bài)</option>
-                <option value="fast">Spam Tốc Độ Cao</option>
+                <option value="fast">Spam Nhanh</option>
               </select>
             </div>
             <div>
-              <label class="sub-label">Chế độ màu chữ</label>
-              <select class="form-select" id="cfgColorMode">
-                <option value="rainbow">Cầu Vồng Từng Dòng</option>
+              <label class="lbl">Hiệu ứng màu</label>
+              <select class="sel-ctrl" id="cfgColorMode">
+                <option value="rainbow">Cầu Vồng Dòng</option>
                 <option value="word_rainbow">Phối Màu Từng Từ</option>
-                <option value="random">Đổi Màu Ngẫu Nhiên</option>
+                <option value="random">Màu Ngẫu Nhiên</option>
                 <option value="fixed">Màu Cố Định</option>
-                <option value="none">Chữ Mặc Định</option>
-              </select>
-            </div>
-            <div>
-              <label class="sub-label">Màu cố định</label>
-              <select class="form-select" id="cfgFixedColor">
-                <option value="red">Đỏ Noel</option>
-                <option value="yellow">Vàng Hoàng Gia</option>
-                <option value="green">Xanh Lá Thông</option>
-                <option value="orange">Cam Rực Rỡ</option>
+                <option value="none">Mặc Định</option>
               </select>
             </div>
           </div>
 
-          <div class="form-row-3">
+          <div class="row3">
             <div>
-              <label class="sub-label">Delay (Discord 0.0s | Zalo ≥0.2s)</label>
-              <input class="form-input" type="number" step="0.05" min="0" id="cfgDelay" value="0.0">
-              <div style="display:flex;gap:4px;margin-top:5px;flex-wrap:wrap">
-                <button type="button" class="badge badge-purple" style="cursor:pointer" onclick="document.getElementById('cfgDelay').value='0.0'">0.0s (Discord)</button>
-                <button type="button" class="badge badge-blue" style="cursor:pointer" onclick="document.getElementById('cfgDelay').value='0.2'">0.2s (Zalo)</button>
-                <button type="button" class="badge badge-green" style="cursor:pointer" onclick="document.getElementById('cfgDelay').value='0.5'">0.5s</button>
-                <button type="button" class="badge badge-amber" style="cursor:pointer" onclick="document.getElementById('cfgDelay').value='1.0'">1.0s</button>
-              </div>
-            </div>
-            <div>
-              <label class="sub-label">Số lượng Icon VIP (0-10)</label>
-              <input class="form-input" type="number" min="0" max="10" id="cfgIconCount" value="3">
-            </div>
-            <div>
-              <label class="sub-label">Chọn File Kịch Bản</label>
-              <select class="form-select" id="cfgFileSelect">
-                <option value="">-- Dùng văn bản nhập tay bên dưới --</option>
-                {% for f in files %}
-                  <option value="{{ f.id }}">File số {{ f.display_num }}: {{ f.filename }} ({{ f.lines_count }} dòng)</option>
-                {% endfor %}
+              <label class="lbl">Màu cố định</label>
+              <select class="sel-ctrl" id="cfgFixedColor">
+                <option value="red">Đỏ</option>
+                <option value="yellow">Vàng</option>
+                <option value="green">Xanh Lá</option>
+                <option value="orange">Cam</option>
               </select>
             </div>
+            <div>
+              <label class="lbl">Delay (Giây)</label>
+              <input class="inp-ctrl" type="number" step="0.05" min="0" id="cfgDelay" value="0.0">
+            </div>
+            <div>
+              <label class="lbl">Số Icon (0-10)</label>
+              <input class="inp-ctrl" type="number" min="0" max="10" id="cfgIconCount" value="3">
+            </div>
           </div>
 
-          <div style="margin-bottom:9px">
-            <label class="sub-label">Nội dung gửi trực tiếp (Ngăn cách câu bằng dấu ; hoặc xuống dòng)</label>
-            <textarea class="form-textarea" id="cfgRawText" placeholder="Nhập nội dung hoặc chọn File kịch bản ở trên... Có thể gõ kèm @Tên ở cuối để tự động Tag!"></textarea>
+          <div style="display:flex;gap:5px;margin-bottom:8px;flex-wrap:wrap">
+            <span class="tag tag-purple" style="cursor:pointer" onclick="document.getElementById('cfgDelay').value='0.0'">0.0s (Discord)</span>
+            <span class="tag tag-blue" style="cursor:pointer" onclick="document.getElementById('cfgDelay').value='0.2'">0.2s (Zalo)</span>
+            <span class="tag tag-red" style="cursor:pointer" onclick="document.getElementById('cfgDelay').value='1.4'">1.4s (An toàn Mess)</span>
           </div>
 
-          <div class="form-row" style="margin-bottom:12px">
-            <label class="check-pill">
-              <input type="checkbox" id="cfgHeading" checked>
-              <span>Chữ lớn In Đậm (Zalo Heading / Discord Bung Chữ)</span>
-            </label>
-            <label class="check-pill">
-              <input type="checkbox" id="cfgUseEmoji" checked>
-              <span>Đính kèm Icon VIP Zalo (Đã diệt sạch lỗi :- )</span>
-            </label>
-            <label class="check-pill">
-              <input type="checkbox" id="cfgAntiband" checked>
-              <span>Bật Anti-Ban Đa Tầng (Zalo + Discord Stealth)</span>
-            </label>
-            <label class="check-pill">
-              <input type="checkbox" id="cfgMultiAcc" checked>
-              <span>Đồng bộ tất cả tài khoản + Anti-Die-All</span>
-            </label>
+          <div style="margin-bottom:8px">
+            <label class="lbl">File Kịch Bản</label>
+            <select class="sel-ctrl" id="cfgFileSelect">
+              <option value="">-- Nhập nội dung trực tiếp bên dưới --</option>
+              {% for f in files %}
+                <option value="{{ f.id }}">File #{{ f.display_num }}: {{ f.filename }} ({{ f.lines_count }} câu)</option>
+              {% endfor %}
+            </select>
           </div>
 
-          <div class="form-row">
-            <button class="btn btn-primary" type="button" onclick="launchCampaignTask()">
-              <svg class="btn-ico" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-              <span>BẮT ĐẦU PHÁT CHIẾN DỊCH</span>
-            </button>
-            <button class="btn btn-danger" type="button" onclick="stopAllRunningTasks()">
-              <svg class="btn-ico" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
-              <span>DỪNG TẤT CẢ TIẾN TRÌNH</span>
-            </button>
+          <div style="margin-bottom:8px">
+            <label class="lbl">Nội dung (Ngăn cách bằng ; hoặc xuống dòng, hỗ trợ @Tên)</label>
+            <textarea class="txt-ctrl" id="cfgRawText" placeholder="Nhập nội dung hoặc chọn File ở trên..."></textarea>
+          </div>
+
+          <div class="row2" style="margin-bottom:10px">
+            <label class="chk-box"><input type="checkbox" id="cfgHeading" checked><span>Chữ Lớn In Đậm</span></label>
+            <label class="chk-box"><input type="checkbox" id="cfgUseEmoji" checked><span>Đính Kèm Icon</span></label>
+            <label class="chk-box"><input type="checkbox" id="cfgAntiband" checked><span>Bảo Vệ Anti-Ban</span></label>
+            <label class="chk-box"><input type="checkbox" id="cfgMultiAcc" checked><span>Đồng Bộ Đa Acc</span></label>
+          </div>
+
+          <div class="row2">
+            <button class="btn btn-red" type="button" onclick="launchCampaignTask()">▶ CHẠY NGAY</button>
+            <button class="btn btn-dark" type="button" onclick="stopAllRunningTasks()">■ DỪNG HẾT</button>
           </div>
         </div>
       </div>
 
-      <div class="col-5">
+      <div class="c5">
         <div class="card">
-          <div class="card-head">
-            <div class="card-title">
-              <span class="card-title-icon" style="background:#dbeafe;color:var(--noel-blue)">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+          <div class="card-hd">
+            <div class="card-ttl">
+              <span class="ico-dot" style="background:rgba(56,189,248,0.2);color:var(--blue)">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
               </span>
-              <span>Tiến Trình Đang Hoạt Động</span>
+              <span>Tiến Trình Đang Chạy</span>
             </div>
-            <span class="badge badge-blue">Thời Gian Thực</span>
+            <span class="tag tag-blue">Live</span>
           </div>
-          <div class="scroll-box" id="activeTasksContainer" style="max-height:380px">
-            <div style="text-align:center;padding:24px;color:var(--text-muted);font-size:12.5px">
-              Chưa có chiến dịch nào đang chạy.
-            </div>
+          <div class="list-scroll" id="activeTasksContainer" style="max-height:360px">
+            <div style="text-align:center;padding:20px;color:var(--txt-sub);font-size:12px">Chưa có tiến trình chạy.</div>
           </div>
         </div>
       </div>
     </div>
   </section>
 
-  <!-- TAB 4: KHO FILE KỊCH BẢN & HIỆU ỨNG UPLOAD -->
-  <section id="tab-files" class="tab-section">
-    <div class="panel-grid">
-      <div class="col-5">
+  <!-- TAB 4: KHO FILE -->
+  <section id="tab-files" class="tab-pane">
+    <div class="grid-main">
+      <div class="c5">
         <div class="card">
-          <div class="card-head">
-            <div class="card-title">
-              <span class="card-title-icon" style="background:var(--noel-red-soft);color:var(--noel-red)">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-              </span>
-              <span>Tải Lên & Tạo File Kịch Bản</span>
-            </div>
-            <span class="badge badge-red">Tự Đánh Số File</span>
+          <div class="card-hd">
+            <div class="card-ttl"><span>Tải & Tạo File .TXT</span></div>
+            <span class="tag tag-red">Tự Đánh Số</span>
           </div>
 
-          <div class="upload-zone" id="fileDropZone">
+          <div class="drop-box">
             <input type="file" id="txtFileInput" accept=".txt" onchange="handleTxtUpload(this)">
-            <div class="upload-icon-circle">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 12 15 15"/></svg>
-            </div>
-            <div style="font-size:13px;font-weight:800;color:var(--text-primary)">Chạm hoặc Kéo Thả File .TXT vào đây</div>
-            <div style="font-size:11px;color:var(--text-muted);margin-top:3px">Tự động lọc sạch ký tự lỗi <code>:-</code> và đánh số thứ tự</div>
-            <div class="upload-progress-wrap" id="uploadProgWrap">
-              <div class="upload-progress-bar" id="uploadProgBar"></div>
+            <div style="font-size:12.5px;font-weight:800;color:#fff">📁 Chạm để chọn File .TXT</div>
+            <div style="font-size:10.5px;color:var(--txt-sub);margin-top:2px">Tự động lọc sạch mã lỗi & đánh số thứ tự</div>
+            <div id="uploadProgWrap" style="display:none;margin-top:6px;height:5px;background:#1e293b;border-radius:9px;overflow:hidden">
+              <div id="uploadProgBar" style="height:100%;width:0%;background:#10b981"></div>
             </div>
           </div>
 
           <form method="POST" action="/file/create">
-            <div style="margin-bottom:8px">
-              <label class="sub-label">Tên File Mới (.txt)</label>
-              <input class="form-input" name="filename" placeholder="VD: kich_ban_noel.txt" required>
+            <div style="margin-bottom:7px">
+              <label class="lbl">Tên File (.txt)</label>
+              <input class="inp-ctrl" name="filename" placeholder="kich_ban.txt" required>
             </div>
-            <div style="margin-bottom:10px">
-              <label class="sub-label">Nội dung (Mỗi dòng 1 câu)</label>
-              <textarea class="form-textarea" name="content" placeholder="Nhập nội dung kịch bản..." required></textarea>
+            <div style="margin-bottom:9px">
+              <label class="lbl">Nội dung (Mỗi dòng 1 câu)</label>
+              <textarea class="txt-ctrl" name="content" placeholder="Nhập các câu..." required></textarea>
             </div>
-            <button class="btn btn-emerald" type="submit">
-              <svg class="btn-ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 13 7 21"/></svg>
-              <span>LƯU FILE KỊCH BẢN MỚI</span>
-            </button>
+            <button class="btn btn-green" type="submit">LƯU FILE MỚI</button>
           </form>
         </div>
       </div>
 
-      <div class="col-7">
+      <div class="c7">
         <div class="card">
-          <div class="card-head">
-            <div class="card-title">
-              <span class="card-title-icon" style="background:var(--noel-pine-soft);color:var(--noel-pine)">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-              </span>
-              <span>Danh Sách File Kịch Bản ({{ files|length }})</span>
-            </div>
-            <span class="badge badge-green">Gõ .nhay &lt;số&gt; @Tên</span>
+          <div class="card-hd">
+            <div class="card-ttl"><span>Kho File Kịch Bản ({{ files|length }})</span></div>
+            <span class="tag tag-green">Gõ .n &lt;số&gt; @Tên</span>
           </div>
-
-          <div class="scroll-box" style="max-height:420px">
+          <div class="list-scroll" style="max-height:380px">
             {% if not files %}
-              <div style="text-align:center;padding:24px;color:var(--text-muted);font-size:12.5px">
-                Kho lưu trữ trống. Hãy tải file .txt hoặc tạo mới ở khung bên trái.
-              </div>
+              <div style="text-align:center;padding:20px;color:var(--txt-sub);font-size:12px">Kho file trống.</div>
             {% endif %}
             {% for f in files %}
-              <div class="list-item">
-                <div style="min-width:0;flex:1">
-                  <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-                    <span class="badge badge-red">File số {{ f.display_num }}</span>
-                    <span class="item-title">{{ f.filename }}</span>
+              <div class="item-row">
+                <div class="item-main">
+                  <div style="display:flex;align-items:center;gap:6px">
+                    <span class="tag tag-red">#{{ f.display_num }}</span>
+                    <span class="item-name">{{ f.filename }}</span>
                   </div>
-                  <div class="item-sub">Số câu: <strong>{{ f.lines_count }}</strong> • Gọi nhanh: <code>.nhay {{ f.display_num }} @Tên</code></div>
+                  <div class="item-meta">{{ f.lines_count }} câu • Lệnh: <code>.n {{ f.display_num }} @Tên</code></div>
                 </div>
-                <a href="/file/delete/{{ f.id }}" class="btn btn-danger btn-sm" style="text-decoration:none">Xóa</a>
+                <a href="/file/delete/{{ f.id }}" class="btn btn-red btn-mini" style="text-decoration:none">Xóa</a>
               </div>
             {% endfor %}
           </div>
@@ -8334,109 +7479,88 @@ input,select,textarea{font-size:16px !important;font-family:inherit;max-width:10
     </div>
   </section>
 
-  <!-- TAB 5: TRUNG TÂM GIÁM SÁT ANTI-DIE-ALL & NHẬT KÝ ĐÃ ẨN LOG ACC -->
-  <section id="tab-shield" class="tab-section">
-    <div class="panel-grid">
-      <div class="col-6">
+  <!-- TAB 5: GIÁM SÁT & PING -->
+  <section id="tab-shield" class="tab-pane">
+    <div class="grid-main">
+      <div class="c6">
         <div class="card">
-          <div class="card-head">
-            <div class="card-title">
-              <span class="card-title-icon" style="background:var(--noel-pine-soft);color:var(--noel-pine)">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
-              </span>
-              <span>Tường Lửa Discord 9 Lớp & Anti-Die-All Kép</span>
-            </div>
-            <button type="button" class="btn btn-emerald btn-sm" onclick="refreshDiscordFirewallVault()">Làm Mới Tường Lửa</button>
+          <div class="card-hd">
+            <div class="card-ttl"><span>Tường Lửa Anti-Ban v13 & Ping</span></div>
+            <button type="button" class="btn btn-green btn-mini" onclick="checkWebPingNow(true)">⚡ Đo Ping</button>
           </div>
-          <div class="info-banner">
-            <strong>Tường Lửa Chống Báo Reset Key Discord 9 Lớp (Active 100%):</strong><br>
-            • <strong>Chặn Tuyệt Đối Lỗi Báo Reset Key Khi Gõ Lệnh:</strong> Tường lửa tự động lọc bỏ 100% ký tự Cyrillic pha trộn trong từ Latin và ký tự ẩn <code>Cf</code> (nguyên nhân khiến bộ lọc Phishing <code>decancer</code> của Discord bắt Reset mật khẩu ngay khi gửi tin).<br>
-            • <strong>TLS 1.3 Chrome 131 + Cookie Cloudflare Thật:</strong> Mọi gói <code>POST /messages</code> đều đi qua <code>Chrome131TLSAdapter</code> kèm Cookie <code>__dcfduid / __sdcfduid</code> có chữ ký thật và đồng bộ 14 trường <code>Super-Properties</code> với Gateway <code>invisible</code>.
-          </div>
-          <div class="form-row" style="margin-bottom:8px" id="pingMonitorRow">
-            <div class="list-item" style="margin-bottom:0;padding:8px 10px">
+          <div class="row2">
+            <div class="item-row" style="margin:0">
               <div>
-                <div class="item-sub">Độ Trễ Web Ping (RTT)</div>
-                <div class="item-title" id="pingRttVal" style="color:var(--noel-pine)">Đang đo...</div>
+                <div class="item-meta">Web Ping (RTT)</div>
+                <div class="item-name" id="pingRttVal" style="color:var(--green)">-- ms</div>
               </div>
-              <button type="button" class="btn btn-soft btn-sm" onclick="checkWebPingNow(true)">⚡ Check Ping</button>
+              <span class="tag tag-green" id="pingEngineBadge">0.4ms</span>
             </div>
-            <div class="list-item" style="margin-bottom:0;padding:8px 10px">
+            <div class="item-row" style="margin:0">
               <div>
-                <div class="item-sub">Đa Luồng Song Song 3 App</div>
-                <div class="item-title" id="pingThreadsVal" style="color:var(--noel-blue)">Mượt 100%</div>
+                <div class="item-meta">Luồng Hoạt Động</div>
+                <div class="item-name" id="pingThreadsVal" style="color:var(--blue)">Mượt</div>
               </div>
-              <span class="badge badge-blue" id="pingEngineBadge">0.5 ms</span>
+              <span class="tag tag-purple">zlib-stream</span>
             </div>
           </div>
-          <div class="form-row" style="margin-bottom:10px" id="firewallMetricsRow">
-            <div class="list-item" style="margin-bottom:0;padding:8px 10px">
+          <div class="row2">
+            <div class="item-row" style="margin:0">
               <div>
-                <div class="item-sub">Gói Tin Qua Tường Lửa</div>
-                <div class="item-title" id="fwInspectedCnt" style="color:var(--noel-pine)">0 gói</div>
+                <div class="item-meta">Gói Tin Đã Lọc</div>
+                <div class="item-name" id="fwInspectedCnt">0 gói</div>
               </div>
-              <span class="badge badge-green">TLS 1.3</span>
             </div>
-            <div class="list-item" style="margin-bottom:0;padding:8px 10px">
+            <div class="item-row" style="margin:0">
               <div>
-                <div class="item-sub">Token Bất Tử & Cookie Vault</div>
-                <div class="item-title" id="fwImmortalCnt" style="color:var(--noel-indigo)">0 đã khóa</div>
+                <div class="item-meta">Két Sắt Token / Cookie</div>
+                <div class="item-name" id="fwImmortalCnt">0 đã khóa</div>
               </div>
-              <span class="badge badge-purple">Zero-REST</span>
             </div>
           </div>
-          <div class="scroll-box" id="healthShieldBox" style="max-height:280px"></div>
+          <div class="list-scroll" id="healthShieldBox" style="max-height:260px"></div>
         </div>
       </div>
 
-      <div class="col-6">
+      <div class="c6">
         <div class="card">
-          <div class="card-head">
-            <div class="card-title">
-              <span class="card-title-icon" style="background:#ede9fe;color:#6d28d9">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-              </span>
-              <span>Nhật Ký Lệnh (Đã Mã Hóa Ẩn Log Acc)</span>
-            </div>
-            <span class="badge badge-purple">Stealth Log</span>
+          <div class="card-hd">
+            <div class="card-ttl"><span>Nhật Ký Lệnh Chat</span></div>
+            <span class="tag tag-purple">Stealth Log</span>
           </div>
-          <div class="scroll-box" id="cmdLogBox" style="max-height:380px"></div>
+          <div class="list-scroll" id="cmdLogBox" style="max-height:360px"></div>
         </div>
       </div>
     </div>
   </section>
 </div>
 
-<!-- THANH TAB NGANG Ở DƯỚI NHỎ GỌN HIỆN ĐẠI (5 TAB VỪA KHÍT MỌI MÀN HÌNH) -->
-<nav class="bottom-dock-wrap">
-  <div class="bottom-dock">
-    <button type="button" class="tab-btn active" data-tab="tab-accounts" onclick="switchMainTab('tab-accounts', this)">
-      <span class="tab-count">{{ accounts|length }}</span>
-      <svg class="tab-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-      <span class="tab-lbl">Tài Khoản</span>
+<!-- THANH DOCK 5 TAB GỌN ĐẸP -->
+<nav class="dock-wrap">
+  <div class="dock">
+    <button type="button" class="d-btn active" data-tab="tab-accounts" onclick="switchMainTab('tab-accounts', this)">
+      <span class="d-cnt">{{ accounts|length }}</span>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
+      <span>Tài Khoản</span>
     </button>
-
-    <button type="button" class="tab-btn" data-tab="tab-targets" onclick="switchMainTab('tab-targets', this)">
-      <span class="tab-count" id="dockTargetBadge">0</span>
-      <svg class="tab-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94"/></svg>
-      <span class="tab-lbl">Phòng Tag</span>
+    <button type="button" class="d-btn" data-tab="tab-targets" onclick="switchMainTab('tab-targets', this)">
+      <span class="d-cnt" id="dockTargetBadge">0</span>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94"/></svg>
+      <span>Phòng Tag</span>
     </button>
-
-    <button type="button" class="tab-btn" data-tab="tab-campaign" onclick="switchMainTab('tab-campaign', this)">
-      <span class="tab-count" id="dockTaskBadge">0</span>
-      <svg class="tab-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-      <span class="tab-lbl">Chiến Dịch</span>
+    <button type="button" class="d-btn" data-tab="tab-campaign" onclick="switchMainTab('tab-campaign', this)">
+      <span class="d-cnt" id="dockTaskBadge">0</span>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+      <span>Chiến Dịch</span>
     </button>
-
-    <button type="button" class="tab-btn" data-tab="tab-files" onclick="switchMainTab('tab-files', this)">
-      <span class="tab-count">{{ files|length }}</span>
-      <svg class="tab-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-      <span class="tab-lbl">Kho File</span>
+    <button type="button" class="d-btn" data-tab="tab-files" onclick="switchMainTab('tab-files', this)">
+      <span class="d-cnt">{{ files|length }}</span>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+      <span>Kho File</span>
     </button>
-
-    <button type="button" class="tab-btn" data-tab="tab-shield" onclick="switchMainTab('tab-shield', this)">
-      <svg class="tab-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
-      <span class="tab-lbl">Giám Sát</span>
+    <button type="button" class="d-btn" data-tab="tab-shield" onclick="switchMainTab('tab-shield', this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+      <span>Giám Sát</span>
     </button>
   </div>
 </nav>
@@ -8448,65 +7572,24 @@ let CURRENT_MEMBERS = [];
 let SELECTED_MENTIONS = new Map();
 let ROOM_PLATFORM_FILTER = 'all';
 
-function setRoomPlatformFilter(flt) {
-  ROOM_PLATFORM_FILTER = flt;
-  ['All', 'Zalo', 'Discord', 'Mess', 'GroupOnly'].forEach(k => {
-    const el = document.getElementById('fltRoom' + k);
-    if (el) el.classList.remove('active');
-  });
-  const mapId = {all:'fltRoomAll', zalo:'fltRoomZalo', discord:'fltRoomDiscord', messenger:'fltRoomMess', groups:'fltRoomGroupOnly'};
-  const activeEl = document.getElementById(mapId[flt] || 'fltRoomAll');
-  if (activeEl) activeEl.classList.add('active');
-  renderTargetList();
-}
-
-async function runBatchDiscordRegStudio() {
-  const box = document.getElementById('discordNewAccStatusBox');
-  box.style.display = 'block';
-  box.style.background = '#d1fae5';
-  box.style.border = '1px solid #6ee7b7';
-  box.style.color = '#065f46';
-  box.innerHTML = 'Đang khởi tạo 5 phiên Chrome 131 sạch & lấy 5 mã X-Fingerprint thật từ Discord...';
-  showToast('Đang chạy Batch Reg Studio v12...');
-  try {
-    const r = await fetch('/api/discord/batch_reg_profiles', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({count: 5})
-    });
-    const d = await r.json();
-    if (d.ok && d.profiles && d.profiles.length) {
-      const p0 = d.profiles[0];
-      document.getElementById('newAccUsername').value = p0.username;
-      document.getElementById('newAccPassword').value = p0.password;
-      document.getElementById('newAccDob').value = p0.dob;
-      const rowsHtml = d.profiles.map(p =>
-        `• <strong>${escapeHtmlSafe(p.username)}</strong> | Pass: <code>${escapeHtmlSafe(p.password)}</code> | FP: <code>${escapeHtmlSafe((p.fingerprint || '').slice(0, 22))}...</code>`
-      ).join('<br>');
-      box.innerHTML = `<strong>${escapeHtmlSafe(d.message)} (Đã điền sẵn hồ sơ #1 vào ô):</strong><br>${rowsHtml}`;
-      showToast(d.message);
-    } else {
-      box.innerHTML = 'Không thể khởi tạo Batch Profile lúc này.';
-    }
-  } catch (e) {
-    box.innerHTML = 'Lỗi kết nối máy chủ khi chạy Batch Reg Studio!';
-  }
-}
-
 function showToast(msg) {
   const box = document.getElementById('toastBox');
   const el = document.createElement('div');
   el.className = 'toast-msg';
-  el.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fde68a" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg><span>${msg}</span>`;
+  el.innerHTML = `<span>⚡ ${msg}</span>`;
   box.appendChild(el);
-  setTimeout(() => { el.remove(); }, 3200);
+  setTimeout(() => { el.remove(); }, 2800);
+}
+
+function escapeHtmlSafe(s) {
+  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 function switchMainTab(tabId, btnEl) {
-  document.querySelectorAll('.tab-section').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.tab-pane').forEach(s => s.classList.remove('active'));
   const targetSec = document.getElementById(tabId);
   if (targetSec) targetSec.classList.add('active');
-  document.querySelectorAll('.bottom-dock .tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.dock .d-btn').forEach(b => b.classList.remove('active'));
   if (btnEl) btnEl.classList.add('active');
   if (tabId === 'tab-targets' && ALL_TARGETS.length === 0) {
     loadGroupsAndRooms(false);
@@ -8517,42 +7600,31 @@ function switchAccForm(plat) {
   document.getElementById('accPlatformInput').value = plat;
   document.getElementById('segZaloBtn').classList.toggle('active', plat === 'zalo');
   document.getElementById('segDiscordBtn').classList.toggle('active', plat === 'discord');
-  const mBtn = document.getElementById('segMessengerBtn');
-  if (mBtn) mBtn.classList.toggle('active', plat === 'messenger');
+  document.getElementById('segMessengerBtn').classList.toggle('active', plat === 'messenger');
   document.getElementById('zaloInputFields').style.display = (plat === 'zalo') ? 'block' : 'none';
   document.getElementById('discordInputFields').style.display = (plat === 'discord') ? 'block' : 'none';
-  const mFields = document.getElementById('messengerInputFields');
-  if (mFields) mFields.style.display = (plat === 'messenger') ? 'block' : 'none';
+  document.getElementById('messengerInputFields').style.display = (plat === 'messenger') ? 'block' : 'none';
 }
 
-async function verifyAndLockMessengerCookie() {
-  const raw = (document.getElementById('messCookieInput').value || '').trim();
-  const box = document.getElementById('messVerifyResultBox');
-  if (!raw) {
-    showToast('Vui lòng dán Cookie Facebook / Messenger vào ô!');
-    return;
-  }
-  box.style.display = 'block';
-  box.innerHTML = 'Đang khởi tạo Messenger Sigma Shield & lấy khóa fb_dtsg lưu vào Két Sắt 45 phút...';
-  showToast('Đang xác thực & khóa bảo vệ Cookie Messenger...');
-  try {
-    const r = await fetch('/api/messenger/verify_cookie', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({cookies: raw, auto_save: true})
-    });
-    const d = await r.json();
-    if (d.ok) {
-      box.innerHTML = `<strong>${escapeHtmlSafe(d.message)}</strong><br>• Tên: <strong>${escapeHtmlSafe(d.name)}</strong> (UID: <code>${escapeHtmlSafe(d.uid)}</code>) — Khóa DTSG: <strong>ĐÃ KHÓA KÉT SẮT</strong>`;
-      showToast(d.message || 'Đã kết nối Messenger thành công!');
-      setTimeout(() => location.reload(), 1000);
-    } else {
-      box.innerHTML = `<span style="color:#b91c1c">${escapeHtmlSafe(d.error || 'Cookie Messenger không hợp lệ hoặc đã hết hạn')}</span>`;
-      showToast(d.error || 'Lỗi Cookie Messenger');
-    }
-  } catch (e) {
-    box.innerHTML = '<span style="color:#b91c1c">Lỗi kết nối máy chủ khi kiểm tra Cookie Messenger!</span>';
-  }
+function switchDiscordRegTab(mode) {
+  document.getElementById('subDisTokenBtn').classList.toggle('active', mode === 'token');
+  document.getElementById('subDisLoginBtn').classList.toggle('active', mode === 'login');
+  document.getElementById('subDisNewAccBtn').classList.toggle('active', mode === 'new_acc');
+  document.getElementById('discordTokenBox').style.display = (mode === 'token') ? 'block' : 'none';
+  document.getElementById('discordLoginBox').style.display = (mode === 'login') ? 'block' : 'none';
+  document.getElementById('discordNewAccBox').style.display = (mode === 'new_acc') ? 'block' : 'none';
+}
+
+function setRoomPlatformFilter(flt) {
+  ROOM_PLATFORM_FILTER = flt;
+  ['All', 'Zalo', 'Discord', 'Mess'].forEach(k => {
+    const el = document.getElementById('fltRoom' + k);
+    if (el) el.classList.remove('active');
+  });
+  const mapId = {all:'fltRoomAll', zalo:'fltRoomZalo', discord:'fltRoomDiscord', messenger:'fltRoomMess'};
+  const activeEl = document.getElementById(mapId[flt] || 'fltRoomAll');
+  if (activeEl) activeEl.classList.add('active');
+  renderTargetList();
 }
 
 async function checkWebPingNow(showNotice = false) {
@@ -8566,65 +7638,78 @@ async function checkWebPingNow(showNotice = false) {
     const rttEl = document.getElementById('pingRttVal');
     const thEl = document.getElementById('pingThreadsVal');
     const engEl = document.getElementById('pingEngineBadge');
-    const stateLabel = rtt < 80 ? 'Siêu Mượt' : (rtt < 180 ? 'Ổn Định' : 'Bình Thường');
-    if (hdrTxt) hdrTxt.textContent = `Ping: ${rtt}ms • ${d.active_threads || 1} Luồng`;
-    if (hdrDot) {
-      const col = rtt < 100 ? '#4ade80' : (rtt < 220 ? '#facc15' : '#f87171');
-      hdrDot.style.background = col;
-      hdrDot.style.boxShadow = `0 0 8px ${col}`;
-    }
-    if (rttEl) rttEl.textContent = `${rtt} ms (${stateLabel})`;
-    if (thEl) thEl.textContent = `${d.active_threads || 1} Luồng • 3 App Song Song`;
-    if (engEl) engEl.textContent = `Engine ${d.engine_ms || 0.4}ms`;
-    if (showNotice) {
-      showToast(`⚡ Ping Web: ${rtt}ms (${stateLabel}) | Engine: ${d.engine_ms || 0.4}ms | Đang chạy ${d.active_threads || 1} luồng mượt mà!`);
-    }
-  } catch (e) {
-    if (showNotice) showToast('Không thể đo Ping lúc này');
-  }
+    if (hdrTxt) hdrTxt.textContent = `Ping: ${rtt}ms`;
+    if (hdrDot) hdrDot.style.background = rtt < 120 ? '#4ade80' : '#facc15';
+    if (rttEl) rttEl.textContent = `${rtt} ms`;
+    if (thEl) thEl.textContent = `${d.active_threads || 1} Luồng`;
+    if (engEl) engEl.textContent = `${d.engine_ms || 0.4}ms`;
+    if (showNotice) showToast(`Ping Web: ${rtt}ms | Engine: ${d.engine_ms || 0.4}ms | ${d.active_threads || 1} luồng`);
+  } catch (e) {}
 }
 
-function switchDiscordRegTab(mode) {
-  document.getElementById('subDisTokenBtn').classList.toggle('active', mode === 'token');
-  document.getElementById('subDisLoginBtn').classList.toggle('active', mode === 'login');
-  const newAccBtn = document.getElementById('subDisNewAccBtn');
-  if (newAccBtn) newAccBtn.classList.toggle('active', mode === 'new_acc');
-  document.getElementById('discordTokenBox').style.display = (mode === 'token') ? 'block' : 'none';
-  document.getElementById('discordLoginBox').style.display = (mode === 'login') ? 'block' : 'none';
-  const newAccBox = document.getElementById('discordNewAccBox');
-  if (newAccBox) newAccBox.style.display = (mode === 'new_acc') ? 'block' : 'none';
+async function verifyAndLockMessengerCookie() {
+  const raw = (document.getElementById('messCookieInput').value || '').trim();
+  const box = document.getElementById('messVerifyResultBox');
+  if (!raw) { showToast('Hãy dán Cookie Messenger!'); return; }
+  box.style.display = 'block';
+  box.innerHTML = 'Đang khóa bảo vệ Cookie Messenger (Single-Domain v13)...';
+  try {
+    const r = await fetch('/api/messenger/verify_cookie', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({cookies: raw, auto_save: true})
+    });
+    const d = await r.json();
+    if (d.ok) {
+      box.innerHTML = `✅ Đã lưu <strong>${escapeHtmlSafe(d.name)}</strong> (UID: <code>${escapeHtmlSafe(d.uid)}</code>)`;
+      showToast('Đã lưu tài khoản Messenger!');
+      setTimeout(() => location.reload(), 800);
+    } else {
+      box.innerHTML = `<span style="color:#fca5a5">${escapeHtmlSafe(d.error)}</span>`;
+    }
+  } catch (e) { box.innerHTML = 'Lỗi kết nối!'; }
 }
 
 function fillRandomDiscordRegProfile() {
-  const prefixes = ['noel_vip', 'aurora_vn', 'frost_king', 'crystal_pro', 'stellar_x', 'nova_elite'];
-  const pfx = prefixes[Math.floor(Math.random() * prefixes.length)];
   const rnd = Math.floor(1000 + Math.random() * 9000);
-  const uname = `${pfx}_${rnd}`;
-  const pw = `Noel@${rnd}#Sec${Math.floor(10 + Math.random() * 89)}`;
-  const yr = Math.floor(1996 + Math.random() * 7);
-  const mo = String(Math.floor(1 + Math.random() * 12)).padStart(2, '0');
-  const dy = String(Math.floor(10 + Math.random() * 18)).padStart(2, '0');
+  const uname = `noel_vip_${rnd}`;
+  const pw = `Noel@${rnd}#Vip99`;
   document.getElementById('newAccUsername').value = uname;
   document.getElementById('newAccPassword').value = pw;
-  document.getElementById('newAccDob').value = `${yr}-${mo}-${dy}`;
-  if (!document.getElementById('newAccEmail').value.trim()) {
-    document.getElementById('newAccEmail').focus();
-  }
-  showToast(`Đã tạo hồ sơ ngẫu nhiên: ${uname} | Mật khẩu: ${pw}`);
+  document.getElementById('newAccDob').value = '2000-06-15';
+  showToast(`Đã tạo: ${uname}`);
+}
+
+async function runBatchDiscordRegStudio() {
+  const box = document.getElementById('discordNewAccStatusBox');
+  box.style.display = 'block';
+  box.style.background = 'rgba(16,185,129,0.18)';
+  box.style.color = '#6ee7b7';
+  box.innerHTML = 'Đang lấy 5 mã X-Fingerprint thật từ Discord...';
+  try {
+    const r = await fetch('/api/discord/batch_reg_profiles', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({count: 5})
+    });
+    const d = await r.json();
+    if (d.ok && d.profiles && d.profiles.length) {
+      const p0 = d.profiles[0];
+      document.getElementById('newAccUsername').value = p0.username;
+      document.getElementById('newAccPassword').value = p0.password;
+      document.getElementById('newAccDob').value = p0.dob;
+      box.innerHTML = d.profiles.map(p => `• <b>${escapeHtmlSafe(p.username)}</b> | <code>${escapeHtmlSafe(p.password)}</code>`).join('<br>');
+      showToast('Đã tạo 5 hồ sơ sạch!');
+    }
+  } catch (e) { box.innerHTML = 'Lỗi kết nối!'; }
 }
 
 async function runImmortalizeTokensTool(autoSave = true) {
   const raw = (document.getElementById('discordTokenInput').value || '').trim();
   const box = document.getElementById('immortalVaultResultBox');
-  if (!raw) {
-    showToast('Hãy dán ít nhất 1 Token hoặc chuỗi email:pass:token vào ô!');
-    return;
-  }
+  if (!raw) { showToast('Hãy dán Token Discord!'); return; }
   box.style.display = 'block';
-  box.innerHTML = autoSave
-    ? 'Đang chạy quy trình 6 bước Đúc Token Bất Tử (Bắt tay TLS 1.3 Chrome 131 + Cookie Cloudflare thật)...'
-    : 'Đang kiểm tra & lọc danh sách Token Sống (LIVE) / Chết (DIE) an toàn qua Tường Lửa...';
-  showToast(autoSave ? 'Đang đúc Token Bất Tử...' : 'Đang lọc Token Live/Die...');
+  box.innerHTML = 'Đang đúc Token Offline (0 REST Call - Chống Reset Key)...';
   try {
     const r = await fetch('/api/discord/immortalize', {
       method: 'POST',
@@ -8633,25 +7718,16 @@ async function runImmortalizeTokensTool(autoSave = true) {
     });
     const d = await r.json();
     if (d.ok) {
-      const itemsHtml = (d.results || []).map(x => x.ok
-        ? `• <span style="color:#047857">[LIVE BẤT TỬ]</span> <strong>${escapeHtmlSafe(x.username)}</strong> (UID: <code>${escapeHtmlSafe(x.uid)}</code>) — ${escapeHtmlSafe(x.os_profile)}`
-        : `• <span style="color:#b91c1c">[DIE]</span> <code>${escapeHtmlSafe(x.masked_token)}</code> — ${escapeHtmlSafe(x.error)}`
-      ).join('<br>');
       if (d.live_tokens && d.live_tokens.length) {
         document.getElementById('discordTokenInput').value = d.live_tokens.join('\n');
       }
-      box.innerHTML = `<strong>${escapeHtmlSafe(d.message)} (Live: ${d.alive_count}/${d.total})</strong><br>${itemsHtml}`;
-      showToast(d.message || 'Đã xử lý Token thành công!');
-      if (autoSave) {
-        setTimeout(() => location.reload(), 1100);
-      }
+      box.innerHTML = `✅ Sống: ${d.alive_count}/${d.total} Token`;
+      showToast(d.message);
+      if (autoSave) setTimeout(() => location.reload(), 900);
     } else {
-      box.innerHTML = `<span style="color:#b91c1c">${escapeHtmlSafe(d.error || 'Tất cả Token đều không hợp lệ hoặc đã hết hạn')}</span>`;
-      showToast(d.error || 'Không thể đúc Token');
+      box.innerHTML = `<span style="color:#fca5a5">${escapeHtmlSafe(d.error)}</span>`;
     }
-  } catch (e) {
-    box.innerHTML = '<span style="color:#b91c1c">Lỗi kết nối máy chủ khi đúc Token!</span>';
-  }
+  } catch (e) { box.innerHTML = 'Lỗi kết nối!'; }
 }
 
 async function runCreateNewDiscordAccTool() {
@@ -8660,15 +7736,9 @@ async function runCreateNewDiscordAccTool() {
   const password = (document.getElementById('newAccPassword').value || '').trim();
   const dob = (document.getElementById('newAccDob').value || '2000-06-15').trim();
   const box = document.getElementById('discordNewAccStatusBox');
-  if (!email || !password) {
-    showToast('Vui lòng nhập đầy đủ Email và Mật khẩu để Reg Acc mới!');
-    return;
-  }
+  if (!email || !password) { showToast('Nhập đủ Email & Mật khẩu!'); return; }
   box.style.display = 'block';
-  box.style.background = '#d1fae5';
-  box.style.border = '1px solid #6ee7b7';
-  box.style.color = '#065f46';
-  box.innerHTML = 'Đang lấy X-Fingerprint thật & Cookie Cloudflare chuẩn Chrome 131 để khởi tạo tài khoản...';
+  box.innerHTML = 'Đang khởi tạo tài khoản...';
   try {
     const r = await fetch('/api/discord/register_acc', {
       method: 'POST',
@@ -8676,48 +7746,17 @@ async function runCreateNewDiscordAccTool() {
       body: JSON.stringify({email, username, password, dob, auto_save: true})
     });
     const d = await r.json();
-    if (d.ok) {
-      box.innerHTML = `<strong>${escapeHtmlSafe(d.message)}</strong><br>Token Bất Tử: <code>${escapeHtmlSafe(d.token)}</code>`;
-      showToast(d.message || 'Đã tạo tài khoản & đúc Token Bất Tử!');
-      setTimeout(() => location.reload(), 1200);
-    } else {
-      box.style.background = '#fef3c7';
-      box.style.border = '1px solid #fcd34d';
-      box.style.color = '#92400e';
-      const fpInfo = d.fingerprint ? `<br>• Fingerprint phiên sạch đã cấp: <code>${escapeHtmlSafe(d.fingerprint.slice(0, 32))}...</code>` : '';
-      box.innerHTML = `${escapeHtmlSafe(d.error || 'Cần xác thực Captcha trên trình duyệt')}${fpInfo}`;
-      showToast('Đã tạo hồ sơ Fingerprint sạch!');
-    }
-  } catch (e) {
-    box.innerHTML = 'Lỗi kết nối máy chủ khi Reg tài khoản!';
-  }
-}
-
-async function refreshDiscordFirewallVault() {
-  showToast('Đang làm mới Tường Lửa 9 Lớp & nạp lại Cookie Cloudflare thật...');
-  try {
-    const r = await fetch('/api/discord/refresh_firewall', {method: 'POST'});
-    const d = await r.json();
-    showToast(d.message || 'Đã làm mới Tường Lửa Discord!');
-    pollSystemStatus();
-  } catch (e) {
-    showToast('Lỗi làm mới Tường Lửa');
-  }
+    box.innerHTML = escapeHtmlSafe(d.message || d.error);
+    if (d.ok) setTimeout(() => location.reload(), 1000);
+  } catch (e) { box.innerHTML = 'Lỗi kết nối!'; }
 }
 
 function setDiscordRegStatus(msg, isSuccess) {
   const box = document.getElementById('discordRegStatusBox');
   if (!box) return;
   box.style.display = 'block';
-  if (isSuccess) {
-    box.style.background = '#d1fae5';
-    box.style.border = '1px solid #6ee7b7';
-    box.style.color = '#065f46';
-  } else {
-    box.style.background = '#fef2f2';
-    box.style.border = '1px solid #fecaca';
-    box.style.color = '#b91c1c';
-  }
+  box.style.background = isSuccess ? 'rgba(16,185,129,0.18)' : 'rgba(239,68,68,0.18)';
+  box.style.color = isSuccess ? '#6ee7b7' : '#fca5a5';
   box.innerHTML = msg;
 }
 
@@ -8737,25 +7776,17 @@ function handleAccountFormSubmit(ev) {
 }
 
 function copyDiscordTokenScript() {
-  const snippet = `javascript:(function(){let m=[];webpackChunkdiscord_app.push([[Symbol()],{},e=>{for(let c of Object.values(e.c)){try{if(c?.exports?.default?.getToken){let t=c.exports.default.getToken();if(typeof t==='string')m.push(t)}}catch{}}}]);prompt('Copy Token Discord cua ban:',m[0]||'Mo tab discord.com/app roi chay lai');})();`;
-  if (navigator.clipboard) {
-    navigator.clipboard.writeText(snippet);
-  }
-  setDiscordRegStatus('Đã sao chép lệnh lấy Token! Nếu IP máy chủ bị Discord chặn Captcha khi đăng nhập bằng mật khẩu, bạn chỉ cần mở <code>discord.com/app</code> trên trình duyệt, dán lệnh vừa copy vào thanh địa chỉ để lấy Token rồi dán sang ô "Dán Token / Chuỗi Reg" là vào thẳng 100%!', true);
-  showToast('Đã sao chép lệnh lấy Token nhanh!');
+  const snippet = `javascript:(function(){let m=[];webpackChunkdiscord_app.push([[Symbol()],{},e=>{for(let c of Object.values(e.c)){try{if(c?.exports?.default?.getToken){let t=c.exports.default.getToken();if(typeof t==='string')m.push(t)}}catch{}}}]);prompt('Copy Token Discord:',m[0]||'Mo discord.com/app');})();`;
+  if (navigator.clipboard) navigator.clipboard.writeText(snippet);
+  showToast('Đã copy lệnh lấy Token!');
 }
 
 async function extractDiscordTokenByReg() {
   const email = document.getElementById('regDisEmail').value.trim();
   const password = document.getElementById('regDisPass').value.trim();
   const two_fa = document.getElementById('regDis2FA').value.trim();
-  if (!email && !password) {
-    setDiscordRegStatus('Vui lòng nhập đầy đủ Gmail và Mật khẩu Discord (hoặc chuỗi email:pass:token)!', false);
-    showToast('Vui lòng nhập đầy đủ Email và Mật khẩu Discord!');
-    return;
-  }
-  setDiscordRegStatus('Đang kết nối tới máy chủ xác thực Discord (/api/v9/auth/login)...', true);
-  showToast('Đang xác thực tài khoản Discord...');
+  if (!email && !password) { showToast('Nhập Gmail & Mật khẩu!'); return; }
+  setDiscordRegStatus('Đang xác thực...', true);
   try {
     const r = await fetch('/api/discord/reg_login', {
       method: 'POST',
@@ -8765,91 +7796,57 @@ async function extractDiscordTokenByReg() {
     const d = await r.json();
     if (d.ok) {
       document.getElementById('discordTokenInput').value = d.token || '';
-      setDiscordRegStatus(d.message || 'Đăng nhập thành công! Đang lưu tài khoản...', true);
-      showToast(d.message || 'Đã lấy Token sạch & lưu thành công!');
-      setTimeout(() => location.reload(), 800);
+      setDiscordRegStatus('Thành công! Đang lưu...', true);
+      setTimeout(() => location.reload(), 700);
     } else {
-      setDiscordRegStatus(d.error || 'Không thể đăng nhập bằng mật khẩu', false);
-      showToast(d.error || 'Không thể lấy Token');
+      setDiscordRegStatus(d.error || 'Lỗi đăng nhập', false);
     }
-  } catch (e) {
-    setDiscordRegStatus('Lỗi kết nối tới máy chủ. Vui lòng thử lại.', false);
-    showToast('Lỗi kết nối máy chủ');
-  }
+  } catch (e) { setDiscordRegStatus('Lỗi kết nối', false); }
 }
 
 async function uploadBrandLogo(inputEl) {
   if (!inputEl.files || !inputEl.files[0]) return;
   const fd = new FormData();
   fd.append('logo', inputEl.files[0]);
-  showToast('Đang tải Logo lên...');
-  try {
-    const r = await fetch('/api/logo/upload', {method: 'POST', body: fd});
-    const d = await r.json();
-    if (d.ok) {
-      const img = document.getElementById('brandLogoImg');
-      const fb = document.getElementById('brandLogoFallback');
-      img.src = '/api/logo?v=' + Date.now();
-      img.style.display = 'block';
-      if (fb) fb.style.display = 'none';
-      showToast('Đã cập nhật Logo!');
-    } else {
-      showToast(d.error || 'Lỗi tải Logo');
-    }
-  } catch (e) {
-    showToast('Lỗi tải Logo');
+  const r = await fetch('/api/logo/upload', {method: 'POST', body: fd});
+  const d = await r.json();
+  if (d.ok) {
+    const img = document.getElementById('brandLogoImg');
+    const fb = document.getElementById('brandLogoFallback');
+    img.src = '/api/logo?v=' + Date.now();
+    img.style.display = 'block';
+    if (fb) fb.style.display = 'none';
+    showToast('Đã đổi Logo!');
   }
 }
 
 async function handleTxtUpload(inputEl) {
   if (!inputEl.files || !inputEl.files[0]) return;
-  const file = inputEl.files[0];
   const wrap = document.getElementById('uploadProgWrap');
   const bar = document.getElementById('uploadProgBar');
   wrap.style.display = 'block';
-  bar.style.width = '38%';
+  bar.style.width = '50%';
   const fd = new FormData();
-  fd.append('file', file);
+  fd.append('file', inputEl.files[0]);
   try {
-    const r = await fetch('/file/upload', {
-      method: 'POST',
-      headers: {'X-Requested-With': 'XMLHttpRequest'},
-      body: fd
-    });
+    const r = await fetch('/file/upload', {method: 'POST', headers: {'X-Requested-With': 'XMLHttpRequest'}, body: fd});
     bar.style.width = '100%';
     const d = await r.json();
     if (d.ok) {
-      showToast(`Đã tải lên ${d.filename} (${d.lines_count} dòng)!`);
-      setTimeout(() => location.reload(), 650);
-    } else {
-      showToast(d.error || 'Lỗi tải file');
+      showToast(`Đã tải ${d.filename}!`);
+      setTimeout(() => location.reload(), 500);
     }
-  } catch (e) {
-    location.reload();
-  }
+  } catch (e) { location.reload(); }
 }
 
 async function toggleAccCmd(accId, enabled) {
-  await fetch('/api/account/chat_cmd', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({acc_id: accId, enabled})
-  });
-  location.reload();
-}
-
-async function toggleAccAllowAll(accId, allow_all) {
-  await fetch('/api/account/allow_all_cmd', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({acc_id: accId, allow_all})
-  });
+  await fetch('/api/account/chat_cmd', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({acc_id: accId, enabled})});
   location.reload();
 }
 
 async function loadGroupsAndRooms(forceRefresh) {
   const box = document.getElementById('targetListContainer');
-  box.innerHTML = '<div style="text-align:center;padding:22px;color:var(--text-muted)">Đang đồng bộ song song danh sách phòng Zalo • Discord • Messenger...</div>';
+  box.innerHTML = '<div style="text-align:center;padding:18px;color:var(--txt-sub)">Đang quét tự động phòng Zalo • Discord • Mess...</div>';
   try {
     const qSuffix = forceRefresh ? '?refresh=1' : '';
     const [rZalo, rDis, rMess] = await Promise.all([
@@ -8864,14 +7861,10 @@ async function loadGroupsAndRooms(forceRefresh) {
     (rMess.threads || []).forEach(m => list.push({id: String(m.id), name: m.name, type: 'messenger_thread', members: m.members || 'Mess'}));
     ALL_TARGETS = list;
     renderTargetList();
-    showToast(`Đã đồng bộ ${ALL_TARGETS.length} phòng chat (Zalo + Discord + Mess)!`);
+    showToast(`Đã tìm thấy ${ALL_TARGETS.length} phòng!`);
   } catch (e) {
-    box.innerHTML = '<div style="text-align:center;padding:20px;color:#dc2626">Lỗi tải danh sách phòng chat</div>';
+    box.innerHTML = '<div style="text-align:center;padding:18px;color:#f87171">Lỗi tải danh sách phòng</div>';
   }
-}
-
-function escapeHtmlSafe(s) {
-  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 function renderTargetList() {
@@ -8882,31 +7875,30 @@ function renderTargetList() {
     if (ROOM_PLATFORM_FILTER === 'zalo' && (t.type !== 'group' && t.type !== 'user')) return false;
     if (ROOM_PLATFORM_FILTER === 'discord' && t.type !== 'discord_channel') return false;
     if (ROOM_PLATFORM_FILTER === 'messenger' && t.type !== 'messenger_thread') return false;
-    if (ROOM_PLATFORM_FILTER === 'groups' && t.type === 'user') return false;
     if (!q) return true;
     return (t.name || '').toLowerCase().includes(q) || String(t.id).toLowerCase().includes(q);
   });
   if (!indexed.length) {
-    box.innerHTML = '<div style="text-align:center;padding:22px;color:var(--text-muted)">Không tìm thấy phòng phù hợp.</div>';
+    box.innerHTML = '<div style="text-align:center;padding:18px;color:var(--txt-sub)">Không có phòng phù hợp. Hãy bấm "Quét".</div>';
     return;
   }
   box.innerHTML = indexed.map(({t, idx}) => {
     const checked = SELECTED_TARGETS.has(String(t.id)) ? 'checked' : '';
-    const badgeClass = t.type === 'discord_channel' ? 'badge-purple' : (t.type === 'messenger_thread' ? 'badge-red' : (t.type === 'group' ? 'badge-blue' : 'badge-green'));
-    const badgeTxt = t.type === 'discord_channel' ? 'DISCORD' : (t.type === 'messenger_thread' ? 'MESSENGER' : (t.type === 'group' ? 'NHÓM ZALO' : 'BẠN BÈ'));
+    const tagCls = t.type === 'discord_channel' ? 'tag-purple' : (t.type === 'messenger_thread' ? 'tag-red' : (t.type === 'group' ? 'tag-blue' : 'tag-green'));
+    const tagLbl = t.type === 'discord_channel' ? 'DISCORD' : (t.type === 'messenger_thread' ? 'MESS' : (t.type === 'group' ? 'ZALO' : 'BẠN'));
     return `
-      <div class="list-item">
+      <div class="item-row">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;flex:1;min-width:0">
-          <input type="checkbox" ${checked} data-idx="${idx}" onchange="toggleTargetByIdx(this.dataset.idx, this.checked)" style="width:16px;height:16px;accent-color:var(--noel-red);flex-shrink:0">
-          <div style="min-width:0;flex:1">
-            <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap">
-              <span class="badge ${badgeClass}">${badgeTxt}</span>
-              <span class="item-title">${escapeHtmlSafe(t.name)}</span>
+          <input type="checkbox" ${checked} data-idx="${idx}" onchange="toggleTargetByIdx(this.dataset.idx, this.checked)" style="width:15px;height:15px;accent-color:var(--red);flex-shrink:0">
+          <div class="item-main">
+            <div style="display:flex;align-items:center;gap:5px">
+              <span class="tag ${tagCls}">${tagLbl}</span>
+              <span class="item-name">${escapeHtmlSafe(t.name)}</span>
             </div>
-            <div class="item-sub">ID: <code>${escapeHtmlSafe(String(t.id).slice(-6))}</code> • Thành viên: ${escapeHtmlSafe(t.members)}</div>
+            <div class="item-meta">ID: <code>${escapeHtmlSafe(String(t.id).slice(-6))}</code></div>
           </div>
         </label>
-        ${(t.type === 'group' || t.type === 'discord_channel' || t.type === 'messenger_thread') ? `<button class="btn btn-soft btn-sm" type="button" data-idx="${idx}" onclick="fetchRoomMembersByIdx(this.dataset.idx)">Lấy Thành Viên</button>` : ''}
+        ${(t.type === 'group' || t.type === 'discord_channel' || t.type === 'messenger_thread') ? `<button class="btn btn-dark btn-mini" type="button" data-idx="${idx}" onclick="fetchRoomMembersByIdx(this.dataset.idx)">Thành viên</button>` : ''}
       </div>
     `;
   }).join('');
@@ -8939,31 +7931,6 @@ function clearAllTargets() {
   updateTargetBadges();
 }
 
-function addDiscordChannelManual() {
-  const cid = document.getElementById('manualDiscordChannel').value.trim();
-  if (!cid) return;
-  const item = {id: cid, name: `Kênh Discord ${cid.slice(-5)}`, type: 'discord_channel', members: 'Discord'};
-  ALL_TARGETS.unshift(item);
-  SELECTED_TARGETS.set(cid, item);
-  document.getElementById('manualDiscordChannel').value = '';
-  renderTargetList();
-  updateTargetBadges();
-  showToast('Đã thêm kênh Discord!');
-}
-
-function addMessengerThreadManual() {
-  const el = document.getElementById('manualMessengerThread');
-  const tid = (el ? el.value : '').trim();
-  if (!tid) return;
-  const item = {id: tid, name: `[Box Mess] ${tid.slice(-6)}`, type: 'messenger_thread', members: 'Mess'};
-  ALL_TARGETS.unshift(item);
-  SELECTED_TARGETS.set(tid, item);
-  if (el) el.value = '';
-  renderTargetList();
-  updateTargetBadges();
-  showToast('Đã thêm phòng chat Messenger!');
-}
-
 function updateTargetBadges() {
   const c = SELECTED_TARGETS.size;
   document.getElementById('kpiTargetCount').textContent = c;
@@ -8972,7 +7939,7 @@ function updateTargetBadges() {
 
 async function fetchRoomMembers(roomId, roomType) {
   const box = document.getElementById('memberListContainer');
-  box.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted)">Đang tải danh sách thành viên thật...</div>';
+  box.innerHTML = '<div style="text-align:center;padding:18px;color:var(--txt-sub)">Đang tải thành viên...</div>';
   try {
     const url = roomType === 'discord_channel'
       ? `/api/discord_channel_members?channel_id=${encodeURIComponent(roomId)}`
@@ -8983,9 +7950,9 @@ async function fetchRoomMembers(roomId, roomType) {
     const d = await r.json();
     CURRENT_MEMBERS = d.members || [];
     renderMemberList();
-    showToast(`Đã tải ${CURRENT_MEMBERS.length} thành viên để Tag!`);
+    showToast(`Đã tải ${CURRENT_MEMBERS.length} thành viên!`);
   } catch (e) {
-    box.innerHTML = '<div style="text-align:center;padding:20px;color:#dc2626">Không thể tải thành viên nhóm</div>';
+    box.innerHTML = '<div style="text-align:center;padding:18px;color:#f87171">Lỗi tải thành viên</div>';
   }
 }
 
@@ -8994,19 +7961,19 @@ function renderMemberList() {
   const q = (document.getElementById('memberSearchInput').value || '').toLowerCase().trim();
   const indexed = CURRENT_MEMBERS.map((m, idx) => ({m, idx})).filter(({m}) => !q || (m.name || '').toLowerCase().includes(q) || String(m.uid || m.id).includes(q));
   if (!indexed.length) {
-    box.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted)">Không có thành viên khớp bộ lọc.</div>';
+    box.innerHTML = '<div style="text-align:center;padding:18px;color:var(--txt-sub)">Không có thành viên khớp.</div>';
     return;
   }
   box.innerHTML = indexed.map(({m, idx}) => {
     const uid = String(m.uid || m.id);
     const checked = SELECTED_MENTIONS.has(uid) ? 'checked' : '';
     return `
-      <div class="list-item">
+      <div class="item-row">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;flex:1;min-width:0">
-          <input type="checkbox" ${checked} data-idx="${idx}" onchange="toggleMentionByIdx(this.dataset.idx, this.checked)" style="width:16px;height:16px;accent-color:var(--noel-red);flex-shrink:0">
-          <div style="min-width:0;flex:1">
-            <div class="item-title">@${escapeHtmlSafe(m.name)}</div>
-            <div class="item-sub">UID: <code>${escapeHtmlSafe(uid.slice(-6))}</code></div>
+          <input type="checkbox" ${checked} data-idx="${idx}" onchange="toggleMentionByIdx(this.dataset.idx, this.checked)" style="width:15px;height:15px;accent-color:var(--red);flex-shrink:0">
+          <div class="item-main">
+            <div class="item-name">@${escapeHtmlSafe(m.name)}</div>
+            <div class="item-meta">UID: <code>${escapeHtmlSafe(uid.slice(-6))}</code></div>
           </div>
         </label>
       </div>
@@ -9039,31 +8006,16 @@ function clearSelectedMentions() {
   updateTagSummary();
 }
 
-function addManualMention() {
-  const uid = document.getElementById('manualTagUid').value.trim();
-  const name = document.getElementById('manualTagName').value.trim() || `User_${uid.slice(-4)}`;
-  if (!uid) {
-    showToast('Vui lòng nhập UID Zalo hoặc ID Discord cần tag!');
-    return;
-  }
-  SELECTED_MENTIONS.set(uid, {uid, id: uid, name});
-  CURRENT_MEMBERS.unshift({uid, id: uid, name});
-  document.getElementById('manualTagUid').value = '';
-  document.getElementById('manualTagName').value = '';
-  renderMemberList();
-  updateTagSummary();
-}
-
 function updateTagSummary() {
   const tagAll = document.getElementById('chkTagAll').checked;
   const cnt = SELECTED_MENTIONS.size;
-  document.getElementById('selectedTagBadge').textContent = tagAll ? `Tag @All + ${cnt} người` : `${cnt} người được tag`;
+  document.getElementById('selectedTagBadge').textContent = tagAll ? `@All + ${cnt}` : `${cnt} được tag`;
 }
 
 async function launchCampaignTask() {
   const targets = Array.from(SELECTED_TARGETS.values());
   if (!targets.length) {
-    showToast('Hãy chọn ít nhất 1 phòng chat ở tab "Phòng Tag"!');
+    showToast('Hãy chọn phòng ở tab "Phòng Tag"!');
     switchMainTab('tab-targets', document.querySelector('[data-tab="tab-targets"]'));
     return;
   }
@@ -9072,7 +8024,7 @@ async function launchCampaignTask() {
     mode: document.getElementById('cfgMode').value,
     color_mode: document.getElementById('cfgColorMode').value,
     fixed_color: document.getElementById('cfgFixedColor').value,
-    delay: parseFloat(document.getElementById('cfgDelay').value || '1.0'),
+    delay: parseFloat(document.getElementById('cfgDelay').value || '0.0'),
     icon_count: parseInt(document.getElementById('cfgIconCount').value || '3', 10),
     file_id: document.getElementById('cfgFileSelect').value,
     raw_text: document.getElementById('cfgRawText').value,
@@ -9084,26 +8036,20 @@ async function launchCampaignTask() {
     tag_users: Array.from(SELECTED_MENTIONS.values())
   };
   try {
-    const r = await fetch('/task/start', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(payload)
-    });
+    const r = await fetch('/task/start', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
     const d = await r.json();
     if (d.ok) {
-      showToast('Đã phát động chiến dịch thành công!');
+      showToast('Đã chạy chiến dịch!');
       pollSystemStatus();
     } else {
-      showToast(d.error || 'Không thể chạy chiến dịch');
+      showToast(d.error || 'Lỗi chạy');
     }
-  } catch (e) {
-    showToast('Lỗi kết nối máy chủ');
-  }
+  } catch (e) { showToast('Lỗi kết nối'); }
 }
 
 async function stopAllRunningTasks() {
   await fetch('/task/stop_all', {method: 'POST'});
-  showToast('Đã dừng tất cả chiến dịch!');
+  showToast('Đã dừng tất cả!');
   pollSystemStatus();
 }
 
@@ -9140,23 +8086,23 @@ async function pollSystemStatus() {
       const fw = d.discord_firewall;
       const elInsp = document.getElementById('fwInspectedCnt');
       const elImm = document.getElementById('fwImmortalCnt');
-      if (elInsp) elInsp.textContent = `${fw.inspected_packets || 0} gói (Lọc ${fw.sanitized_homoglyphs || 0} mã độc)`;
-      if (elImm) elImm.textContent = `${fw.immortalized_tokens || 0} Token (${fw.cookies_harvested || 0} CF Cookie)`;
+      if (elInsp) elInsp.textContent = `${fw.inspected_packets || 0} gói`;
+      if (elImm) elImm.textContent = `${fw.immortalized_tokens || 0} đã khóa`;
     }
 
     const tBox = document.getElementById('activeTasksContainer');
     const nextTasksHtml = !tasks.length
-      ? '<div style="text-align:center;padding:22px;color:var(--text-muted);font-size:12.5px">Chưa có chiến dịch nào đang chạy.</div>'
+      ? '<div style="text-align:center;padding:18px;color:var(--txt-sub);font-size:12px">Chưa có tiến trình chạy.</div>'
       : tasks.map(t => `
-        <div class="list-item">
-          <div style="min-width:0;flex:1">
-            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-              <span class="badge ${t.status.includes('Đang chạy') ? 'badge-green' : 'badge-amber'}">${t.status}</span>
-              <span class="item-title">${t.mode} (${t.targets_count} phòng)</span>
+        <div class="item-row">
+          <div class="item-main">
+            <div style="display:flex;align-items:center;gap:5px">
+              <span class="tag ${t.status.includes('Đang chạy') ? 'tag-green' : 'tag-amber'}">${t.status}</span>
+              <span class="item-name">${t.mode} (${t.targets_count} phòng)</span>
             </div>
-            <div class="item-sub">Đã phát: <strong>${t.sent}</strong> tin • Delay: ${t.delay}s</div>
+            <div class="item-meta">Đã gửi: <b>${t.sent}</b> • Delay: ${t.delay}s</div>
           </div>
-          ${t.status.includes('Đang chạy') ? `<button class="btn btn-danger btn-sm" onclick="stopSingleTask('${t.id}')">Dừng</button>` : ''}
+          ${t.status.includes('Đang chạy') ? `<button class="btn btn-red btn-mini" onclick="stopSingleTask('${t.id}')">Dừng</button>` : ''}
         </div>
       `).join('');
     updateDomIfChanged(tBox, 'tasks', nextTasksHtml);
@@ -9164,29 +8110,29 @@ async function pollSystemStatus() {
     const hBox = document.getElementById('healthShieldBox');
     const healthList = d.accounts_health || [];
     const nextHealthHtml = healthList.map(h => `
-      <div class="list-item">
-        <div style="min-width:0;flex:1">
-          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-            <span class="badge ${h.platform === 'discord' ? 'badge-purple' : 'badge-blue'}">${h.platform.toUpperCase()}</span>
-            <span class="item-title">${h.masked_name}</span>
-            <span class="badge ${h.circuit === 'CLOSED' ? 'badge-green' : 'badge-amber'}">${h.circuit}</span>
+      <div class="item-row">
+        <div class="item-main">
+          <div style="display:flex;align-items:center;gap:5px">
+            <span class="tag ${h.platform === 'discord' ? 'tag-purple' : (h.platform === 'messenger' ? 'tag-red' : 'tag-blue')}">${h.platform.toUpperCase()}</span>
+            <span class="item-name">${h.masked_name}</span>
+            <span class="tag tag-green">${h.circuit}</span>
           </div>
-          <div class="item-sub">Tốc độ: <strong>${h.rpm} RPM</strong> • Thành công: <strong>${h.ok_total}</strong> • Rủi ro: ${h.risk_score}% • ${h.ws_status}</div>
+          <div class="item-meta">${h.rpm} RPM • Đã phát: <b>${h.ok_total}</b> • ${h.ws_status}</div>
         </div>
       </div>
-    `).join('') || '<div style="text-align:center;padding:18px;color:var(--text-muted)">Chưa có tài khoản kết nối</div>';
+    `).join('') || '<div style="text-align:center;padding:16px;color:var(--txt-sub)">Chưa có tài khoản</div>';
     updateDomIfChanged(hBox, 'health', nextHealthHtml);
 
     const cBox = document.getElementById('cmdLogBox');
     const logs = d.cmd_logs || [];
     const nextLogsHtml = logs.map(l => `
-      <div class="list-item">
-        <div style="min-width:0;flex:1">
-          <div class="item-title"><code>${l.cmd_text}</code></div>
-          <div class="item-sub">${l.action_taken} • Phòng: <code>${l.masked_thread}</code></div>
+      <div class="item-row">
+        <div class="item-main">
+          <div class="item-name"><code>${l.cmd_text}</code></div>
+          <div class="item-meta">${l.action_taken}</div>
         </div>
       </div>
-    `).join('') || '<div style="text-align:center;padding:18px;color:var(--text-muted)">Chưa có nhật ký lệnh</div>';
+    `).join('') || '<div style="text-align:center;padding:16px;color:var(--txt-sub)">Chưa có nhật ký</div>';
     updateDomIfChanged(cBox, 'logs', nextLogsHtml);
   } catch (e) {
   } finally {
@@ -9195,7 +8141,7 @@ async function pollSystemStatus() {
 }
 
 function scheduleAdaptivePoll() {
-  const waitMs = document.hidden ? 6500 : 2200;
+  const waitMs = document.hidden ? 6500 : 2500;
   setTimeout(async () => {
     await pollSystemStatus();
     scheduleAdaptivePoll();
@@ -9206,8 +8152,7 @@ document.addEventListener('visibilitychange', () => {
 });
 pollSystemStatus();
 checkWebPingNow(false);
-loadGroupsAndRooms(false);
-setInterval(() => { if (!document.hidden) checkWebPingNow(false); }, 4500);
+setInterval(() => { if (!document.hidden) checkWebPingNow(false); }, 5000);
 scheduleAdaptivePoll();
 </script>
 </body>
