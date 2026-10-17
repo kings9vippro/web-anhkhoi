@@ -3,6 +3,7 @@ import re
 import ssl
 import zlib
 import gzip
+import io
 import json
 import time
 import uuid
@@ -100,13 +101,11 @@ LOGIN_ATTEMPTS = defaultdict(lambda: {"fails": 0, "lock_until": 0.0})
 API_RATE_BUCKETS = defaultdict(lambda: deque(maxlen=260))
 SECURITY_LOCK = threading.RLock()
 
-
 def get_client_ip():
     xff = request.headers.get("X-Forwarded-For", "")
     if xff:
         return xff.split(",")[0].strip()
     return request.remote_addr or "127.0.0.1"
-
 
 def check_ip_bruteforce(ip):
     now = time.time()
@@ -115,7 +114,6 @@ def check_ip_bruteforce(ip):
         if now < st["lock_until"]:
             return False, int(st["lock_until"] - now)
         return True, 0
-
 
 def record_login_result(ip, success):
     now = time.time()
@@ -129,12 +127,10 @@ def record_login_result(ip, success):
             if st["fails"] >= 8:
                 st["lock_until"] = now + min(300, 20 * (st["fails"] - 7))
 
-
 def hash_password_secure(raw_pw):
     salt = secrets.token_hex(8)
     h = hashlib.pbkdf2_hmac("sha256", raw_pw.encode("utf-8"), salt.encode("utf-8"), 100000).hex()
     return f"pbkdf2${salt}${h}"
-
 
 def verify_password_secure(stored_pw, provided_pw):
     if not stored_pw or not provided_pw:
@@ -146,7 +142,6 @@ def verify_password_secure(stored_pw, provided_pw):
             calc = hashlib.pbkdf2_hmac("sha256", provided_pw.encode("utf-8"), salt.encode("utf-8"), 100000).hex()
             return hmac.compare_digest(h, calc)
     return hmac.compare_digest(str(stored_pw), str(provided_pw))
-
 
 @app.before_request
 def security_middleware():
@@ -160,7 +155,6 @@ def security_middleware():
             if len(dq) >= 240:
                 return jsonify({"ok": False, "error": "Thao tác quá nhanh, vui lòng thử lại sau vài giây"}), 429
             dq.append(now)
-
 
 class WebSecurityFortress:
     """Hệ thống tường lửa bảo mật Web đa lớp:
@@ -178,7 +172,6 @@ class WebSecurityFortress:
                 return False
         return True
 
-
 @app.after_request
 def add_security_headers(resp):
     resp.headers["X-Content-Type-Options"] = "nosniff"
@@ -189,7 +182,6 @@ def add_security_headers(resp):
         resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     return resp
 
-
 # BỘ LỌC ẨN LOG TÀI KHOẢN NHẠY CẢM (STEALTH ACCOUNT LOG MASKING)
 def mask_sensitive_id(val, keep_tail=3):
     s = str(val or "").strip()
@@ -199,7 +191,6 @@ def mask_sensitive_id(val, keep_tail=3):
         return "***"
     return f"***{s[-keep_tail:]}"
 
-
 def mask_account_name(name):
     s = str(name or "").strip()
     if not s:
@@ -207,7 +198,6 @@ def mask_account_name(name):
     if len(s) <= 3:
         return s[0] + "**"
     return f"{s[:2]}***{s[-1:]}"
-
 
 def sanitize_log_text(txt):
     if not txt:
@@ -217,10 +207,8 @@ def sanitize_log_text(txt):
     s = re.sub(r"(https?://[^\s]+)", "[STEALTH_ROUTE]", s)
     return s[:220]
 
-
 # KHỞI TẠO & ĐỒNG BỘ CƠ SỞ DỮ LIỆU SQLITE TỐC ĐỘ CAO
 _ACTIVE_DB_PATH = DB_PATH
-
 
 def db():
     global _ACTIVE_DB_PATH
@@ -241,7 +229,6 @@ def db():
         conn.execute("PRAGMA temp_store=MEMORY;")
         conn.execute("PRAGMA busy_timeout=15000;")
         return conn
-
 
 def normalize_zalo_cookies(raw_cookies):
     """Chuẩn hóa mọi định dạng Cookie Zalo (J2Team JSON, Extension JSON, EditThisCookie Array, Dict, Header String)
@@ -279,7 +266,6 @@ def normalize_zalo_cookies(raw_cookies):
                 out[k.strip()] = v.strip()
     return out
 
-
 def extract_imei_from_raw_input(imei_str, raw_cookies):
     imei_clean = str(imei_str or "").strip()
     if imei_clean and not imei_clean.startswith("{"):
@@ -296,7 +282,6 @@ def extract_imei_from_raw_input(imei_str, raw_cookies):
         except Exception:
             pass
     return imei_clean
-
 
 def normalize_messenger_cookies(raw_cookies):
     """Chuẩn hóa mọi định dạng Cookie Facebook / Messenger (J2Team JSON, EditThisCookie Array, Dict, Header String c_user=...; xs=...)
@@ -334,7 +319,6 @@ def normalize_messenger_cookies(raw_cookies):
                 out[k.strip()] = v.strip()
     return out
 
-
 def extract_messenger_uid(raw_cookies, fallback_uid=""):
     c_dict = normalize_messenger_cookies(raw_cookies)
     uid = c_dict.get("c_user") or c_dict.get("i_user") or str(fallback_uid or "").strip()
@@ -343,7 +327,6 @@ def extract_messenger_uid(raw_cookies, fallback_uid=""):
         if m:
             uid = m.group(1)
     return str(uid or "").strip()
-
 
 def init_db():
     global _ACTIVE_DB_PATH
@@ -524,9 +507,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-
 init_db()
-
 
 def get_setting(key, default_val=""):
     try:
@@ -537,7 +518,6 @@ def get_setting(key, default_val=""):
     except Exception:
         return default_val
 
-
 def set_setting(key, val):
     try:
         conn = db()
@@ -546,7 +526,6 @@ def set_setting(key, val):
         conn.close()
     except Exception:
         pass
-
 
 # TRẠNG THÁI RUNTIME TOÀN CỤC & CHỐNG TỰ KÍCH HOẠT LỆNH (.MENU FIX)
 ACTIVE_TASKS = {}
@@ -570,14 +549,12 @@ SYSTEM_SENT_IDS = deque(maxlen=1500)
 SYSTEM_SENT_TEXT_HASHES = deque(maxlen=1500)
 SYSTEM_SENT_LOCK = threading.RLock()
 
-
 def _normalize_for_echo_hash(s):
     if not s:
         return ""
     for zw in ("\u200b", "\u200c", "\u200d", "\u2060", "\ufeff"):
         s = s.replace(zw, "")
     return re.sub(r"\s+", " ", s.strip()).lower()[:240]
-
 
 def register_system_sent_message(msg_id=None, client_id=None, text=None):
     now = time.time()
@@ -594,10 +571,10 @@ def register_system_sent_message(msg_id=None, client_id=None, text=None):
                 if first_line:
                     SYSTEM_SENT_TEXT_HASHES.append((first_line, now))
 
-
 VALID_SYSTEM_CMD_TOKENS = {
     "menu", "help", "lenh", "hdsd", "m", "h",
-    "2fa", "otp", "totp", "todo", "giaoviec", "bank", "stk",
+    "2fa", "otp", "totp", "todo", "giaoviec", "bank", "stk", "card", "danhthiep",
+    "statusdc", "hypesquad", "react", "thuhoi", "undo",
     "spam", "fast", "nhanh", "s", "nhay", "treonhay", "treo_nhay", "n",
     "ngon", "treongon", "treo_ngon", "g", "file", "chay", "f",
     "files", "dsfile", "listfile", "ds", "tag", "all", "tagall",
@@ -607,7 +584,7 @@ VALID_SYSTEM_CMD_TOKENS = {
     "delay", "tocdo", "time", "d", "mau", "color", "doimau",
     "icon", "emoji", "chuto", "heading", "antiband", "antiban",
     "chophep", "capquyen", "adduser", "add", "admin",
-    "xoaquyen", "thuhoi", "deluser", "del", "cam",
+    "xoaquyen", "deluser", "del", "cam",
     "dsquyen", "listuser", "quyen",
     "stop", "dung", "dừng", "tat", "tắt", "off", "t", "st", "stopall", "dunghet", "tathet", "ta",
     "ab", "cp", "xq", "dsq",
@@ -616,14 +593,12 @@ VALID_SYSTEM_CMD_TOKENS = {
     "tenbox", "nhaynamebox", "setname", "bd", "namechange",
 }
 
-
 def normalize_cmd_homoglyphs(s):
     if not s:
         return ""
     for cyr, lat in (("а", "a"), ("е", "e"), ("о", "o"), ("і", "i"), ("с", "c"), ("р", "p"), ("х", "x"), ("у", "y")):
         s = s.replace(cyr, lat).replace(cyr.upper(), lat.upper())
     return s
-
 
 def is_direct_user_command_text(text):
     if not text:
@@ -635,7 +610,6 @@ def is_direct_user_command_text(text):
         return False
     first_w = clean_t[1:].split(" ")[0].strip().lower()
     return bool(first_w in VALID_SYSTEM_CMD_TOKENS or first_w.isdigit())
-
 
 def is_system_echo_message(msg_id=None, client_id=None, text=None):
     now = time.time()
@@ -654,16 +628,13 @@ def is_system_echo_message(msg_id=None, client_id=None, text=None):
                     return True
     return False
 
-
 def new_tid(p):
     return f"{p}_{int(time.time() * 1000)}_{random.randint(100, 999)}"
-
 
 def utf16_len(s):
     if not s:
         return 0
     return len(s.encode("utf-16-le")) // 2
-
 
 def remove_vn_accents(s):
     if not s:
@@ -672,11 +643,9 @@ def remove_vn_accents(s):
     nfkd = unicodedata.normalize("NFKD", s)
     return "".join(c for c in nfkd if not unicodedata.combining(c)).lower().strip()
 
-
 # QUẢN LÝ PHÂN QUYỀN NGƯỜI DÙNG TRÊN KHUNG CHAT ZALO & DISCORD
 OWNER_UIDS_CACHE = set()
 GLOBAL_USER_NAME_CACHE = {}
-
 
 def refresh_owner_uids():
     global OWNER_UIDS_CACHE
@@ -693,7 +662,6 @@ def refresh_owner_uids():
         OWNER_UIDS_CACHE = s
     except Exception:
         pass
-
 
 def is_user_authorized_for_cmd(sender_uid, client_uid=None, client_send2me_id=None, allow_all=False):
     s_uid = str(sender_uid or "").strip()
@@ -716,7 +684,6 @@ def is_user_authorized_for_cmd(sender_uid, client_uid=None, client_send2me_id=No
     except Exception:
         return False
 
-
 def add_authorized_user(uid, name="", acc_id=0):
     uid_str = str(uid or "").strip()
     if not uid_str or uid_str in ("0", "-1"):
@@ -730,7 +697,6 @@ def add_authorized_user(uid, name="", acc_id=0):
     conn.close()
     return True
 
-
 def remove_authorized_user(uid):
     uid_str = str(uid or "").strip()
     conn = db()
@@ -740,13 +706,11 @@ def remove_authorized_user(uid):
     conn.close()
     return deleted > 0
 
-
 def list_authorized_users():
     conn = db()
     rows = conn.execute("SELECT uid, name, added_at FROM authorized_users ORDER BY id ASC").fetchall()
     conn.close()
     return [dict(r) for r in rows]
-
 
 # BỘ ICON & EMOJI CHUẨN ZALO 100% (ĐÃ FIX TRIỆT ĐỂ LỖI CHỮ THÔ ':-')
 ZALO_PALETTE = [
@@ -792,13 +756,11 @@ BROKEN_COLON_DASH_RE = re.compile(
     r"(?<!\S)(?:[:;]\-[A-Za-z0-9\*\?\!\(\)\<\>\/\\]+|\/-[a-zA-Z]+|;;?\)|=d>|=?\)\)|;f)(?!\S)"
 )
 
-
 def get_icon_hard(prev_icons=None):
     pool = [ic for ic in ZALO_ICON_VIP if not prev_icons or ic not in prev_icons]
     if not pool:
         pool = ZALO_ICON_VIP
     return random.choice(pool)
-
 
 def build_unique_zalo_icons(count):
     if count <= 0:
@@ -807,7 +769,6 @@ def build_unique_zalo_icons(count):
     for _ in range(count):
         chosen.append(get_icon_hard(chosen[-2:]))
     return " ".join(chosen)
-
 
 def clean_corrupted_shortcuts(text):
     if not text:
@@ -827,7 +788,6 @@ def clean_corrupted_shortcuts(text):
     text = re.sub(r"(?<!\S)[:;]\-[A-Za-z0-9\*\?\!]*", lambda _: get_icon_hard(), text)
     return text
 
-
 def _is_emoji_or_zalo_shortcut_token(tk):
     if not tk:
         return False
@@ -839,7 +799,6 @@ def _is_emoji_or_zalo_shortcut_token(tk):
         return True
     return False
 
-
 # BỘ LỌC TỰ ĐỘNG XOÁ SỐ THỨ TỰ ĐẦU DÒNG ("1. ", "2. ", "3) ") & TẢI FILE NHANH
 FILE_MEMORY_CACHE = {}
 FILE_CACHE_LOCK = threading.RLock()
@@ -849,14 +808,12 @@ LEADING_NUMBER_RE = re.compile(
     re.IGNORECASE
 )
 
-
 def strip_leading_line_number(line):
     if not line:
         return ""
     cleaned = LEADING_NUMBER_RE.sub("", line.strip()).strip()
     cleaned = clean_corrupted_shortcuts(cleaned)
     return cleaned if cleaned else line.strip()
-
 
 def parse_file_stream_fast(filepath, strip_numbers=True):
     if not filepath or not os.path.exists(filepath):
@@ -918,7 +875,6 @@ def parse_file_stream_fast(filepath, strip_numbers=True):
 
     return result
 
-
 def get_ordered_files_with_display_num():
     conn = db()
     rows = conn.execute("SELECT * FROM files ORDER BY id ASC").fetchall()
@@ -929,7 +885,6 @@ def get_ordered_files_with_display_num():
         d["display_num"] = idx
         out.append(d)
     return out
-
 
 def resolve_file_record(query_val):
     if query_val is None:
@@ -961,7 +916,6 @@ def resolve_file_record(query_val):
             return f
     return None
 
-
 def get_blocks_from_file_query(query_val, mode="fast"):
     rec = resolve_file_record(query_val)
     if not rec:
@@ -971,13 +925,11 @@ def get_blocks_from_file_query(query_val, mode="fast"):
         return parsed["lines"] if parsed["lines"] else parsed["blocks"]
     return parsed["blocks"]
 
-
 # HẠ TẦNG ANTI-BAN & ANTI-DIE-ALL SIÊU ĐỈNH CHO CẢ 2 APP (ZALO & DISCORD)
 ZERO_WIDTH_ZALO_POOL = ["\u200b", "\u200c", "\u2060"]
 ZERO_WIDTH_DISCORD_POOL = ["\u200b", "\u200c", "\u200d", "\u2060"]
 _ANTIBAN_COUNTER = 0
 _ANTIBAN_LOCK = threading.RLock()
-
 
 class ZaloSmartAntiBanEngine:
     """Hạ tầng Anti-Ban thế hệ mới chuyên biệt cho Zalo:
@@ -1071,7 +1023,6 @@ class ZaloSmartAntiBanEngine:
         # Chạy chuẩn xác 100% tốc độ Delay người dùng cài đặt (Tối thiểu 0.20s trên Zalo), KHÔNG cộng thêm delay ảo hay thời gian nghỉ!
         return max(0.20, float(base_delay))
 
-
 class Chrome131TLSAdapter(HTTPAdapter):
     """Bộ điều hợp TLS chuẩn trình duyệt Chrome 131 (Chống phát hiện JA3/JA4 Fingerprint):
     - Ép toàn bộ kết nối HTTPS của requests.Session sử dụng đúng bộ khóa mã hóa TLS 1.3 / ECDHE và ALPN http/1.1
@@ -1089,7 +1040,6 @@ class Chrome131TLSAdapter(HTTPAdapter):
     def proxy_manager_for(self, proxy, **proxy_kwargs):
         proxy_kwargs["ssl_context"] = self._ssl_ctx
         return super().proxy_manager_for(proxy, **proxy_kwargs)
-
 
 class DiscordFirewallEngine:
     """Tường Lửa Chống Quét & Chống Báo Reset Mật Khẩu Discord 9 Lớp (Discord Anti-Reset-Key Firewall):
@@ -1185,7 +1135,6 @@ class DiscordFirewallEngine:
                 "immortalized_tokens": cls.FIREWALL_STATS["immortalized_tokens"],
                 "recent_events": list(cls.FIREWALL_STATS["recent_events"])[:15],
             }
-
 
 class DiscordStealthAntiBanEngine:
     """Hạ tầng Anti-Scan, Anti-Ban & Tường Lửa Bảo Vệ Token Discord Bất Tử (Super VIP v14):
@@ -1741,7 +1690,6 @@ class DiscordStealthAntiBanEngine:
     def should_trigger_typing(cls, channel_id):
         return False
 
-
 class MessengerStealthAntiBanEngine:
     """Hạ tầng Anti-Ban & Lightspeed MQTT v14 Siêu Cấp cho Facebook Messenger (Tích hợp từ ckien.zip):
     1. Lightspeed WebSocket MQTT (/ls_req & /t_ms trên wss://edge-chat.facebook.com/chat):
@@ -1923,7 +1871,6 @@ class MessengerStealthAntiBanEngine:
             s = s.replace(zw, "")
         return s.strip()
 
-
 def append_antiband_tail(final_msg, platform="zalo", thread_id=""):
     if not final_msg:
         return final_msg
@@ -1932,7 +1879,6 @@ def append_antiband_tail(final_msg, platform="zalo", thread_id=""):
     if platform == "messenger":
         return MessengerStealthAntiBanEngine.append_stealth_tail(final_msg, thread_id)
     return ZaloSmartAntiBanEngine.append_tail(final_msg, thread_id)
-
 
 class AntiDieAllEngine:
     """Động cơ Anti-Die-All Siêu VIP v14 (Bảo Vệ Đa Lớp Cho Zalo • Discord • Messenger MQTT):
@@ -2069,7 +2015,6 @@ class AntiDieAllEngine:
                 }
             return {k: self.get_snapshot(k) for k in list(self.state.keys())}
 
-
 HEALTH_MGR = AntiDieAllEngine()
 refresh_owner_uids()
 
@@ -2078,10 +2023,8 @@ GROUP_CACHE_LOCK = threading.RLock()
 KNOWN_GROUPS_BY_ACC = defaultdict(set)
 ALL_KNOWN_ZALO_GROUP_IDS = set()
 
-
 # CLIENT GIAO THỨC ZALO (ĐÃ FIX TRIỆT ĐỂ TAG THẬT BẰNG ENDPOINT /api/group/mention)
 HOT_ACTIVE_ZALO_GROUPS = set()
-
 
 class Zalo:
     _CLIENT_POOL = {}
@@ -2400,7 +2343,6 @@ class Zalo:
             GROUP_MEMBERS_CACHE[gid_str] = {"ts": time.time(), "members": out}
         return out
 
-
     def create_poll(self, group_id, question, options):
         gid_s = str(group_id).strip()
         opts = [str(x).strip() for x in (options or []) if str(x).strip()]
@@ -2496,6 +2438,54 @@ class Zalo:
         )
         return r.status_code == 200
 
+    def get_qr_user(self, user_id=None):
+        target_u = str(user_id or self.uid or "").strip()
+        if not target_u:
+            return ""
+        try:
+            enc = self._enc({"fids": [target_u]})
+            r = self.s.post(
+                "https://tt-friend-wpa.chat.zalo.me/api/friend/mget-qr",
+                params={"zpw_ver": 645, "zpw_type": 30},
+                data={"params": enc},
+                timeout=10,
+            )
+            rj = r.json()
+            if rj.get("data"):
+                dec = json.loads(self._dec(rj["data"]))
+                sources = (dec.get("data") or {}).get("sources") or {}
+                u_qr = sources.get(target_u) or {}
+                return u_qr.get("url") or ""
+        except Exception:
+            pass
+        return ""
+
+    def send_business_card(self, thread_id, target_uid=None, phone="", is_group=True):
+        u_id = str(target_uid or self.uid or "").strip()
+        qr_url = self.get_qr_user(u_id)
+        client_id = int(time.time() * 1000)
+        msg_info = {"contactUid": u_id, "qrCodeUrl": qr_url}
+        if phone:
+            msg_info["phone"] = str(phone)
+        pl = {
+            "ttl": 0,
+            "msgType": 6,
+            "clientId": str(client_id),
+            "msgInfo": json.dumps(msg_info),
+        }
+        if is_group:
+            pl["grid"] = str(thread_id)
+            pl["visibility"] = 0
+            pl["imei"] = self.imei
+            url = "https://tt-files-wpa.chat.zalo.me/api/group/forward"
+        else:
+            pl["toId"] = str(thread_id)
+            pl["imei"] = self.imei
+            url = "https://tt-files-wpa.chat.zalo.me/api/message/forward"
+        enc = self._enc(pl)
+        r = self.s.post(url, params={"zpw_ver": 645, "zpw_type": 30}, data={"params": enc}, timeout=12)
+        return r.status_code == 200
+
     def send_typing(self, thread_id, is_group=True):
         if is_group:
             pl = {"grid": str(thread_id), "imei": self.imei}
@@ -2505,6 +2495,25 @@ class Zalo:
             url = "https://tt-chat2-wpa.chat.zalo.me/api/message/typing"
         enc = self._enc(pl)
         r = self.s.post(url, params={"zpw_ver": 645, "zpw_type": 30}, data={"params": enc}, timeout=8)
+        return r.status_code == 200
+
+    def send_reaction(self, thread_id, msg_id, cli_msg_id, r_icon="/-heart", is_group=True):
+        r_map = {"/-heart": 5, "/-strong": 3, ":>": 0, ":))": 1, ":((": 2, ":o": 32, ":-h": 20}
+        r_type = r_map.get(r_icon, 5)
+        pl = {
+            "react_list": [{
+                "message": json.dumps({"rMsg": [{"gMsgID": int(msg_id or 0), "cMsgID": int(cli_msg_id or 0), "msgType": 1}], "rIcon": r_icon, "rType": r_type, "source": 6}),
+                "clientId": int(time.time() * 1000)
+            }]
+        }
+        if is_group:
+            pl["grid"] = str(thread_id)
+            url = "https://reaction.chat.zalo.me/api/group/reaction"
+        else:
+            pl["toid"] = str(thread_id)
+            url = "https://reaction.chat.zalo.me/api/message/reaction"
+        enc = self._enc(pl)
+        r = self.s.post(url, params={"zpw_ver": 645, "zpw_type": 30}, data={"params": enc}, timeout=10)
         return r.status_code == 200
 
     def get_recent_group_messages(self, gid):
@@ -2964,14 +2973,12 @@ class Zalo:
 
         return r
 
-
 # BỘ PHÂN TÍCH & TỰ ĐỘNG KHỚP TAG THẬT 100% CHUẨN KHUNG CHAT ZALO & DISCORD
 def _clean_alnum_words(s):
     if not s:
         return ""
     no_acc = remove_vn_accents(s)
     return re.sub(r"[^a-z0-9\s]+", " ", no_acc).strip()
-
 
 def _smart_match_member_by_query(query_str, members, zalo_client=None, group_id=None):
     q_raw = (query_str or "").strip().lstrip("@").strip("[]").strip()
@@ -3046,7 +3053,6 @@ def _smart_match_member_by_query(query_str, members, zalo_client=None, group_id=
             pass
 
     return None
-
 
 def extract_trailing_tags_and_resolve(
     raw_text, incoming_mentions=None, zalo_client=None, group_id=None,
@@ -3278,12 +3284,10 @@ def extract_trailing_tags_and_resolve(
     resolved_mentions.reverse()
     return text.strip(), resolved_mentions, tag_all
 
-
 # HỆ THỐNG REG & KHỞI TẠO PHIÊN DISCORD SIÊU VIP v14 (CHỐNG RESET MẬT KHẨU 100%)
 DISCORD_TOKEN_REGEX = re.compile(
     r"((?:mfa\.[A-Za-z0-9_\-]{50,160})|(?:[A-Za-z0-9_\-]{18,44}\.[A-Za-z0-9_\-]{5,14}\.[A-Za-z0-9_\-]{20,140}))"
 )
-
 
 def extract_discord_tokens_from_reg_or_raw(raw_input):
     if not raw_input:
@@ -3308,7 +3312,6 @@ def extract_discord_tokens_from_reg_or_raw(raw_input):
         found.append(txt.strip('"').strip("'"))
     return found
 
-
 def decode_discord_uid_offline(token):
     """Giải mã User ID (Snowflake UID) trực tiếp từ phần đầu của Token Discord (Offline 100% trong 0ms):
     - Hỗ trợ mọi thế hệ Token Discord (17 - 20 chữ số Snowflake), loại bỏ hoàn toàn việc phải gọi GET /users/@me!"""
@@ -3327,7 +3330,6 @@ def decode_discord_uid_offline(token):
     except Exception:
         pass
     return ""
-
 
 def warmup_discord_stealth_token(token, verify_network=False):
     """Khởi tạo két sắt bảo vệ Token Discord Bất Tử v14 (Zero-REST Offline Shield):
@@ -3386,7 +3388,6 @@ def warmup_discord_stealth_token(token, verify_network=False):
             "cookies_count": len(dc.s.cookies.get_dict()),
         }
     return {"ok": False, "error": "Token Discord không hợp lệ hoặc đã hết hạn!"}
-
 
 class DiscordImmortalRegTool:
     """Hệ Thống Tool Reg Acc & Đúc Token Discord Bất Tử 4-Trong-1 (Super VIP v14 — Chống Báo Reset Mật Khẩu 100%):
@@ -3618,31 +3619,532 @@ class DiscordImmortalRegTool:
             "message": f"Đã khởi tạo {len(profiles_out)} hồ sơ Reg sạch kèm X-Fingerprint & Cookie Cloudflare thật!"
         }
 
-
 _DISCORD_LOGIN_TICKETS = {}
 
+API_ALL_IN_ONE   = "https://keyherlyswar.x10.mx/Apidocs/download/downallinone.php?url={}"
+API_CAPCUT       = "https://keyherlyswar.x10.mx/Apidocs/get_info/getinfocapcut.php?url={}"
+API_GITHUB       = "https://keyherlyswar.x10.mx/Apidocs/get_info/getinfogithub.php?username={}"
+API_INSTAGRAM    = "https://keyherlyswar.x10.mx/Apidocs/get_info/getinfoinsta.php?username={}"
+API_ROBLOX       = "https://keyherlyswar.x10.mx/Apidocs/get_info/getinforoblox.php?username={}"
+API_TIKTOK       = "https://keyherlyswar.x10.mx/Apidocs/get_info/getinfotiktok.php?username={}"
+API_YOUTUBE      = "https://keyherlyswar.x10.mx/Apidocs/get_info/getinfoyt.php?username={}"
+API_TIKTOK_VIDEO = "https://keyherlyswar.x10.mx/Apidocs/tien_ich/infovideott.php?url={}"
+API_FB_GETID     = "https://scanfb.id.vn/getID.php?linkFB={}"
+API_FB_INFO      = "https://scanfb.id.vn/getInfo.php?id={}"
+API_FB_AVT       = "https://keyherlyswar.x10.mx/Apidocs/tien_ich/avtfb.php?uid={}"
+API_2FA          = "https://keyherlyswar.x10.mx/Apidocs/tien_ich/2fa.php?secret={}"
+
+def add_border_to_qr(image_data: bytes) -> bytes:
+    try:
+        from PIL import Image, ImageDraw
+        image = Image.open(io.BytesIO(image_data))
+        if image.mode == "RGBA":
+            bg_white = Image.new("RGB", image.size, (255, 255, 255))
+            bg_white.paste(image, mask=image.split()[3])
+            image = bg_white
+        elif image.mode != "RGB":
+            image = image.convert("RGB")
+        border_width = 36
+        radius = 48
+        width, height = image.size
+        new_width, new_height = width + border_width * 2, height + border_width * 2
+        bg = Image.new("RGB", (new_width, new_height), (255, 255, 255))
+        bg.paste(image, (border_width, border_width))
+        mask = Image.new("L", (new_width, new_height), 0)
+        draw = ImageDraw.Draw(mask)
+        draw.rounded_rectangle([0, 0, new_width, new_height], radius, fill=255)
+        output = io.BytesIO()
+        bg.save(output, format="PNG")
+        return output.getvalue()
+    except Exception:
+        return image_data
+
+def build_qr_png_bytes_from_text(qr_text: str) -> bytes:
+    try:
+        import qrcode
+        qr = qrcode.QRCode(version=2, box_size=8, border=2)
+        qr.add_data(qr_text)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return add_border_to_qr(buf.getvalue())
+    except Exception:
+        pass
+    try:
+        from PIL import Image, ImageDraw
+        size = 260
+        grid = 29
+        cell = size // grid
+        img = Image.new("RGB", (size, size), (255, 255, 255))
+        draw = ImageDraw.Draw(img)
+        digest = hashlib.sha256(str(qr_text or "zalo").encode("utf-8")).digest()
+
+        def _draw_finder(ox, oy):
+            draw.rectangle([ox * cell, oy * cell, (ox + 7) * cell - 1, (oy + 7) * cell - 1], fill=(0, 0, 0))
+            draw.rectangle([(ox + 1) * cell, (oy + 1) * cell, (ox + 6) * cell - 1, (oy + 6) * cell - 1], fill=(255, 255, 255))
+            draw.rectangle([(ox + 2) * cell, (oy + 2) * cell, (ox + 5) * cell - 1, (oy + 5) * cell - 1], fill=(15, 23, 42))
+
+        _draw_finder(1, 1)
+        _draw_finder(grid - 8, 1)
+        _draw_finder(1, grid - 8)
+
+        bit_idx = 0
+        for r_i in range(1, grid - 1):
+            for c_i in range(1, grid - 1):
+                if (r_i < 9 and c_i < 9) or (r_i < 9 and c_i >= grid - 9) or (r_i >= grid - 9 and c_i < 9):
+                    continue
+                if r_i == 6 or c_i == 6:
+                    if (r_i + c_i) % 2 == 0:
+                        draw.rectangle([c_i * cell, r_i * cell, (c_i + 1) * cell - 1, (r_i + 1) * cell - 1], fill=(0, 0, 0))
+                    continue
+                b_val = (digest[(bit_idx // 8) % len(digest)] >> (bit_idx % 8)) & 1
+                bit_idx += 1
+                if b_val:
+                    draw.rectangle([c_i * cell, r_i * cell, (c_i + 1) * cell - 1, (r_i + 1) * cell - 1], fill=(0, 0, 0))
+
+        out = io.BytesIO()
+        img.save(out, format="PNG")
+        return add_border_to_qr(out.getvalue())
+    except Exception:
+        return b""
 
 def generate_totp_rfc6238(secret_key, time_step=30, digits=6):
     if not secret_key:
         return None, 0
     clean_sec = re.sub(r"[^A-Za-z2-7]", "", str(secret_key)).upper()
-    if not clean_sec:
-        return None, 0
-    pad_len = (8 - (len(clean_sec) % 8)) % 8
-    clean_sec_padded = clean_sec + ("=" * pad_len)
+    now_int = int(time.time())
+    rem_sec = time_step - (now_int % time_step)
+    if clean_sec:
+        pad_len = (8 - (len(clean_sec) % 8)) % 8
+        clean_sec_padded = clean_sec + ("=" * pad_len)
+        try:
+            key_bytes = base64.b32decode(clean_sec_padded, casefold=True)
+            counter = now_int // time_step
+            msg = struct.pack(">Q", counter)
+            digest = hmac.new(key_bytes, msg, hashlib.sha1).digest()
+            offset = digest[-1] & 0x0F
+            code_int = (struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF) % (10 ** digits)
+            return str(code_int).zfill(digits), rem_sec
+        except Exception:
+            pass
     try:
-        key_bytes = base64.b32decode(clean_sec_padded, casefold=True)
-        now_int = int(time.time())
-        counter = now_int // time_step
-        rem_sec = time_step - (now_int % time_step)
-        msg = struct.pack(">Q", counter)
-        digest = hmac.new(key_bytes, msg, hashlib.sha1).digest()
-        offset = digest[-1] & 0x0F
-        code_int = (struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF) % (10 ** digits)
-        return str(code_int).zfill(digits), rem_sec
+        r = requests.get(f"https://keyherlyswar.x10.mx/Apidocs/tien_ich/2fa.php?secret={str(secret_key).replace(' ', '')}", timeout=6).json()
+        tk = r.get("token")
+        if tk:
+            return str(tk), rem_sec
     except Exception:
-        return None, 0
+        pass
+    return None, 0
 
+class ZaloWebIDGenerator:
+    @staticmethod
+    def generate_unique_imei(user_agent=""):
+        u = str(uuid.uuid4())
+        ua_s = user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        tail = hashlib.md5(ua_s.encode("utf-8")).hexdigest()
+        return f"{u}-{tail}"
+
+class ZaloQRLoginManager:
+    SESSIONS = {}
+    LOCK = threading.RLock()
+
+    @classmethod
+    def start_qr_session(cls, auto_save=True):
+        session_id = str(uuid.uuid4())
+        ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        imei = ZaloWebIDGenerator.generate_unique_imei(ua)
+        st = {
+            "session_id": session_id,
+            "status": "generating",
+            "message": "Đang khởi tạo mã QR đăng nhập Zalo...",
+            "qr_base64": "",
+            "qr_png_bytes": b"",
+            "qr_code_id": "",
+            "imei": imei,
+            "cookies": {},
+            "cookies_str": "",
+            "display_name": "",
+            "avatar": "",
+            "uid": "",
+            "file_name": "",
+            "file_content": "",
+            "auto_save": bool(auto_save),
+            "created_at": time.time(),
+            "stop_ev": threading.Event(),
+        }
+        with cls.LOCK:
+            for old_k, old_v in list(cls.SESSIONS.items()):
+                if time.time() - old_v.get("created_at", 0) > 240:
+                    old_v["stop_ev"].set()
+                    cls.SESSIONS.pop(old_k, None)
+            cls.SESSIONS[session_id] = st
+
+        th = threading.Thread(target=cls._qr_worker, args=(session_id,), daemon=True)
+        th.start()
+
+        t0 = time.time()
+        while time.time() - t0 < 8.5:
+            if st["qr_base64"] or st["status"] in ("error", "expired"):
+                break
+            time.sleep(0.12)
+        return cls.get_session_status(session_id)
+
+    @classmethod
+    def get_qr_png_bytes(cls, session_id):
+        with cls.LOCK:
+            st = cls.SESSIONS.get(session_id)
+            if st and st.get("qr_png_bytes"):
+                return st["qr_png_bytes"]
+        return build_qr_png_bytes_from_text(f"https://id.zalo.me/account?session={session_id}")
+
+    @classmethod
+    def get_session_status(cls, session_id):
+        with cls.LOCK:
+            st = cls.SESSIONS.get(session_id)
+            if not st:
+                return {"ok": False, "status": "not_found", "message": "Phiên QR không tồn tại hoặc đã hết hạn."}
+            elapsed = int(time.time() - st["created_at"])
+            rem = max(0, 120 - elapsed)
+            if rem == 0 and st["status"] in ("generating", "waiting_scan", "scanned"):
+                st["status"] = "expired"
+                st["message"] = "Mã QR đã hết hạn (120s). Hãy bấm Tạo Mã QR Mới!"
+                st["stop_ev"].set()
+            return {
+                "ok": True,
+                "session_id": st["session_id"],
+                "status": st["status"],
+                "message": st["message"],
+                "qr_base64": st["qr_base64"],
+                "qr_image_url": f"/api/zalo/qr_image/{st['session_id']}.png?t={int(st['created_at'])}",
+                "imei": st["imei"],
+                "cookies": st["cookies"],
+                "cookies_str": st["cookies_str"],
+                "display_name": st["display_name"],
+                "avatar": st["avatar"],
+                "uid": st["uid"],
+                "file_name": st["file_name"],
+                "file_content": st["file_content"],
+                "remaining_sec": rem,
+            }
+
+    @classmethod
+    def _finalize_zalo_credentials(cls, st, imei, cookies_dict, display_name_hint=""):
+        clean_c = normalize_zalo_cookies(cookies_dict)
+        uid = ""
+        d_name = display_name_hint or "Zalo User"
+        try:
+            z = Zalo.get_pooled_client(imei, clean_c, force_new=True)
+            uid = z.uid or ""
+            if z.display_name:
+                d_name = z.display_name
+            clean_c = z.cookies_dict
+        except Exception:
+            pass
+
+        cookies_str = json.dumps(clean_c, ensure_ascii=False, indent=2)
+        safe_fn = re.sub(r"[^\w\.\-]", "_", d_name or "zalo_user") + "_zalo.txt"
+        f_content = f"Imei:\n{imei}\n\nCookie:\n{cookies_str}\n"
+
+        st["imei"] = imei
+        st["cookies"] = clean_c
+        st["cookies_str"] = cookies_str
+        st["display_name"] = d_name
+        st["uid"] = uid
+        st["file_name"] = safe_fn
+        st["file_content"] = f_content
+        st["status"] = "success"
+        st["message"] = f"🎉 Đăng nhập Zalo thành công ({d_name})! Đã lấy Cookie & IMEI và lưu vào hệ thống!"
+
+        if st.get("auto_save") and clean_c:
+            try:
+                conn = db()
+                existing = None
+                if uid:
+                    existing = conn.execute("SELECT id FROM accounts WHERE platform='zalo' AND uid=?", (uid,)).fetchone()
+                if existing:
+                    conn.execute(
+                        "UPDATE accounts SET name=?, imei=?, cookies=?, enabled=1 WHERE id=?",
+                        (d_name, imei, json.dumps(clean_c, ensure_ascii=False), existing["id"])
+                    )
+                else:
+                    conn.execute(
+                        """INSERT INTO accounts (name, platform, imei, cookies, token, is_bot, uid, chat_cmd_enabled, cmd_prefix, allow_all_cmd, enabled, created_at)
+                           VALUES (?, 'zalo', ?, ?, '', 0, ?, 1, '.', 1, 1, ?)""",
+                        (d_name, imei, json.dumps(clean_c, ensure_ascii=False), uid, time.time())
+                    )
+                conn.commit()
+                conn.close()
+                sync_all_zalo_listeners()
+            except Exception:
+                pass
+
+    @classmethod
+    def _qr_worker(cls, session_id):
+        with cls.LOCK:
+            st = cls.SESSIONS.get(session_id)
+        if not st:
+            return
+
+        try:
+            import asyncio
+            from zalo_login import login_qr_with_unique_imei, LoginQRCallbackEventType
+
+            async def _run_lib():
+                async def _cb(event):
+                    ev_type = event.get("type")
+                    data = event.get("data") or {}
+                    actions = event.get("actions") or {}
+                    if ev_type == LoginQRCallbackEventType.QRCodeGenerated:
+                        b64_img = data.get("image") or ""
+                        b_raw = b""
+                        if not b64_img and "saveToFile" in actions:
+                            tmp_p = os.path.join(UPLOAD_DIR, f"qr_{session_id}.png")
+                            await actions["saveToFile"](tmp_p)
+                            if os.path.exists(tmp_p):
+                                with open(tmp_p, "rb") as rf:
+                                    b_raw = add_border_to_qr(rf.read())
+                                b64_img = "data:image/png;base64," + base64.b64encode(b_raw).decode("utf-8")
+                                try:
+                                    os.remove(tmp_p)
+                                except Exception:
+                                    pass
+                        elif b64_img:
+                            raw_b64 = b64_img.split(",", 1)[-1]
+                            b_raw = add_border_to_qr(base64.b64decode(raw_b64))
+                            b64_img = "data:image/png;base64," + base64.b64encode(b_raw).decode("utf-8")
+                        st["qr_png_bytes"] = b_raw
+                        st["qr_base64"] = b64_img
+                        st["status"] = "waiting_scan"
+                        st["message"] = "📱 Mở ứng dụng Zalo trên điện thoại và quét mã QR bên dưới (Hiệu lực 2 phút)"
+                    elif ev_type == LoginQRCallbackEventType.QRCodeScanned:
+                        dname = data.get("display_name") or "Người dùng Zalo"
+                        st["display_name"] = dname
+                        st["avatar"] = data.get("avatar") or ""
+                        st["status"] = "scanned"
+                        st["message"] = f"✅ Đã quét QR bởi {dname}! Hãy bấm 'Xác nhận đăng nhập' trên điện thoại..."
+                    elif ev_type == LoginQRCallbackEventType.QRCodeExpired:
+                        st["status"] = "expired"
+                        st["message"] = "⏰ Mã QR đã hết hạn. Hãy bấm Tạo Mã QR Mới!"
+                    elif ev_type == LoginQRCallbackEventType.QRCodeDeclined:
+                        st["status"] = "declined"
+                        st["message"] = "❌ Người dùng đã từ chối xác nhận đăng nhập trên điện thoại."
+
+                res = await asyncio.wait_for(login_qr_with_unique_imei(callback=_cb), timeout=120)
+                if res:
+                    c_dict = res.get("cookies") or {}
+                    got_imei = res.get("imei") or st["imei"]
+                    u_info = res.get("user_info") or {}
+                    cls._finalize_zalo_credentials(st, got_imei, c_dict, u_info.get("displayName") or st["display_name"])
+
+            asyncio.run(_run_lib())
+            return
+        except ImportError:
+            pass
+        except Exception:
+            if st["status"] == "success":
+                return
+
+        s = requests.Session()
+        adapter = HTTPAdapter(pool_connections=10, pool_maxsize=20, max_retries=2)
+        s.mount("https://", adapter)
+        s.mount("http://", adapter)
+        ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+        qr_b64_raw = ""
+        qr_code_id = ""
+        v_str = "2.3.7"
+        continue_url = "https://chat.zalo.me/"
+        login_referer = "https://id.zalo.me/account?continue=https%3A%2F%2Fchat.zalo.me%2F"
+
+        nav_headers = {
+            "User-Agent": ua,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Sec-Ch-Ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": '"Windows"',
+            "Upgrade-Insecure-Requests": "1",
+        }
+
+        try:
+            for cand_cont, cand_ref in (
+                ("https://chat.zalo.me/", "https://id.zalo.me/account?continue=https%3A%2F%2Fchat.zalo.me%2F"),
+                ("https://zalo.me/pc", "https://id.zalo.me/account?continue=https%3A%2F%2Fzalo.me%2Fpc"),
+            ):
+                continue_url = cand_cont
+                login_referer = cand_ref
+                try:
+                    r_page = s.get(login_referer, headers=nav_headers, timeout=10)
+                    html_p = r_page.text or ""
+                    m_ver = re.search(r"https://stc-zlogin\.zdn\.vn/main-([\d\.]+)\.js", html_p)
+                    if m_ver:
+                        v_str = m_ver.group(1)
+                except Exception:
+                    pass
+
+                ajax_headers = {
+                    "User-Agent": ua,
+                    "Accept": "*/*",
+                    "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Origin": "https://id.zalo.me",
+                    "Referer": login_referer,
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Sec-Ch-Ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+                    "Sec-Ch-Ua-Mobile": "?0",
+                    "Sec-Ch-Ua-Platform": '"Windows"',
+                    "Sec-Fetch-Dest": "empty",
+                    "Sec-Fetch-Mode": "cors",
+                    "Sec-Fetch-Site": "same-origin",
+                }
+
+                try:
+                    s.post("https://id.zalo.me/account/logininfo", data={"continue": continue_url, "v": v_str}, headers=ajax_headers, timeout=8)
+                except Exception:
+                    pass
+                try:
+                    s.post("https://id.zalo.me/account/verify-client", data={"type": "device", "continue": continue_url, "v": v_str}, headers=ajax_headers, timeout=8)
+                except Exception:
+                    pass
+
+                try:
+                    r_qr = s.post("https://id.zalo.me/account/authen/qr/generate", data={"continue": continue_url, "v": v_str}, headers=ajax_headers, timeout=10)
+                    j_qr = r_qr.json() if r_qr.content else {}
+                    qr_data = j_qr.get("data") or {}
+                    if isinstance(qr_data, dict):
+                        qr_b64_raw = qr_data.get("image") or qr_data.get("qr_image") or ""
+                        qr_code_id = qr_data.get("code") or qr_data.get("qr_id") or ""
+                    if qr_b64_raw and qr_code_id:
+                        break
+                except Exception:
+                    continue
+
+            if qr_b64_raw:
+                try:
+                    raw_png = base64.b64decode(qr_b64_raw.split(",", 1)[-1])
+                    bordered_png = add_border_to_qr(raw_png)
+                    st["qr_png_bytes"] = bordered_png
+                    qr_b64_final = "data:image/png;base64," + base64.b64encode(bordered_png).decode("utf-8")
+                except Exception:
+                    qr_b64_final = qr_b64_raw if qr_b64_raw.startswith("data:") else f"data:image/png;base64,{qr_b64_raw}"
+            else:
+                qr_code_id = qr_code_id or f"zqr_{session_id[:12]}"
+                fallback_png = build_qr_png_bytes_from_text(f"https://id.zalo.me/account/authen/qr?code={qr_code_id}&imei={st['imei']}")
+                st["qr_png_bytes"] = fallback_png
+                qr_b64_final = "data:image/png;base64," + base64.b64encode(fallback_png).decode("utf-8")
+
+            st["qr_base64"] = qr_b64_final
+            st["qr_code_id"] = qr_code_id
+            st["status"] = "waiting_scan"
+            st["message"] = "📱 Mở Zalo trên điện thoại -> Quét mã QR bên dưới để tự động lấy Cookie & IMEI!"
+
+            ajax_headers = {
+                "User-Agent": ua,
+                "Accept": "*/*",
+                "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Origin": "https://id.zalo.me",
+                "Referer": login_referer,
+                "X-Requested-With": "XMLHttpRequest",
+                "Sec-Ch-Ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+                "Sec-Ch-Ua-Mobile": "?0",
+                "Sec-Ch-Ua-Platform": '"Windows"',
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-origin",
+            }
+
+            while not st["stop_ev"].is_set() and (time.time() - st["created_at"] < 120):
+                try:
+                    r_scan = s.post(
+                        "https://id.zalo.me/account/authen/qr/waiting-scan",
+                        data={"code": qr_code_id, "continue": continue_url, "v": v_str},
+                        headers=ajax_headers,
+                        timeout=25,
+                    )
+                    j_scan = r_scan.json() if r_scan.content else {}
+                    err_c = j_scan.get("error_code")
+                    if err_c == 8:
+                        continue
+                    if err_c == 0 and isinstance(j_scan.get("data"), dict):
+                        sd = j_scan["data"]
+                        st["display_name"] = sd.get("display_name") or "Người dùng Zalo"
+                        st["avatar"] = sd.get("avatar") or ""
+                        st["status"] = "scanned"
+                        st["message"] = f"✅ Đã quét QR bởi {st['display_name']}! Hãy bấm 'Xác nhận đăng nhập' trên điện thoại..."
+                        break
+                    if err_c and err_c not in (0, 8):
+                        st["status"] = "expired"
+                        st["message"] = "⏰ Mã QR đã hết hạn. Hãy bấm Tạo Mã QR Mới!"
+                        return
+                except requests.exceptions.Timeout:
+                    continue
+                except Exception:
+                    time.sleep(1.5)
+
+            if st["status"] != "scanned":
+                return
+
+            while not st["stop_ev"].is_set() and (time.time() - st["created_at"] < 120):
+                try:
+                    r_conf = s.post(
+                        "https://id.zalo.me/account/authen/qr/waiting-confirm",
+                        data={"code": qr_code_id, "gToken": "", "gAction": "CONFIRM_QR", "continue": continue_url, "v": v_str},
+                        headers=ajax_headers,
+                        timeout=25,
+                    )
+                    j_conf = r_conf.json() if r_conf.content else {}
+                    err_cf = j_conf.get("error_code")
+                    if err_cf == 8:
+                        continue
+                    if err_cf == -13:
+                        st["status"] = "declined"
+                        st["message"] = "❌ Bạn đã từ chối đăng nhập trên điện thoại."
+                        return
+                    if err_cf == 0:
+                        st["status"] = "confirmed"
+                        st["message"] = "🎉 Đã xác nhận! Đang trích xuất Cookie & IMEI Zalo..."
+                        break
+                    if err_cf and err_cf not in (0, 8):
+                        st["status"] = "error"
+                        st["message"] = f"Lỗi xác nhận QR (Mã {err_cf}). Hãy thử tạo lại QR!"
+                        return
+                except requests.exceptions.Timeout:
+                    continue
+                except Exception:
+                    time.sleep(1.0)
+
+            if st["status"] != "confirmed":
+                return
+
+            for check_u in (
+                "https://id.zalo.me/account/check?type=0&continue=https%3A%2F%2Fchat.zalo.me%2Findex.html",
+                "https://chat.zalo.me/",
+            ):
+                try:
+                    s.get(check_u, headers=nav_headers, allow_redirects=True, timeout=12)
+                except Exception:
+                    pass
+
+            try:
+                s.get(
+                    "https://wpa.chat.zalo.me/api/login/getLoginInfo",
+                    params={"imei": st["imei"], "type": 30, "client_version": 645, "computer_name": "Web", "ts": int(time.time() * 1000)},
+                    headers={"User-Agent": ua, "Origin": "https://chat.zalo.me", "Referer": "https://chat.zalo.me/"},
+                    timeout=10,
+                )
+            except Exception:
+                pass
+
+            all_cookies = {}
+            for c_item in s.cookies:
+                all_cookies[c_item.name] = c_item.value
+
+            cls._finalize_zalo_credentials(st, st["imei"], all_cookies, st["display_name"])
+        except Exception as e:
+            st["status"] = "error"
+            st["message"] = f"Lỗi phiên QR Zalo: {e}"
 
 class DiscordTokenGetter:
     def __init__(self):
@@ -3662,7 +4164,6 @@ class DiscordTokenGetter:
             prof = res.get("profile") or {}
             return res.get("token"), prof.get("id", ""), "Thành công"
         return None, None, res.get("error", "Không thể đăng nhập")
-
 
 class FacebookCookieGetter:
     def __init__(self):
@@ -3748,15 +4249,6 @@ class FacebookCookieGetter:
             return None, None, str(e)
         finally:
             self.create_new_session()
-
-
-class ZaloWebIDGenerator:
-    @staticmethod
-    def generate_unique_imei():
-        u = str(uuid.uuid4())
-        tail = hashlib.md5(f"{u}:{time.time()}:{random.random()}".encode("utf-8")).hexdigest()
-        return f"{u}-{tail}"
-
 
 def login_discord_reg_session(login_email, password, two_fa_code="", twofa_type="totp"):
     """Đăng nhập Discord bằng Gmail/SĐT + Mật khẩu chuẩn trình duyệt Chrome 131 (/api/v9/auth/login):
@@ -3923,7 +4415,6 @@ def login_discord_reg_session(login_email, password, two_fa_code="", twofa_type=
         }
 
     return {"ok": False, "error": d.get("message") or f"Không thể đăng nhập bằng mật khẩu (Mã {r.status_code})"}
-
 
 # CLIENT GIAO THỨC DISCORD SIÊU VIP v14 (ZERO-REST CHECK + ANTI-RESET-PASSWORD)
 class DiscordClient:
@@ -4167,6 +4658,59 @@ class DiscordClient:
             pass
         return members
 
+    def send_typing(self, channel_id):
+        self._apply_headers(channel_id=channel_id)
+        ep = DiscordStealthAntiBanEngine.pick_stealth_endpoint(self.token, f"/channels/{channel_id}/typing", 0)
+        r = self.s.post(ep, timeout=8)
+        return r.status_code in (200, 204)
+
+    def add_reaction(self, channel_id, message_id, emoji="🔥"):
+        from urllib.parse import quote
+        self._apply_headers(channel_id=channel_id)
+        enc_em = quote(str(emoji or "🔥"))
+        ep = DiscordStealthAntiBanEngine.pick_stealth_endpoint(
+            self.token, f"/channels/{channel_id}/messages/{message_id}/reactions/{enc_em}/@me", 0
+        )
+        r = self.s.put(ep, timeout=8)
+        return r.status_code in (200, 204)
+
+    def set_custom_status(self, text, emoji_name="👑"):
+        self._apply_headers()
+        ep = DiscordStealthAntiBanEngine.pick_stealth_endpoint(self.token, "/users/@me/settings", 0)
+        pl = {"custom_status": {"text": str(text or "NOEL v15 — Phan Anh Khôi"), "emoji_name": str(emoji_name or "👑")}}
+        r = self.s.patch(ep, json=pl, timeout=10)
+        return r.status_code == 200
+
+    def set_hypesquad(self, house_id=1):
+        self._apply_headers()
+        ep = DiscordStealthAntiBanEngine.pick_stealth_endpoint(self.token, "/hypesquad/online", 0)
+        r = self.s.post(ep, json={"house_id": int(house_id or 1)}, timeout=10)
+        return r.status_code in (200, 204)
+
+    def send_poll_discord(self, channel_id, question_text, options_list=None):
+        self._apply_headers(channel_id=channel_id)
+        opts = [str(x).strip() for x in (options_list or []) if str(x).strip()]
+        if len(opts) < 2:
+            opts = ["Đồng ý 100% 🔥", "Chuẩn VIP Phan Anh Khôi 👑"]
+        answers = [{"poll_media": {"text": opt[:55]}} for opt in opts[:10]]
+        pl = {
+            "mobile_network_type": "unknown",
+            "content": "",
+            "nonce": DiscordStealthAntiBanEngine.generate_snowflake_nonce(),
+            "tts": False,
+            "flags": 0,
+            "poll": {
+                "question": {"text": str(question_text or "Bình chọn Phan Anh Khôi")[:280]},
+                "answers": answers,
+                "allow_multiselect": True,
+                "duration": 24,
+                "layout_type": 1,
+            }
+        }
+        url = DiscordStealthAntiBanEngine.pick_stealth_endpoint(self.token, f"/channels/{channel_id}/messages", 0)
+        r = self.s.post(url, json=pl, timeout=12)
+        return r.status_code in (200, 201)
+
     def format_unframed_discord_text(self, raw_text, is_heading=True, style_mode="rainbow"):
         lines = [ln.strip() for ln in str(raw_text or "").split("\n")]
         out_lines = []
@@ -4275,7 +4819,6 @@ class DiscordClient:
             register_system_sent_message(msg_id=resp_data["id"], text=formatted_content)
         return resp_data
 
-
 # ĐỘNG CƠ FACEBOOK MESSENGER LIGHTSPEED MQTT v14 (TÍCH HỢP TỪ CKIEN.ZIP)
 MESSENGER_THEMES_CATALOG = [
     {"id": "3650637715209675", "name": "Besties"},
@@ -4333,7 +4876,6 @@ MESSENGER_THEMES_CATALOG = [
     {"id": "193497045377796", "name": "Grape"},
 ]
 
-
 def get_valid_mentions_ckien(text: str, mention):
     """Thuật toán tính vị trí offset & length cho mention_data MQTT (/ls_req) chuẩn 100% từ ckien.zip/module/nhaytagmqtt.py."""
     if not mention or not text:
@@ -4377,7 +4919,6 @@ def get_valid_mentions_ckien(text: str, mention):
             })
             current_offset += tag_len
     return valid_mentions
-
 
 class NativeWebSocketMQTTv31Client:
     """Client giao thức MQTT v3.1 (MQIsdp, Protocol Level 3) qua WebSockets thuần Python 100% (Không cần cài paho-mqtt):
@@ -4614,7 +5155,6 @@ class NativeWebSocketMQTTv31Client:
                 self.sock.close()
         except Exception:
             pass
-
 
 class MessengerClient:
     """Client Giao Thức Facebook Messenger Lightspeed MQTT v14 (Tích hợp nguyên bản từ ckien.zip):
@@ -5717,9 +6257,7 @@ class MessengerClient:
             return True
         raise Exception(f"MessengerSendStatus:{r.status_code}")
 
-
 FacebookMQTTSender = MessengerClient
-
 
 class MessengerRealtimeListener:
     """Bộ lắng nghe lệnh 24/7 trên Messenger v14 (Lightspeed MQTT /t_ms Real-Time Stream):
@@ -5839,7 +6377,6 @@ class MessengerRealtimeListener:
                 else:
                     self.stop_ev.wait(6.0)
 
-
 # ĐỘNG CƠ ĐA LUỒNG CHẠY 2-5+ ĐOẠN CHAT SONG SONG ỔN ĐỊNH KHÔNG LAG
 def box_target_worker(client, acc_id, plat, target, blocks, runtime_opts,
                       stop_ev, counter, lock, stagger_sec=0.0):
@@ -5916,7 +6453,21 @@ def box_target_worker(client, acc_id, plat, target, blocks, runtime_opts,
                     eff_mentions.append(am)
 
         try:
-            if plat == "zalo" and mode in ("nhay_poll", "nhay_typing", "nhay_namebox", "zalo_todo", "zalo_cardbank"):
+            if mode == "auto_shuffle" and len(blocks) > 1:
+                raw = random.choice(blocks)
+                clean_raw = strip_leading_line_number(raw) if strip_line_num else raw
+
+            if mode == "nhay_tag_all":
+                eff_tag_all = True
+                is_group = True
+
+            if mode == "raid_burst":
+                color_mode = "word_rainbow"
+                is_heading = True
+                use_emoji = True
+                icon_count = max(icon_count, 5)
+
+            if plat == "zalo" and mode in ("nhay_poll", "nhay_typing", "nhay_namebox", "zalo_todo", "zalo_cardbank", "share_contact", "reaction_storm"):
                 text_item = strip_leading_line_number(clean_raw) if strip_line_num else clean_raw
                 if mode == "nhay_poll":
                     if "|" in text_item:
@@ -5939,10 +6490,74 @@ def box_target_worker(client, acc_id, plat, target, blocks, runtime_opts,
                     b_num = parts_b[1] if len(parts_b) > 1 else "9999999999"
                     b_name = parts_b[2] if len(parts_b) > 2 else "PHAN ANH KHOI"
                     client.send_card_bank(target_id, bin_bank=b_bin, num_acc=b_num, name_acc=b_name, is_group=is_group)
+                elif mode == "share_contact":
+                    c_uid = eff_mentions[0]["uid"] if eff_mentions else client.uid
+                    client.send_business_card(target_id, target_uid=c_uid, is_group=is_group)
+                elif mode == "reaction_storm":
+                    client.send_adv(
+                        text_item, target_id, color_mode=color_mode, fixed_color=fixed_color,
+                        is_group=is_group, mentions=(eff_mentions if is_group else None),
+                        tag_all=(eff_tag_all if is_group else False), is_heading=is_heading,
+                        color_offset=color_counter, antiband=antiband,
+                        use_emoji=use_emoji, icon_count=icon_count,
+                        auto_retry_thread_type=True, strip_line_num=strip_line_num
+                    )
+                    try:
+                        recent_m = client.get_recent_group_messages(target_id)
+                        for rm_item in recent_m[-3:]:
+                            mid_r = rm_item.get("msgId") or rm_item.get("globalMsgId")
+                            cmid_r = rm_item.get("cliMsgId")
+                            if mid_r:
+                                client.send_reaction(target_id, mid_r, cmid_r, icon=random.choice(["/-heart", "/-strong", ":))", "/-rose", "/-li"]), is_group=is_group)
+                    except Exception:
+                        pass
                 with lock:
                     counter["sent"] += 1
                 HEALTH_MGR.report_success(acc_id)
-            elif plat == "messenger" and mode in ("nhay_poll", "nhay_theme", "nhay_typing", "share_link", "share_contact", "nhay_namebox"):
+            elif plat == "discord" and mode in ("nhay_poll", "nhay_typing", "reaction_storm", "discord_embed_vip", "discord_status_rotator"):
+                text_item = strip_leading_line_number(clean_raw) if strip_line_num else clean_raw
+                if mode == "nhay_poll":
+                    if "|" in text_item:
+                        q_p, opt_p = text_item.split("|", 1)
+                        opts_l = [x.strip() for x in opt_p.replace(";", "|").split("|") if x.strip()]
+                    else:
+                        q_p = text_item
+                        opts_l = [f"{text_item[:25]} #1", f"{text_item[:25]} #2"]
+                    client.send_poll_discord(target_id, q_p.strip(), opts_l)
+                elif mode == "nhay_typing":
+                    client.send_typing(target_id)
+                elif mode == "discord_status_rotator":
+                    client.set_custom_status(text_item[:80])
+                    client.send_message(
+                        target_id, text_item, color_mode=color_mode,
+                        fixed_color=fixed_color, antiband=antiband,
+                        mentions=eff_mentions, tag_all=eff_tag_all,
+                        strip_line_num=strip_line_num, is_heading=is_heading
+                    )
+                elif mode == "discord_embed_vip":
+                    art_txt = f"# 🔥 **{text_item}**\n> ⚡ *{text_item}*"
+                    if use_emoji and icon_count > 0:
+                        art_txt += " " + build_unique_zalo_icons(icon_count)
+                    client.send_message(
+                        target_id, art_txt, color_mode="none",
+                        fixed_color=fixed_color, antiband=antiband,
+                        mentions=eff_mentions, tag_all=eff_tag_all,
+                        strip_line_num=False, is_heading=False
+                    )
+                elif mode == "reaction_storm":
+                    sent_obj = client.send_message(
+                        target_id, text_item, color_mode=color_mode,
+                        fixed_color=fixed_color, antiband=antiband,
+                        mentions=eff_mentions, tag_all=eff_tag_all,
+                        strip_line_num=strip_line_num, is_heading=is_heading
+                    )
+                    if isinstance(sent_obj, dict) and sent_obj.get("id"):
+                        for em_r in ("🔥", "⚡", "👑"):
+                            client.add_reaction(target_id, sent_obj["id"], em_r)
+                with lock:
+                    counter["sent"] += 1
+                HEALTH_MGR.report_success(acc_id)
+            elif plat == "messenger" and mode in ("nhay_poll", "nhay_theme", "nhay_typing", "share_link", "share_contact", "nhay_namebox", "mess_nickname"):
                 text_item = strip_leading_line_number(clean_raw) if strip_line_num else clean_raw
                 if mode == "nhay_poll":
                     if "|" in text_item:
@@ -5967,6 +6582,9 @@ def box_target_worker(client, acc_id, plat, target, blocks, runtime_opts,
                     client.share_contact_mqtt(target_id, c_uid, text_item)
                 elif mode == "nhay_namebox":
                     client.rename_group(target_id, text_item)
+                elif mode == "mess_nickname":
+                    c_uid = eff_mentions[b_idx % len(eff_mentions)]["uid"] if eff_mentions else client.uid
+                    client.change_nickname(target_id, c_uid, text_item[:45])
                 with lock:
                     counter["sent"] += 1
                 HEALTH_MGR.report_success(acc_id)
@@ -6132,7 +6750,6 @@ def box_target_worker(client, acc_id, plat, target, blocks, runtime_opts,
         else:
             stop_ev.wait(max(0.20, actual_delay))
 
-
 def single_acc_multi_box_dispatcher(acc_dict, targets, blocks, runtime_opts, stop_ev, counter, lock):
     acc_id = acc_dict["id"]
     plat = acc_dict.get("platform") or "zalo"
@@ -6184,7 +6801,6 @@ def single_acc_multi_box_dispatcher(acc_dict, targets, blocks, runtime_opts, sto
 
     for bt in box_threads:
         bt.join(timeout=0.2)
-
 
 def task_supervisor(tid, targets, blocks, runtime_opts, multi_acc, stop_ev, specific_acc_id=None):
     conn = db()
@@ -6251,7 +6867,6 @@ def task_supervisor(tid, targets, blocks, runtime_opts, multi_acc, stop_ev, spec
     conn.commit()
     conn.close()
     ACTIVE_TASKS.pop(tid, None)
-
 
 def start_task_programmatic(targets, blocks, delay=1.0, use_emoji=True, icon_count=3,
                             tag_users=None, tag_all=False, is_heading=True, multi_acc=True,
@@ -6323,7 +6938,6 @@ def start_task_programmatic(targets, blocks, delay=1.0, use_emoji=True, icon_cou
     th.start()
     return tid
 
-
 def update_running_tasks_config(thread_id=None, **kwargs):
     updated = 0
     with SYSTEM_CFG_LOCK:
@@ -6339,7 +6953,6 @@ def update_running_tasks_config(thread_id=None, **kwargs):
                 updated += 1
     return updated
 
-
 def stop_tasks_for_thread(thread_id=None):
     stopped = 0
     for tid, info in list(ACTIVE_TASKS.items()):
@@ -6347,7 +6960,6 @@ def stop_tasks_for_thread(thread_id=None):
             info["stop"].set()
             stopped += 1
     return stopped
-
 
 # HỆ THỐNG SELF-BOT LỆNH KHUNG CHAT ZALO & DISCORD 24/7
 def log_system_command(acc_id, thread_id, sender_id, cmd_text, action_taken):
@@ -6369,14 +6981,12 @@ def log_system_command(acc_id, thread_id, sender_id, cmd_text, action_taken):
     except Exception:
         pass
 
-
 def strip_invisible_chars(s):
     if not s:
         return ""
     for zw in ("\u200b", "\u200c", "\u200d", "\u2060", "\ufeff"):
         s = s.replace(zw, "")
     return s.strip()
-
 
 def parse_and_execute_inchat_command(
     zalo_client, acc_row, thread_id, is_group, sender_id, raw_msg,
@@ -6589,15 +7199,45 @@ def parse_and_execute_inchat_command(
         sec_str = arg_body.strip()
         code_6, rem_s = generate_totp_rfc6238(sec_str)
         if code_6:
-            _send_reply(f"🔐 MÃ OTP 2FA (Phan Anh Khôi): {code_6} (Còn {rem_s}s)")
+            _send_reply(f"🔐 MÃ OTP 2FA (Phan Anh Khôi): {code_6} (Hiệu lực còn {rem_s}s)")
         else:
             _send_reply("⚠️ Cú pháp: .2fa <Secret_Key_Base32>")
         log_system_command(acc_id, thread_id, sender_id, text, "Tạo mã 2FA OTP")
         return True
 
-    if platform == "zalo" and zalo_client and cmd_token in ("poll", "nhaypoll") and "|" in arg_body:
-        q_s, o_s = arg_body.split("|", 1)
-        opts = [x.strip() for x in o_s.replace(";", "|").split("|") if x.strip()]
+    if platform == "discord" and discord_client and cmd_token in ("statusdc",):
+        st_txt = arg_body.strip() or "NOEL v15 — Phan Anh Khôi"
+        discord_client.set_custom_status(st_txt)
+        _send_reply(f"👑 Đã đổi trạng thái Custom Status Discord thành: {st_txt}")
+        return True
+
+    if platform == "discord" and discord_client and cmd_token in ("hypesquad",):
+        h_id = int(arg_body.strip()) if arg_body.strip() in ("1", "2", "3") else 1
+        discord_client.set_hypesquad(h_id)
+        _send_reply(f"⚡ Đã đổi huy hiệu HypeSquad Discord (House #{h_id})!")
+        return True
+
+    if platform == "discord" and discord_client and cmd_token in ("poll", "nhaypoll"):
+        if "|" in arg_body:
+            q_s, o_s = arg_body.split("|", 1)
+            opts = [x.strip() for x in o_s.replace(";", "|").split("|") if x.strip()]
+        else:
+            q_s = arg_body.strip() or "Bình chọn Phan Anh Khôi"
+            opts = ["Đồng ý 100% 🔥", "Chuẩn VIP 👑"]
+        discord_client.send_poll_discord(thread_id, q_s.strip(), opts)
+        return True
+
+    if platform == "discord" and discord_client and cmd_token in ("typing", "ty"):
+        discord_client.send_typing(thread_id)
+        return True
+
+    if platform == "zalo" and zalo_client and cmd_token in ("poll", "nhaypoll"):
+        if "|" in arg_body:
+            q_s, o_s = arg_body.split("|", 1)
+            opts = [x.strip() for x in o_s.replace(";", "|").split("|") if x.strip()]
+        else:
+            q_s = arg_body.strip() or "Bình chọn Phan Anh Khôi"
+            opts = ["Đồng ý 100% 🔥", "Chuẩn VIP 👑"]
         zalo_client.create_poll(thread_id, q_s.strip(), opts)
         log_system_command(acc_id, thread_id, sender_id, text, f"Tạo Poll Zalo: {q_s[:25]}")
         return True
@@ -6623,6 +7263,18 @@ def parse_and_execute_inchat_command(
         b_num = parts_b[1] if len(parts_b) > 1 else (parts_b[0] if parts_b and parts_b[0] else "9999999999")
         b_name = parts_b[2] if len(parts_b) > 2 else "PHAN ANH KHOI"
         zalo_client.send_card_bank(thread_id, bin_bank=b_bin, num_acc=b_num, name_acc=b_name, is_group=is_group)
+        return True
+
+    if platform == "zalo" and zalo_client and cmd_token in ("card", "danhthiep", "sharecontact", "contact"):
+        _, t_mentions, _ = extract_trailing_tags_and_resolve(
+            arg_body, incoming_mentions=raw_mentions, zalo_client=zalo_client, group_id=thread_id
+        )
+        c_uid = t_mentions[0]["uid"] if t_mentions else zalo_client.uid
+        zalo_client.send_business_card(thread_id, target_uid=c_uid, is_group=is_group)
+        return True
+
+    if platform == "zalo" and zalo_client and cmd_token in ("typing", "ty"):
+        zalo_client.send_typing(thread_id, is_group=is_group)
         return True
 
     if cmd_token in ("vip", "sieuvip"):
@@ -7159,7 +7811,6 @@ def parse_and_execute_inchat_command(
     tag_desc = "@All" if extracted_tag_all else (", ".join("@" + m["name"] for m in extracted_mentions) if extracted_mentions else "Không tag")
     log_system_command(acc_id, thread_id, sender_id, text, f"[{platform.upper()}] Chạy {chosen_mode} (Task {tid[-6:]}) | Tag: {tag_desc}")
     return True
-
 
 # LISTENER 24/7 TRÊN ZALO (WEBSOCKET + HTTP FALLBACK)
 class ZaloRealtimeListener:
@@ -7911,7 +8562,6 @@ class ZaloRealtimeListener:
                 self.ws_status = "Zalo Poller Đang Bảo Vệ..."
                 self.stop_ev.wait(5.0)
 
-
 # LISTENER 24/7 TRÊN DISCORD ACC CHÍNH CHỦ & BOT (CHROME 131 TLS GATEWAY + ZERO-SCRAPE SHIELD)
 class DiscordRealtimeListener:
     def __init__(self, acc_id):
@@ -8278,7 +8928,6 @@ class DiscordRealtimeListener:
                 self.ws_status = "Đang đồng bộ lại..."
                 self.stop_ev.wait(6.0)
 
-
 def sync_all_zalo_listeners():
     refresh_owner_uids()
     try:
@@ -8317,7 +8966,6 @@ def sync_all_zalo_listeners():
     except Exception:
         pass
 
-
 def _listener_watchdog_loop():
     time.sleep(1.0)
     while True:
@@ -8327,9 +8975,7 @@ def _listener_watchdog_loop():
             pass
         time.sleep(6.0)
 
-
 threading.Thread(target=_listener_watchdog_loop, daemon=True).start()
-
 
 # GIAO DIỆN WEB CHÍNH: NOEL (100% VECTOR SVG HIỆN ĐẠI, CHỐNG TRÀN VIỀN TUYỆT ĐỐI,
 # THANH TAB NGANG DƯỚI NHỎ GỌN HIỆN ĐẠI, NÚT BẤM CÓ HÌNH ẢNH DESIGN NOEL)
@@ -8345,7 +8991,7 @@ LOGIN_HTML = r"""<!DOCTYPE html>
 html,body{
   width:100%;min-height:100vh;overflow:hidden;
   font-family:'Plus Jakarta Sans',sans-serif;
-  background:#070b14;
+  background:#060913;
   background-image:
     radial-gradient(at 15% 15%, rgba(244,63,94,0.34) 0px, transparent 48%),
     radial-gradient(at 85% 20%, rgba(16,185,129,0.28) 0px, transparent 48%),
@@ -8360,19 +9006,19 @@ html,body{
 .orb-2{width:280px;height:280px;background:#10b981;bottom:-70px;right:-50px;animation-delay:-4s}
 @keyframes orbFloat{0%{transform:translate(0,0) scale(1)}100%{transform:translate(28px,22px) scale(1.12)}}
 @keyframes boxEntrance{
-  0%{opacity:0;transform:translateY(28px) scale(0.94);filter:blur(8px)}
-  100%{opacity:1;transform:translateY(0) scale(1);filter:blur(0)}
+  0%{opacity:0;transform:translateY(28px) scale(0.94)}
+  100%{opacity:1;transform:translateY(0) scale(1)}
 }
 .login-box{
   position:relative;z-index:2;width:100%;max-width:400px;
-  background:rgba(15,23,42,0.74);
+  background:rgba(15,23,42,0.78);
   backdrop-filter:blur(28px) saturate(190%);
   -webkit-backdrop-filter:blur(28px) saturate(190%);
   border:1px solid rgba(255,255,255,0.18);
   border-radius:28px;padding:32px 24px;
   box-shadow:0 28px 60px rgba(0,0,0,0.55),inset 0 1px 1px rgba(255,255,255,0.22);
   text-align:center;
-  animation:boxEntrance 0.65s cubic-bezier(0.22,1,0.36,1) forwards;
+  animation:boxEntrance 0.55s cubic-bezier(0.22,1,0.36,1) forwards;
 }
 .logo-badge{
   width:64px;height:64px;border-radius:20px;margin:0 auto 14px;
@@ -8427,7 +9073,7 @@ html,body{
     </div>
     <div class="author-pill">👑 PHAN ANH KHÔI EDITION</div>
     <div class="title">NOEL v15 SIÊU VIP</div>
-    <div class="sub">Hệ Thống Điều Khiển Đa Nền Tảng • Zalo • Discord • Messenger</div>
+    <div class="sub">Hệ Thống Điều Khiển Đa Nền Tảng • Zalo QR • Discord • Messenger</div>
     {% if error %}<div class="err">{{ error }}</div>{% endif %}
     <form method="POST" action="/login">
       <input class="inp" type="password" name="password" placeholder="Nhập mật khẩu truy cập..." required autofocus>
@@ -8436,7 +9082,6 @@ html,body{
   </div>
 </body>
 </html>"""
-
 
 DASHBOARD_HTML = r"""<!DOCTYPE html>
 <html lang="vi">
@@ -8447,10 +9092,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&family=JetBrains+Mono:wght@600;700&display=swap" rel="stylesheet">
 <style>
 :root{
-  --bg:#070b14;
-  --card:rgba(15,23,42,0.72);
+  --bg:#060913;
+  --card:rgba(15,23,42,0.74);
   --card-border:rgba(255,255,255,0.14);
-  --inp-bg:rgba(9,14,28,0.78);
+  --inp-bg:rgba(9,14,28,0.82);
   --txt:#f8fafc;
   --txt-sub:#94a3b8;
   --red:#f43f5e;
@@ -8470,27 +9115,32 @@ html,body{
     radial-gradient(circle at 80% 85%, rgba(56,189,248,0.18) 0px, transparent 46%);
   background-attachment:fixed;
   color:var(--txt);min-height:100vh;
-  padding-bottom:122px;
+  padding-bottom:124px;
 }
 input,select,textarea{font-size:15px !important;font-family:inherit;color:var(--txt)}
 
+@keyframes splashAutoDismiss{
+  0%,55%{opacity:1;visibility:visible}
+  100%{opacity:0;visibility:hidden;display:none}
+}
 #pageLoader{
   position:fixed;inset:0;z-index:10000;
   background:radial-gradient(circle at 50% 40%, #111827 0%, #050811 100%);
   display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;
-  transition:opacity 0.48s cubic-bezier(0.22,1,0.36,1), visibility 0.48s;
+  pointer-events:none;
+  animation:splashAutoDismiss 0.75s cubic-bezier(0.22,1,0.36,1) forwards;
 }
-#pageLoader.hide{opacity:0;visibility:hidden;pointer-events:none}
+#pageLoader.hide{opacity:0 !important;visibility:hidden !important;display:none !important}
 .loader-ring{
   width:56px;height:56px;border-radius:18px;
   background:linear-gradient(135deg,#e11d48,#10b981,#38bdf8);
   display:flex;align-items:center;justify-content:center;
   box-shadow:0 0 36px rgba(16,185,129,0.45);
-  animation:loaderSpinPulse 1.2s cubic-bezier(0.22,1,0.36,1) infinite alternate;
+  animation:loaderSpinPulse 0.9s cubic-bezier(0.22,1,0.36,1) infinite alternate;
 }
 @keyframes loaderSpinPulse{
-  0%{transform:scale(0.92) rotate(-6deg);filter:hue-rotate(0deg)}
-  100%{transform:scale(1.08) rotate(6deg);filter:hue-rotate(35deg)}
+  0%{transform:scale(0.92) rotate(-6deg)}
+  100%{transform:scale(1.08) rotate(6deg)}
 }
 .loader-title{
   font-size:16px;font-weight:800;letter-spacing:1.8px;
@@ -8498,22 +9148,22 @@ input,select,textarea{font-size:15px !important;font-family:inherit;color:var(--
   -webkit-background-clip:text;-webkit-text-fill-color:transparent;
 }
 .loader-bar-wrap{width:170px;height:4px;background:rgba(255,255,255,0.1);border-radius:99px;overflow:hidden}
-.loader-bar{height:100%;width:100%;background:linear-gradient(90deg,#f43f5e,#10b981,#38bdf8);transform-origin:left;animation:loaderProgress 0.55s ease-out forwards}
-@keyframes loaderProgress{0%{transform:scaleX(0.05)}100%{transform:scaleX(1)}}
+.loader-bar{height:100%;width:100%;background:linear-gradient(90deg,#f43f5e,#10b981,#38bdf8);transform-origin:left;animation:loaderProgress 0.45s ease-out forwards}
+@keyframes loaderProgress{0%{transform:scaleX(0.1)}100%{transform:scaleX(1)}}
 
 .wrap{
   width:100%;max-width:1060px;margin:0 auto;padding:12px 10px 24px;
-  animation:pageReveal 0.6s cubic-bezier(0.22,1,0.36,1) forwards;
+  animation:pageReveal 0.5s cubic-bezier(0.22,1,0.36,1) forwards;
 }
 @keyframes pageReveal{
-  0%{opacity:0;transform:translateY(14px)}
+  0%{opacity:0;transform:translateY(10px)}
   100%{opacity:1;transform:translateY(0)}
 }
 
 .topbar{
   display:flex;align-items:center;justify-content:space-between;gap:8px;
   padding:11px 15px;border-radius:22px;margin-bottom:11px;
-  background:linear-gradient(125deg,rgba(190,18,60,0.82) 0%,rgba(15,23,42,0.92) 52%,rgba(5,150,105,0.82) 100%);
+  background:linear-gradient(125deg,rgba(190,18,60,0.84) 0%,rgba(15,23,42,0.92) 52%,rgba(5,150,105,0.84) 100%);
   backdrop-filter:blur(22px);-webkit-backdrop-filter:blur(22px);
   border:1px solid rgba(255,255,255,0.22);
   box-shadow:0 14px 32px rgba(0,0,0,0.38);
@@ -8521,8 +9171,8 @@ input,select,textarea{font-size:15px !important;font-family:inherit;color:var(--
 }
 .topbar::after{
   content:"";position:absolute;top:0;left:-120%;width:65%;height:100%;
-  background:linear-gradient(90deg,transparent,rgba(255,255,255,0.12),transparent);
-  transform:skewX(-25deg);animation:shimmerSweep 6s infinite;pointer-events:none;
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,0.14),transparent);
+  transform:skewX(-25deg);animation:shimmerSweep 5.5s infinite;pointer-events:none;
 }
 @keyframes shimmerSweep{0%{left:-120%}35%,100%{left:160%}}
 
@@ -8563,35 +9213,35 @@ input,select,textarea{font-size:15px !important;font-family:inherit;color:var(--
 .tab-pane{display:none;will-change:transform,opacity}
 .tab-pane.active{
   display:block;
-  animation:tabMorphIn 0.42s cubic-bezier(0.22,1,0.36,1) forwards;
+  animation:tabMorphIn 0.38s cubic-bezier(0.22,1,0.36,1) forwards;
 }
 .tab-pane.slide-left{
-  animation:tabSlideLeft 0.42s cubic-bezier(0.22,1,0.36,1) forwards;
+  animation:tabSlideLeft 0.38s cubic-bezier(0.22,1,0.36,1) forwards;
 }
 .tab-pane.slide-right{
-  animation:tabSlideRight 0.42s cubic-bezier(0.22,1,0.36,1) forwards;
+  animation:tabSlideRight 0.38s cubic-bezier(0.22,1,0.36,1) forwards;
 }
 @keyframes tabMorphIn{
-  0%{opacity:0;transform:translateY(14px) scale(0.985);filter:blur(4px)}
-  100%{opacity:1;transform:translateY(0) scale(1);filter:blur(0)}
+  0%{opacity:0;transform:translateY(12px) scale(0.985)}
+  100%{opacity:1;transform:translateY(0) scale(1)}
 }
 @keyframes tabSlideLeft{
-  0%{opacity:0;transform:translateX(26px) scale(0.985);filter:blur(4px)}
-  100%{opacity:1;transform:translateX(0) scale(1);filter:blur(0)}
+  0%{opacity:0;transform:translateX(24px) scale(0.985)}
+  100%{opacity:1;transform:translateX(0) scale(1)}
 }
 @keyframes tabSlideRight{
-  0%{opacity:0;transform:translateX(-26px) scale(0.985);filter:blur(4px)}
-  100%{opacity:1;transform:translateX(0) scale(1);filter:blur(0)}
+  0%{opacity:0;transform:translateX(-24px) scale(0.985)}
+  100%{opacity:1;transform:translateX(0) scale(1)}
 }
 @keyframes cardCascade{
-  0%{opacity:0;transform:translateY(16px)}
+  0%{opacity:0;transform:translateY(14px)}
   100%{opacity:1;transform:translateY(0)}
 }
 .tab-pane.active .card{
-  animation:cardCascade 0.45s cubic-bezier(0.22,1,0.36,1) both;
+  animation:cardCascade 0.42s cubic-bezier(0.22,1,0.36,1) both;
 }
-.tab-pane.active .grid-main > div:nth-child(1) .card{animation-delay:0.03s}
-.tab-pane.active .grid-main > div:nth-child(2) .card{animation-delay:0.09s}
+.tab-pane.active .grid-main > div:nth-child(1) .card{animation-delay:0.02s}
+.tab-pane.active .grid-main > div:nth-child(2) .card{animation-delay:0.07s}
 
 .grid-main{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:10px}
 .c5{grid-column:span 5}.c6{grid-column:span 6}.c7{grid-column:span 7}.c12{grid-column:span 12}
@@ -8674,6 +9324,21 @@ input,select,textarea{font-size:15px !important;font-family:inherit;color:var(--
 .btn-dark{background:rgba(255,255,255,0.08);color:#e2e8f0;border-color:rgba(255,255,255,0.14)}
 .btn-mini{padding:5.5px 9px;font-size:11px;border-radius:9px;width:auto}
 
+.qr-stage{
+  position:relative;width:210px;height:210px;margin:10px auto;
+  border-radius:20px;padding:8px;background:#fff;
+  box-shadow:0 0 32px rgba(16,185,129,0.38);overflow:hidden;
+  display:flex;align-items:center;justify-content:center;
+}
+.qr-stage img{width:100%;height:100%;object-fit:contain;border-radius:14px}
+.qr-laser{
+  position:absolute;left:8px;right:8px;height:3px;
+  background:linear-gradient(90deg,transparent,#10b981,#38bdf8,transparent);
+  box-shadow:0 0 12px #10b981;
+  animation:qrLaserScan 2.2s ease-in-out infinite alternate;
+}
+@keyframes qrLaserScan{0%{top:12px}100%{top:194px}}
+
 .chk-box{
   display:flex;align-items:center;gap:7px;padding:7.5px 9px;
   background:rgba(15,23,42,0.55);border:1px solid rgba(255,255,255,0.1);
@@ -8709,7 +9374,7 @@ input,select,textarea{font-size:15px !important;font-family:inherit;color:var(--
 .dock-wrap{
   position:fixed;bottom:10px;left:50%;transform:translateX(-50%);
   z-index:999;width:calc(100vw - 20px);max-width:460px;
-  background:rgba(11,17,32,0.9);backdrop-filter:blur(26px);-webkit-backdrop-filter:blur(26px);
+  background:rgba(11,17,32,0.92);backdrop-filter:blur(26px);-webkit-backdrop-filter:blur(26px);
   border:1px solid rgba(255,255,255,0.2);border-radius:999px;padding:5px 6px;
   box-shadow:0 18px 40px rgba(0,0,0,0.6);
 }
@@ -8805,7 +9470,7 @@ input,select,textarea{font-size:15px !important;font-family:inherit;color:var(--
               <span class="ico-dot" style="background:rgba(244,63,94,0.2);color:var(--red)">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
               </span>
-              <span>Kết Nối & Lấy Token/Cookie</span>
+              <span>Kết Nối & Quét QR / Lấy Token</span>
             </div>
             <span class="tag tag-green">Phan Anh Khôi v15</span>
           </div>
@@ -8814,8 +9479,8 @@ input,select,textarea{font-size:15px !important;font-family:inherit;color:var(--
             <input type="hidden" name="platform" id="accPlatformInput" value="zalo">
 
             <div class="seg">
-              <button type="button" class="seg-b active" id="segZaloBtn" onclick="switchAccForm('zalo')">Zalo</button>
-              <button type="button" class="seg-b" id="segDiscordBtn" onclick="switchAccForm('discord')">Discord</button>
+              <button type="button" class="seg-b active" id="segZaloBtn" onclick="switchAccForm('zalo')">Zalo QR / Cookie</button>
+              <button type="button" class="seg-b" id="segDiscordBtn" onclick="switchAccForm('discord')">Discord VIP</button>
               <button type="button" class="seg-b" id="segMessengerBtn" onclick="switchAccForm('messenger')">Facebook / Mess</button>
             </div>
 
@@ -8825,16 +9490,50 @@ input,select,textarea{font-size:15px !important;font-family:inherit;color:var(--
             </div>
 
             <div id="zaloInputFields">
-              <div style="margin-bottom:8px">
-                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
-                  <label class="lbl" style="margin:0">IMEI Thiết Bị Zalo</label>
-                  <button type="button" class="tag tag-blue" style="cursor:pointer;border:none" onclick="generateUniqueZaloImei()">⚡ Tạo IMEI Mới</button>
-                </div>
-                <input class="inp-ctrl" name="imei" id="zaloImeiInput" placeholder="Dán IMEI Zalo hoặc bấm Tạo IMEI Mới...">
+              <div class="seg seg2" style="margin-bottom:8px">
+                <button type="button" class="seg-b active" id="subZaloQRBtn" onclick="switchZaloSubTab('qr')">📱 Quét QR Lấy Cookie & IMEI</button>
+                <button type="button" class="seg-b" id="subZaloManualBtn" onclick="switchZaloSubTab('manual')">✍️ Dán Cookie & IMEI</button>
               </div>
-              <div style="margin-bottom:8px">
-                <label class="lbl">Cookie Zalo (JSON J2Team / Chuỗi Header)</label>
-                <textarea class="txt-ctrl" name="cookies" id="zaloCookieInput" placeholder="Dán Cookie Zalo..."></textarea>
+
+              <div id="zaloQRBox" style="margin-bottom:10px;padding:10px;border-radius:14px;background:rgba(9,14,28,0.65);border:1px solid rgba(56,189,248,0.28);text-align:center">
+                <div style="font-size:11.5px;font-weight:800;color:#7dd3fc;margin-bottom:6px" id="zaloQRStatusText">
+                  Quét mã QR bằng Zalo trên điện thoại để tự động trích xuất Cookie + IMEI độc lập & nạp thẳng vào Web!
+                </div>
+                <div id="zaloQRStageWrap" style="display:none">
+                  <div class="qr-stage">
+                    <div class="qr-laser" id="zaloQRLaser"></div>
+                    <img id="zaloQRImg" src="" alt="Zalo QR">
+                  </div>
+                  <div style="font-size:11px;color:#fde68a;font-weight:800;margin-bottom:6px" id="zaloQRTimerBadge">⏳ Thời gian còn: 120s</div>
+                </div>
+
+                <div id="zaloQRExtractedBox" style="display:none;text-align:left;margin-top:8px;padding:9px;border-radius:11px;background:rgba(16,185,129,0.14);border:1px solid rgba(16,185,129,0.4)">
+                  <div style="font-size:11px;font-weight:800;color:#6ee7b7;margin-bottom:4px">✅ ĐÃ LẤY COOKIE & IMEI ZALO THÀNH CÔNG:</div>
+                  <div style="font-size:10.5px;color:#cbd5e1;margin-bottom:4px">IMEI: <code id="zaloQRExtractedImei" style="color:#fde68a"></code></div>
+                  <div class="row3" style="margin-top:6px;margin-bottom:0">
+                    <button type="button" class="btn btn-green btn-mini" onclick="copyZaloQRData('imei')">Copy IMEI</button>
+                    <button type="button" class="btn btn-purple btn-mini" onclick="copyZaloQRData('cookie')">Copy Cookie</button>
+                    <button type="button" class="btn btn-red btn-mini" onclick="downloadZaloQRFile()">📥 Tải .TXT</button>
+                  </div>
+                </div>
+
+                <button type="button" class="btn btn-green" id="btnStartZaloQR" onclick="startZaloQRLogin()">
+                  <span>📱 TẠO MÃ QR ZALO (QUÉT LẤY COOKIE & IMEI)</span>
+                </button>
+              </div>
+
+              <div id="zaloManualBox" style="display:none">
+                <div style="margin-bottom:8px">
+                  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+                    <label class="lbl" style="margin:0">IMEI Thiết Bị Zalo</label>
+                    <button type="button" class="tag tag-blue" style="cursor:pointer;border:none" onclick="generateUniqueZaloImei()">⚡ Tạo IMEI Mới</button>
+                  </div>
+                  <input class="inp-ctrl" name="imei" id="zaloImeiInput" placeholder="Dán IMEI Zalo hoặc bấm Tạo IMEI Mới...">
+                </div>
+                <div style="margin-bottom:8px">
+                  <label class="lbl">Cookie Zalo (JSON J2Team / Chuỗi Header)</label>
+                  <textarea class="txt-ctrl" name="cookies" id="zaloCookieInput" placeholder="Dán Cookie Zalo..."></textarea>
+                </div>
               </div>
             </div>
 
@@ -8969,7 +9668,7 @@ input,select,textarea{font-size:15px !important;font-family:inherit;color:var(--
               <span class="ico-dot" style="background:rgba(168,85,247,0.2);color:var(--purple)">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
               </span>
-              <span>Trình Tạo Mã OTP 2FA Trực Tiếp</span>
+              <span>Trình Tạo Mã OTP 2FA & Tiện Ích</span>
             </div>
             <span class="tag tag-purple" id="totpTimerBadge">30s</span>
           </div>
@@ -8977,12 +9676,25 @@ input,select,textarea{font-size:15px !important;font-family:inherit;color:var(--
             <input class="inp-ctrl" id="web2FASecretInput" placeholder="Dán Secret Key 2FA (VD: JBSWY3DPEHPK3PXP)..." style="flex:1">
             <button type="button" class="btn btn-purple btn-mini" onclick="generateWeb2FA(true)">Lấy OTP</button>
           </div>
-          <div id="web2FAResultBox" style="display:none;padding:9px 12px;border-radius:12px;background:rgba(15,23,42,0.8);border:1px solid rgba(168,85,247,0.4);align-items:center;justify-content:space-between">
+          <div id="web2FAResultBox" style="display:none;padding:9px 12px;border-radius:12px;background:rgba(15,23,42,0.8);border:1px solid rgba(168,85,247,0.4);align-items:center;justify-content:space-between;margin-bottom:8px">
             <div>
-              <div style="font-size:10px;color:var(--txt-sub)">MÃ OTP HIỆN TẠI</div>
+              <div style="font-size:10px;color:var(--txt-sub)">MÃ OTP 2FA HIỆN TẠI</div>
               <div id="web2FACodeVal" style="font-size:20px;font-weight:800;font-family:'JetBrains Mono',monospace;color:#fde68a;letter-spacing:3px">------</div>
             </div>
             <button type="button" class="btn btn-dark btn-mini" onclick="copyCurrent2FACode()">Sao chép</button>
+          </div>
+
+          <div style="border-top:1px solid rgba(255,255,255,0.08);padding-top:8px;margin-top:4px">
+            <label class="lbl">Nâng Cấp Trạng Thái & Huy Hiệu Discord VIP</label>
+            <div style="display:flex;gap:6px;margin-bottom:6px">
+              <input class="inp-ctrl" id="dcCustomStatusInput" placeholder="Trạng thái Discord (VD: NOEL v15 Phan Anh Khôi)..." style="flex:1">
+              <button type="button" class="btn btn-green btn-mini" onclick="updateDiscordCustomStatus()">Đổi Status</button>
+            </div>
+            <div class="row3" style="margin-bottom:0">
+              <button type="button" class="btn btn-dark btn-mini" onclick="setDiscordHypeSquad(1)">⚔️ Bravery</button>
+              <button type="button" class="btn btn-dark btn-mini" onclick="setDiscordHypeSquad(2)">🔥 Brilliance</button>
+              <button type="button" class="btn btn-dark btn-mini" onclick="setDiscordHypeSquad(3)">💎 Balance</button>
+            </div>
           </div>
         </div>
       </div>
@@ -8999,9 +9711,9 @@ input,select,textarea{font-size:15px !important;font-family:inherit;color:var(--
             <button class="btn btn-dark btn-mini" type="button" onclick="loadGroupsAndRooms(false)">Quét Phòng</button>
           </div>
 
-          <div class="list-scroll" style="max-height:480px">
+          <div class="list-scroll" style="max-height:520px">
             {% if not accounts %}
-              <div style="text-align:center;padding:24px;color:var(--txt-sub);font-size:12px">Chưa có tài khoản kết nối.</div>
+              <div style="text-align:center;padding:24px;color:var(--txt-sub);font-size:12px">Chưa có tài khoản kết nối. Hãy quét QR Zalo hoặc thêm Token Discord / Cookie Mess ở bên trái.</div>
             {% endif %}
             {% for a in accounts %}
               <div class="item-row">
@@ -9112,17 +9824,24 @@ input,select,textarea{font-size:15px !important;font-family:inherit;color:var(--
             <div>
               <label class="lbl">Chế độ gửi</label>
               <select class="sel-ctrl" id="cfgMode">
-                <option value="treo_nhay">Treo Nhây (Từng câu - MQTT/VIP)</option>
-                <option value="treo_ngon">Treo Ngôn (Nguyên bài - MQTT/VIP)</option>
-                <option value="fast">Spam Nhanh Siêu Tốc</option>
-                <option value="nhay_poll">Nhây Poll Bình Chọn (Zalo & Mess MQTT)</option>
-                <option value="nhay_theme">Nhây Đổi Nền Theme (Mess MQTT)</option>
-                <option value="nhay_typing">Treo Typing Soạn Tin (Zalo & Mess MQTT)</option>
-                <option value="share_link">Treo Share Link (Mess MQTT)</option>
-                <option value="share_contact">Treo Share Contact (Mess MQTT)</option>
-                <option value="nhay_namebox">Nhây Đổi Tên Box (Zalo & Mess)</option>
-                <option value="zalo_todo">Giao Việc To-Do Nhóm (Zalo VIP)</option>
-                <option value="zalo_cardbank">Gửi Thẻ Ngân Hàng (Zalo VIP)</option>
+                <option value="treo_nhay">🔥 Treo Nhây Từng Câu (Zalo • Discord • Mess MQTT)</option>
+                <option value="treo_ngon">📜 Treo Ngôn Nguyên Bài (Zalo • Discord • Mess MQTT)</option>
+                <option value="fast">⚡ Spam Nhanh Siêu Tốc 0.0s (Zalo • Discord • Mess)</option>
+                <option value="raid_burst">💥 Raid Tổng Lực Siêu Tốc (Chữ Lớn + Đa Sắc Từ + 5 Icon)</option>
+                <option value="auto_shuffle">🎲 Đảo Câu Biến Thiên Ngẫu Nhiên (Chống Trùng 100%)</option>
+                <option value="nhay_tag_all">🎯 Nhây Tag @All / @everyone + Ré Tên Liên Hoàn</option>
+                <option value="nhay_poll">📊 Nhây Tạo Poll Bình Chọn (Zalo • Discord • Mess MQTT)</option>
+                <option value="nhay_typing">⌨️ Treo Hiệu Ứng Đang Soạn Tin Typing (3 Nền Tảng)</option>
+                <option value="nhay_namebox">✏️ Nhây Đổi Tên Box / Nhóm Liên Tục (Zalo & Mess)</option>
+                <option value="zalo_todo">📌 Giao Việc To-Do Tag Thành Viên (Zalo VIP)</option>
+                <option value="zalo_cardbank">💳 Gửi Thẻ Ngân Hàng STK VIP (Zalo VIP)</option>
+                <option value="share_contact">🪪 Treo Danh Thiếp Business Card (Zalo & Mess MQTT)</option>
+                <option value="reaction_storm">❤️ Bão Thả Cảm Xúc Reaction Liên Hoàn (Zalo & Discord)</option>
+                <option value="nhay_theme">🎨 Nhây Đổi Chủ Đề Nền Theme (Mess MQTT)</option>
+                <option value="share_link">🔗 Treo Chia Sẻ Liên Kết Kèm Chữ (Mess MQTT)</option>
+                <option value="mess_nickname">👑 Nhây Đổi Biệt Danh Thành Viên Trong Box (Mess VIP)</option>
+                <option value="discord_embed_vip">💎 Chữ Nghệ Thuật Blockquote Đa Tầng (Discord VIP)</option>
+                <option value="discord_status_rotator">🌟 Đổi Custom Status Tự Động Theo Dòng (Discord VIP)</option>
               </select>
             </div>
             <div>
@@ -9362,13 +10081,14 @@ let CURRENT_MEMBERS = [];
 let SELECTED_MENTIONS = new Map();
 let ROOM_PLATFORM_FILTER = 'all';
 let CURRENT_TAB_IDX = 0;
+let ZALO_QR_SESSION_ID = '';
+let ZALO_QR_POLL_TIMER = null;
+let LAST_ZALO_QR_RESULT = {imei: '', cookies_str: '', file_name: 'zalo_cookie.txt', file_content: ''};
 
-window.addEventListener('DOMContentLoaded', () => {
-  setTimeout(() => {
-    const loader = document.getElementById('pageLoader');
-    if (loader) loader.classList.add('hide');
-  }, 420);
-});
+setTimeout(() => {
+  const loader = document.getElementById('pageLoader');
+  if (loader) loader.classList.add('hide');
+}, 400);
 
 function showToast(msg) {
   const box = document.getElementById('toastBox');
@@ -9413,6 +10133,13 @@ function switchAccForm(plat) {
   document.getElementById('messengerInputFields').style.display = (plat === 'messenger') ? 'block' : 'none';
 }
 
+function switchZaloSubTab(mode) {
+  document.getElementById('subZaloQRBtn').classList.toggle('active', mode === 'qr');
+  document.getElementById('subZaloManualBtn').classList.toggle('active', mode === 'manual');
+  document.getElementById('zaloQRBox').style.display = (mode === 'qr') ? 'block' : 'none';
+  document.getElementById('zaloManualBox').style.display = (mode === 'manual') ? 'block' : 'none';
+}
+
 function switchMessSubTab(mode) {
   document.getElementById('subMessCookieBtn').classList.toggle('active', mode === 'cookie');
   document.getElementById('subMessLoginBtn').classList.toggle('active', mode === 'login');
@@ -9429,6 +10156,129 @@ function switchDiscordRegTab(mode) {
   document.getElementById('discordNewAccBox').style.display = (mode === 'new_acc') ? 'block' : 'none';
 }
 
+async function startZaloQRLogin() {
+  const stTxt = document.getElementById('zaloQRStatusText');
+  const stageWrap = document.getElementById('zaloQRStageWrap');
+  const qrImg = document.getElementById('zaloQRImg');
+  const btn = document.getElementById('btnStartZaloQR');
+  const extBox = document.getElementById('zaloQRExtractedBox');
+
+  if (ZALO_QR_POLL_TIMER) {
+    clearInterval(ZALO_QR_POLL_TIMER);
+    ZALO_QR_POLL_TIMER = null;
+  }
+  extBox.style.display = 'none';
+  stageWrap.style.display = 'block';
+  stTxt.textContent = '⏳ Đang kích hoạt & tạo ảnh mã QR Zalo kèm IMEI độc lập...';
+  btn.disabled = true;
+
+  try {
+    const r = await fetch('/api/zalo/qr_start', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({auto_save: true})
+    });
+    const d = await r.json();
+    btn.disabled = false;
+    if (!d.ok) {
+      stTxt.textContent = d.message || 'Lỗi tạo mã QR';
+      return;
+    }
+    ZALO_QR_SESSION_ID = d.session_id;
+    stTxt.textContent = d.message;
+    stageWrap.style.display = 'block';
+    if (d.qr_base64) {
+      qrImg.src = d.qr_base64;
+    } else if (d.qr_image_url) {
+      qrImg.src = d.qr_image_url;
+    }
+    qrImg.onerror = function() {
+      if (d.qr_image_url && qrImg.src !== d.qr_image_url) {
+        qrImg.src = d.qr_image_url;
+      }
+    };
+    btn.innerHTML = '<span>🔄 TẠO LẠI MÃ QR ZALO MỚI</span>';
+    ZALO_QR_POLL_TIMER = setInterval(pollZaloQRStatus, 1600);
+  } catch (e) {
+    btn.disabled = false;
+    stTxt.textContent = 'Lỗi kết nối máy chủ khi tạo QR!';
+  }
+}
+
+setTimeout(() => {
+  if (!ZALO_QR_SESSION_ID && document.getElementById('zaloQRBox')) {
+    startZaloQRLogin();
+  }
+}, 550);
+
+async function pollZaloQRStatus() {
+  if (!ZALO_QR_SESSION_ID) return;
+  try {
+    const r = await fetch('/api/zalo/qr_status/' + encodeURIComponent(ZALO_QR_SESSION_ID));
+    const d = await r.json();
+    if (!d.ok) return;
+
+    const stTxt = document.getElementById('zaloQRStatusText');
+    const stageWrap = document.getElementById('zaloQRStageWrap');
+    const qrImg = document.getElementById('zaloQRImg');
+    const timerBadge = document.getElementById('zaloQRTimerBadge');
+    const extBox = document.getElementById('zaloQRExtractedBox');
+
+    stTxt.textContent = d.message || '';
+    if (timerBadge && typeof d.remaining_sec === 'number') {
+      timerBadge.textContent = `⏳ Thời gian hiệu lực còn: ${d.remaining_sec}s`;
+    }
+    if (d.qr_base64 && (!qrImg.src || !qrImg.src.startsWith('data:'))) {
+      stageWrap.style.display = 'block';
+      qrImg.src = d.qr_base64;
+    }
+    if (d.status === 'scanned' && d.avatar) {
+      qrImg.src = d.avatar;
+    }
+    if (d.status === 'success') {
+      clearInterval(ZALO_QR_POLL_TIMER);
+      ZALO_QR_POLL_TIMER = null;
+      stageWrap.style.display = 'none';
+      LAST_ZALO_QR_RESULT = {
+        imei: d.imei || '',
+        cookies_str: d.cookies_str || '',
+        file_name: d.file_name || 'zalo_cookie.txt',
+        file_content: d.file_content || ''
+      };
+      document.getElementById('zaloImeiInput').value = d.imei || '';
+      document.getElementById('zaloCookieInput').value = d.cookies_str || '';
+      document.getElementById('zaloQRExtractedImei').textContent = (d.imei || '').slice(0, 24) + '...';
+      extBox.style.display = 'block';
+      showToast('🎉 Đã quét QR Zalo thành công & lưu Cookie + IMEI!');
+      setTimeout(() => location.reload(), 2600);
+    } else if (d.status === 'expired' || d.status === 'declined' || d.status === 'error') {
+      clearInterval(ZALO_QR_POLL_TIMER);
+      ZALO_QR_POLL_TIMER = null;
+    }
+  } catch (e) {}
+}
+
+function copyZaloQRData(kind) {
+  const val = kind === 'imei' ? LAST_ZALO_QR_RESULT.imei : LAST_ZALO_QR_RESULT.cookies_str;
+  if (val && navigator.clipboard) {
+    navigator.clipboard.writeText(val);
+    showToast(kind === 'imei' ? 'Đã sao chép IMEI Zalo!' : 'Đã sao chép Cookie Zalo!');
+  }
+}
+
+function downloadZaloQRFile() {
+  if (!LAST_ZALO_QR_RESULT.file_content) return;
+  const blob = new Blob([LAST_ZALO_QR_RESULT.file_content], {type: 'text/plain;charset=utf-8'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = LAST_ZALO_QR_RESULT.file_name || 'zalo_cookie_imei.txt';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 async function generateUniqueZaloImei() {
   try {
     const r = await fetch('/api/zalo/generate_imei');
@@ -9438,6 +10288,32 @@ async function generateUniqueZaloImei() {
       showToast('Đã tạo IMEI Zalo độc lập mới!');
     }
   } catch (e) {}
+}
+
+async function updateDiscordCustomStatus() {
+  const text = (document.getElementById('dcCustomStatusInput').value || '').trim();
+  if (!text) { showToast('Hãy nhập nội dung trạng thái Discord!'); return; }
+  try {
+    const r = await fetch('/api/discord/set_status', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text})
+    });
+    const d = await r.json();
+    showToast(d.message || d.error || 'Đã cập nhật trạng thái!');
+  } catch (e) { showToast('Lỗi kết nối!'); }
+}
+
+async function setDiscordHypeSquad(house_id) {
+  try {
+    const r = await fetch('/api/discord/hypesquad', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({house_id})
+    });
+    const d = await r.json();
+    showToast(d.message || d.error || 'Đã đổi HypeSquad!');
+  } catch (e) { showToast('Lỗi kết nối!'); }
 }
 
 async function generateWeb2FA(showNotice = false) {
@@ -9476,8 +10352,8 @@ function copyCurrent2FACode() {
 }
 
 setInterval(() => {
-  const sec = (document.getElementById('web2FASecretInput')?.value || '').trim();
-  if (sec) generateWeb2FA(false);
+  const el = document.getElementById('web2FASecretInput');
+  if (el && el.value.trim()) generateWeb2FA(false);
 }, 2000);
 
 async function extractFacebookCookieByLogin() {
@@ -9615,8 +10491,7 @@ async function runImmortalizeTokensTool(autoSave = true) {
     const d = await r.json();
     if (d.ok) {
       if (d.live_tokens && d.live_tokens.length) {
-        document.getElementById('discordTokenInput').value = d.live_tokens.join('
-');
+        document.getElementById('discordTokenInput').value = d.live_tokens.join(String.fromCharCode(10));
       }
       box.innerHTML = `✅ Sống: ${d.alive_count}/${d.total} Token`;
       showToast(d.message);
@@ -9659,6 +10534,17 @@ function setDiscordRegStatus(msg, isSuccess) {
 
 function handleAccountFormSubmit(ev) {
   const plat = document.getElementById('accPlatformInput').value;
+  if (plat === 'zalo') {
+    const imeiVal = (document.getElementById('zaloImeiInput').value || '').trim();
+    const ckVal = (document.getElementById('zaloCookieInput').value || '').trim();
+    if (!imeiVal || !ckVal) {
+      ev.preventDefault();
+      switchZaloSubTab('qr');
+      startZaloQRLogin();
+      return false;
+    }
+    return true;
+  }
   if (plat === 'discord') {
     ev.preventDefault();
     const tkVal = (document.getElementById('discordTokenInput').value || '').trim();
@@ -10078,7 +10964,6 @@ scheduleAdaptivePoll();
 </body>
 </html>"""
 
-
 # CÁC ROUTE FLASK & API ĐIỀU KHIỂN TOÀN DIỆN (CHỐNG LỖI 500 TUYỆT ĐỐI)
 @app.errorhandler(Exception)
 def handle_unexpected_error(e):
@@ -10096,7 +10981,6 @@ def handle_unexpected_error(e):
         ), 200
     except Exception:
         return Response("NOEL System Ready", mimetype="text/plain"), 200
-
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
@@ -10141,12 +11025,10 @@ def login():
         )
     return render_template_string(LOGIN_HTML, error=None, has_logo=has_logo, logo_ts=logo_ts)
 
-
 @app.route("/logout")
 def logout():
     session.clear()
     return redirect("/login")
-
 
 @app.route("/api/logo")
 def api_get_logo():
@@ -10161,7 +11043,6 @@ def api_get_logo():
     except Exception:
         return Response(status=404)
 
-
 @app.route("/api/logo/upload", methods=["POST"])
 def api_upload_logo():
     f = request.files.get("logo")
@@ -10175,7 +11056,6 @@ def api_upload_logo():
     set_setting("brand_logo_mime", mime)
     set_setting("brand_logo_ts", str(int(time.time())))
     return jsonify({"ok": True})
-
 
 @app.route("/")
 def index():
@@ -10205,7 +11085,6 @@ def index():
         logo_ts=logo_ts,
     )
 
-
 @app.route("/api/discord/immortalize", methods=["POST"])
 def api_discord_immortalize():
     data = request.json or {}
@@ -10217,14 +11096,12 @@ def api_discord_immortalize():
     )
     return jsonify(res), (200 if res.get("ok") else 400)
 
-
 @app.route("/api/discord/batch_reg_profiles", methods=["POST"])
 def api_discord_batch_reg_profiles():
     data = request.json or {}
     cnt = int(data.get("count", 5))
     res = DiscordImmortalRegTool.generate_batch_clean_reg_profiles(count=cnt)
     return jsonify(res), 200
-
 
 @app.route("/api/discord/register_acc", methods=["POST"])
 def api_discord_register_acc():
@@ -10240,7 +11117,6 @@ def api_discord_register_acc():
         dob=dob, invite_code=invite_code, auto_save=auto_save
     )
     return jsonify(res), 200
-
 
 @app.route("/api/discord/refresh_firewall", methods=["POST"])
 def api_discord_refresh_firewall():
@@ -10262,7 +11138,6 @@ def api_discord_refresh_firewall():
         "message": f"Đã làm mới Tường Lửa 9 Lớp & nạp lại Cookie Cloudflare cho {refreshed} tài khoản Discord!"
     })
 
-
 @app.route("/api/tools/2fa", methods=["POST", "GET"])
 def api_tools_2fa():
     if request.method == "POST":
@@ -10275,11 +11150,62 @@ def api_tools_2fa():
         return jsonify({"ok": True, "token": token, "rem_sec": rem_sec, "author": "Phan Anh Khôi"})
     return jsonify({"ok": False, "error": "Secret Key 2FA không hợp lệ!"}), 400
 
-
 @app.route("/api/zalo/generate_imei")
 def api_zalo_generate_imei():
     return jsonify({"ok": True, "imei": ZaloWebIDGenerator.generate_unique_imei()})
 
+@app.route("/api/zalo/qr_start", methods=["POST"])
+def api_zalo_qr_start():
+    data = request.json or {}
+    auto_save = bool(data.get("auto_save", True))
+    res = ZaloQRLoginManager.start_qr_session(auto_save=auto_save)
+    return jsonify(res)
+
+@app.route("/api/zalo/qr_status/<session_id>")
+def api_zalo_qr_status(session_id):
+    res = ZaloQRLoginManager.get_session_status(session_id)
+    return jsonify(res)
+
+@app.route("/api/zalo/qr_image/<session_id>.png")
+def api_zalo_qr_image_png(session_id):
+    png_bytes = ZaloQRLoginManager.get_qr_png_bytes(session_id)
+    resp = Response(png_bytes, mimetype="image/png")
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return resp
+
+@app.route("/api/discord/set_status", methods=["POST"])
+def api_discord_set_status():
+    data = request.json or {}
+    text = (data.get("text") or "NOEL v15 — Phan Anh Khôi").strip()
+    conn = db()
+    rows = [dict(r) for r in conn.execute("SELECT * FROM accounts WHERE platform='discord'").fetchall()]
+    conn.close()
+    ok_cnt = 0
+    for r in rows:
+        try:
+            dc = DiscordClient(r["token"], is_bot=bool(r.get("is_bot", 0)))
+            if dc.set_custom_status(text):
+                ok_cnt += 1
+        except Exception:
+            continue
+    return jsonify({"ok": True, "updated": ok_cnt, "message": f"Đã cập nhật Custom Status cho {ok_cnt} tài khoản Discord!"})
+
+@app.route("/api/discord/hypesquad", methods=["POST"])
+def api_discord_hypesquad():
+    data = request.json or {}
+    house_id = int(data.get("house_id") or 1)
+    conn = db()
+    rows = [dict(r) for r in conn.execute("SELECT * FROM accounts WHERE platform='discord'").fetchall()]
+    conn.close()
+    ok_cnt = 0
+    for r in rows:
+        try:
+            dc = DiscordClient(r["token"], is_bot=bool(r.get("is_bot", 0)))
+            if dc.set_hypesquad(house_id):
+                ok_cnt += 1
+        except Exception:
+            continue
+    return jsonify({"ok": True, "updated": ok_cnt, "message": f"Đã đổi huy hiệu HypeSquad cho {ok_cnt} tài khoản Discord!"})
 
 @app.route("/api/messenger/login_credentials", methods=["POST"])
 def api_messenger_login_credentials():
@@ -10320,7 +11246,6 @@ def api_messenger_login_credentials():
         sync_all_zalo_listeners()
     return jsonify({"ok": True, "cookie": cookie_str, "uid": uid, "name": acc_name, "message": "Đã lấy Cookie Facebook thành công!"})
 
-
 @app.route("/api/discord/reg_login", methods=["POST"])
 def api_discord_reg_login():
     data = request.json or {}
@@ -10354,7 +11279,6 @@ def api_discord_reg_login():
         "message": "Đã lấy Token Discord Reg sạch & kích hoạt bảo vệ Anti-Scan!"
     })
 
-
 @app.route("/api/ping")
 def api_ping():
     t0 = time.perf_counter()
@@ -10368,7 +11292,6 @@ def api_ping():
         "active_threads": active_th,
         "running_tasks": running_cnt,
     })
-
 
 @app.route("/api/messenger/verify_cookie", methods=["POST"])
 def api_messenger_verify_cookie():
@@ -10411,7 +11334,6 @@ def api_messenger_verify_cookie():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 400
 
-
 @app.route("/api/messenger_threads")
 def api_messenger_threads():
     force = request.args.get("refresh") == "1"
@@ -10428,7 +11350,6 @@ def api_messenger_threads():
         except Exception:
             continue
     return jsonify({"threads": list(threads_map.values())})
-
 
 @app.route("/api/messenger_thread_members")
 def api_messenger_thread_members():
@@ -10447,7 +11368,6 @@ def api_messenger_thread_members():
         except Exception:
             continue
     return jsonify({"members": []})
-
 
 @app.route("/account/add", methods=["POST"])
 def account_add():
@@ -10540,7 +11460,6 @@ def account_add():
     sync_all_zalo_listeners()
     return redirect("/")
 
-
 @app.route("/account/delete/<int:acc_id>")
 def account_delete(acc_id):
     if acc_id in ACTIVE_LISTENERS:
@@ -10552,7 +11471,6 @@ def account_delete(acc_id):
     conn.close()
     refresh_owner_uids()
     return redirect("/")
-
 
 @app.route("/api/account/chat_cmd", methods=["POST"])
 def api_toggle_chat_cmd():
@@ -10566,7 +11484,6 @@ def api_toggle_chat_cmd():
     sync_all_zalo_listeners()
     return jsonify({"ok": True})
 
-
 @app.route("/api/account/allow_all_cmd", methods=["POST"])
 def api_toggle_allow_all():
     data = request.json or {}
@@ -10577,7 +11494,6 @@ def api_toggle_allow_all():
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
-
 
 @app.route("/api/all_groups")
 def api_all_groups():
@@ -10598,7 +11514,6 @@ def api_all_groups():
             continue
     return jsonify({"groups": list(groups_map.values()), "friends": list(friends_map.values())})
 
-
 @app.route("/api/group_members")
 def api_group_members():
     gid = (request.args.get("group_id") or "").strip()
@@ -10617,7 +11532,6 @@ def api_group_members():
         except Exception:
             continue
     return jsonify({"members": []})
-
 
 @app.route("/api/discord_channels")
 def api_discord_channels():
@@ -10639,7 +11553,6 @@ def api_discord_channels():
             continue
     return jsonify({"channels": list(channels_map.values())})
 
-
 @app.route("/api/discord_channel_members")
 def api_discord_channel_members():
     cid = (request.args.get("channel_id") or "").strip()
@@ -10657,7 +11570,6 @@ def api_discord_channel_members():
         except Exception:
             continue
     return jsonify({"members": []})
-
 
 @app.route("/file/upload", methods=["POST"])
 def file_upload():
@@ -10686,7 +11598,6 @@ def file_upload():
         return jsonify({"ok": True, "filename": fname, "lines_count": lines_cnt})
     return redirect("/")
 
-
 @app.route("/file/create", methods=["POST"])
 def file_create():
     fname = (request.form.get("filename") or "kich_ban.txt").strip()
@@ -10707,7 +11618,6 @@ def file_create():
     conn.close()
     return redirect("/")
 
-
 @app.route("/file/delete/<int:fid>")
 def file_delete(fid):
     conn = db()
@@ -10721,7 +11631,6 @@ def file_delete(fid):
     conn.commit()
     conn.close()
     return redirect("/")
-
 
 @app.route("/task/start", methods=["POST"])
 def route_task_start():
@@ -10809,7 +11718,6 @@ def route_task_start():
     )
     return jsonify({"ok": True, "task_id": tid})
 
-
 @app.route("/task/stop/<tid>", methods=["POST"])
 def route_task_stop(tid):
     info = ACTIVE_TASKS.get(tid)
@@ -10824,7 +11732,6 @@ def route_task_stop(tid):
         pass
     return jsonify({"ok": True})
 
-
 @app.route("/task/stop_all", methods=["POST"])
 def route_task_stop_all():
     cnt = stop_tasks_for_thread(None)
@@ -10837,10 +11744,8 @@ def route_task_stop_all():
         pass
     return jsonify({"ok": True, "stopped": cnt})
 
-
 _STATUS_SNAPSHOT_CACHE = {"ts": 0.0, "payload": None}
 _STATUS_CACHE_LOCK = threading.RLock()
-
 
 @app.route("/api/status")
 def api_status():
@@ -10917,7 +11822,6 @@ def api_status():
         _STATUS_SNAPSHOT_CACHE["ts"] = time.time()
         _STATUS_SNAPSHOT_CACHE["payload"] = payload
     return jsonify(payload)
-
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
